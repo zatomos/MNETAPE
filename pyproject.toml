@@ -1,0 +1,32 @@
+[project]
+name = "mnetape"
+version = "0.1.0"
+description = "A graphical EEG preprocessing tool"
+requires-python = ">=3.12"
+
+dependencies = [
+    "numpy",
+    "matplotlib",
+    "mne",
+    "mne-qt-browser>=0.7.4",
+    "mne-icalabel",
+    "onnxruntime",
+    "python-picard>=0.8.1",
+    "pyqt6>=6.10.2",
+    "pyqt6-qscintilla>=2.14",
+    "pyyaml>=6.0.3",
+    "pyprep",
+    "autoreject",
+]
+
+[project.scripts]
+mnetape = "mnetape.gui.app:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+]
+
+[tool.uv]
+package = true

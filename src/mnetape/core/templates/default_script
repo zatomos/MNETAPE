@@ -1,0 +1,13 @@
+# EEG Preprocessing Pipeline
+# Auto-generated - edit here or in the GUI.
+
+# IMPORTS
+
+# Load data
+# LOAD_DATA
+
+# ACTIONS_START
+# ACTIONS_END
+
+# Save result
+# raw.save("preprocessed.fif", overwrite=True)

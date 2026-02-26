@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Data and outputs
+data/
+docs/
+
+# Personal notes
+*.txt
+
+# OS
+.DS_Store
+.idea/
