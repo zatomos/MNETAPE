@@ -157,6 +157,11 @@ class ActionController:
 
         menu.addSeparator()
 
+        export_action = menu.addAction("Export data at this step...")
+        export_action.triggered.connect(lambda: self.w.files.export_file(row))
+
+        menu.addSeparator()
+
         remove_action = menu.addAction("Remove")
         remove_action.triggered.connect(self.remove_action)
 

@@ -115,7 +115,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
 
         export_action = QAction("Export Processed...", self)
-        export_action.triggered.connect(self.files.export_file)
+        export_action.triggered.connect(lambda checked: self.files.export_file())
         file_menu.addAction(export_action)
 
         file_menu.addSeparator()
