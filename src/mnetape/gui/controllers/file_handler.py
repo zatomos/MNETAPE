@@ -164,11 +164,21 @@ class FileHandler:
 
         self.load_data_path(path)
 
-    def export_file(self):
+    def export_file(self, row: int = None):
         """Export the last computed raw object to a FIF file chosen via dialog."""
-        if not self.state.raw_states:
-            QMessageBox.warning(self.w, "No Data", "Run the pipeline first.")
-            return
+
+        # Check for pipeline state
+        if row is None:
+            if not self.state.raw_states:
+                QMessageBox.warning(self.w, "No Data", "Run the pipeline first.")
+                return
+            raw_to_export = self.state.raw_states[-1]
+        else:
+            print(row, len(self.state.raw_states))
+            if row >= len(self.state.raw_states):
+                QMessageBox.warning(self.w, "No Data", "Selected action has not been computed yet.")
+                return
+            raw_to_export = self.state.raw_states[row]
 
         path, _ = QFileDialog.getSaveFileName(self.w, "Export Processed", "", "FIF Files (*.fif)")
         if not path:
@@ -178,7 +188,7 @@ class FileHandler:
             path += ".fif"
 
         try:
-            self.state.raw_states[-1].save(path, overwrite=True)
+            raw_to_export.save(path, overwrite=True)
             self.w.status.showMessage(f"Exported: {Path(path).name}")
             logger.info("Exported processed FIF: %s", path)
         except Exception as e:
