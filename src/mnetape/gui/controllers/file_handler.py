@@ -118,12 +118,7 @@ class FileHandler:
         self.w.update_visualization()
 
         info = self.state.raw_original.info
-        self.w.status.showMessage(
-            f"Loaded: {self.state.data_filepath.name} | "
-            f"{len(info['ch_names'])} ch | "
-            f"{info['sfreq']:.0f} Hz | "
-            f"{self.state.raw_original.times[-1]:.1f}s"
-        )
+        self.w.status.showMessage(f"Loaded {self.state.data_filepath.name}")
         self.check_montage(self.state.raw_original)
         self.add_recent_file(path)
         logger.info("Loaded data file: %s", path)
