@@ -85,8 +85,12 @@ class MainWindow(QMainWindow):
         self.setup_ui()
         self.setup_shortcuts()
 
+        self.raw_info_label = QLabel()
+        self.raw_info_label.setStyleSheet("color: gray;")
+
         self.status = QStatusBar()
         self.setStatusBar(self.status)
+        self.status.addPermanentWidget(self.raw_info_label)
         self.status.showMessage("Ready - Open a FIF file to begin")
 
 
@@ -338,7 +342,18 @@ class MainWindow(QMainWindow):
             raw_to_show = self.state.raw_original
 
         self.viz_panel.update_plots(raw_to_show, step, len(self.state.raw_states))
+        self.update_raw_info(raw_to_show)
 
+
+    def update_raw_info(self, raw):
+        if raw is None:
+            self.raw_info_label.setText("")
+            return
+        name = self.state.data_filepath.name if self.state.data_filepath else ""
+        n_ch = len(raw.ch_names)
+        sfreq = raw.info["sfreq"]
+        dur = raw.times[-1]
+        self.raw_info_label.setText(f"{name}  ·  {n_ch} ch  ·  {sfreq:.0f} Hz  ·  {dur:.1f} s")
 
     # --------- Code generation and execution ---------
 
