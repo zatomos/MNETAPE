@@ -1,7 +1,8 @@
 """Dialog for selecting and adding a new pipeline action.
 
-Lists all registered actions (except "custom") sorted alphabetically. The action description is shown below the list as
-the selection changes. The chosen action_id is returned after the dialog is accepted.
+Lists all registered actions sorted alphabetically.
+The action description is shown below the list as the selection changes.
+The chosen action_id is returned after the dialog is accepted.
 """
 
 from PyQt6.QtCore import Qt

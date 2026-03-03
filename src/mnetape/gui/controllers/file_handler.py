@@ -39,7 +39,7 @@ class FileHandler:
         """Close the loaded EEG file and reset state and UI to their initial conditions."""
 
         self.state.raw_original = None
-        self.state.raw_states = []
+        self.state.data_states = []
         self.state.data_filepath = None
 
         for action in self.state.actions:
@@ -109,7 +109,7 @@ class FileHandler:
 
         self.state.raw_original = raw
         self.state.data_filepath = Path(path)
-        self.state.raw_states = []
+        self.state.data_states = []
 
         for action in self.state.actions:
             action.reset()
@@ -164,16 +164,16 @@ class FileHandler:
 
         # Check for pipeline state
         if row is None:
-            if not self.state.raw_states:
+            if not self.state.data_states:
                 QMessageBox.warning(self.w, "No Data", "Run the pipeline first.")
                 return
-            raw_to_export = self.state.raw_states[-1]
+            raw_to_export = self.state.data_states[-1]
         else:
-            print(row, len(self.state.raw_states))
-            if row >= len(self.state.raw_states):
+            print(row, len(self.state.data_states))
+            if row >= len(self.state.data_states):
                 QMessageBox.warning(self.w, "No Data", "Selected action has not been computed yet.")
                 return
-            raw_to_export = self.state.raw_states[row]
+            raw_to_export = self.state.data_states[row]
 
         path, _ = QFileDialog.getSaveFileName(self.w, "Export Processed", "", "FIF Files (*.fif)")
         if not path:
@@ -193,7 +193,7 @@ class FileHandler:
     def new_pipeline(self):
         """Clear all actions and computed states to start a fresh pipeline."""
         self.state.actions = []
-        self.state.raw_states = []
+        self.state.data_states = []
         self.w.update_action_list()
         self.w.update_visualization()
         self.w.status.showMessage("New pipeline")
@@ -230,7 +230,7 @@ class FileHandler:
             self.state.actions = parse_script_to_actions(code)
             self.state.pipeline_filepath = Path(path)
             self.w.code_panel.set_file(self.state.pipeline_filepath)
-            self.state.raw_states = []
+            self.state.data_states = []
 
             self.w.update_action_list()
             self.w.update_visualization()
@@ -264,7 +264,7 @@ class FileHandler:
             )
             return
         self.state.actions = actions
-        self.state.raw_states = []
+        self.state.data_states = []
         self.w.update_action_list(sync_code=False)
         self.w.code_panel.set_code(code)
         self.w.status.showMessage("Reloaded from file")

@@ -15,8 +15,8 @@ from PyQt6.QtWidgets import QApplication, QMessageBox, QProgressDialog
 
 from mnetape.actions.registry import get_action_by_id, get_action_title
 from mnetape.core.codegen import extract_step_blocks
-from mnetape.core.executor import exec_action_code
-from mnetape.core.models import ActionStatus
+from mnetape.core.executor import exec_action_code, SCOPE_VAR
+from mnetape.core.models import ActionStatus, DataType
 
 if TYPE_CHECKING:
     from mnetape.gui.controllers.main_window import MainWindow
@@ -76,41 +76,65 @@ class PipelineRunner:
             return False
         return True
 
-    def get_step_input_raw(self, action, row):
-        """Return a copy of the correct raw object to pass into the next step.
-
-        Priority: raw from previous step scope (for multistep continuations), then raw_states[row-1], then raw_original.
+    def get_data_type_at(self, row: int) -> DataType:
+        """Return the DataType flowing into the action at row.
 
         Args:
-            action: ActionConfig whose step_state may contain a prior-step raw.
+            row: Index of the action to check .
+
+        Returns:
+            The DataType the preceding action outputs. Fallbacks to DataType.RAW.
+        """
+        for action in self.state.actions[:row]:
+            action_def = get_action_by_id(action.action_id)
+            if action_def:
+                return action_def.output_type
+        return DataType.RAW
+
+    def get_step_input(self, action, row):
+        """Return a copy of the correct data object to pass into the next step.
+
+        Priority: data from previous step scope (for multistep continuations), then data_states[row-1],
+        then raw_original (for RAW type only).
+
+        Args:
+            action: ActionConfig whose step_state may contain prior-step data.
             row: Index of the action in the pipeline list.
 
         Returns:
-            A copy of the MNE Raw object.
+            A copy of the MNE object.
         """
+        input_type = self.get_data_type_at(row)
+        scope_var = SCOPE_VAR[input_type]
         if action.completed_steps > 0:
-            scope_raw = action.step_state.get("scope", {}).get("raw")
-            if scope_raw is not None:
-                return scope_raw.copy()
-        if 0 < row <= len(self.state.raw_states):
-            return self.state.raw_states[row - 1].copy()
+            scope_data = action.step_state.get("scope", {}).get(scope_var)
+            if scope_data is not None:
+                return scope_data.copy()
+        if 0 < row <= len(self.state.data_states):
+            stored = self.state.data_states[row - 1]
+            if stored is not None:
+                return stored.copy()
         return self.state.raw_original.copy()
 
-    def store_action_raw(self, row, raw):
-        """Store the processed raw object at the given pipeline position.
+    def store_action_result(self, row, data):
+        """Store the processed data object at the given pipeline position.
 
-        Pads raw_states with copies of raw_original if needed so the list is contiguous up to row.
+        Pads data_states with copies of raw_original (for RAW positions) or None
+        if needed so the list is contiguous up to row.
 
         Args:
-            row: Index where the raw result should be stored.
-            raw: The processed MNE Raw object to store.
+            row: Index where the result should be stored.
+            data: The processed MNE object to store.
         """
-        while len(self.state.raw_states) < row:
-            self.state.raw_states.append(self.state.raw_original.copy())
-        if row < len(self.state.raw_states):
-            self.state.raw_states[row] = raw
+        while len(self.state.data_states) < row:
+            if self.get_data_type_at(len(self.state.data_states)) == DataType.RAW:
+                self.state.data_states.append(self.state.raw_original.copy())
+            else:
+                self.state.data_states.append(None)
+        if row < len(self.state.data_states):
+            self.state.data_states[row] = data
         else:
-            self.state.raw_states.append(raw)
+            self.state.data_states.append(data)
 
     def check_prerequisites(self, action_idx: int) -> bool:
         """Check if all prerequisite actions have been run, prompting if not.
@@ -161,7 +185,7 @@ class PipelineRunner:
         Returns:
             True when previous actions are complete and execution can proceed.
         """
-        if row <= 0 or row <= len(self.state.raw_states):
+        if row <= 0 or row <= len(self.state.data_states):
             return True
         reply = QMessageBox.question(
             self.w, "Run Previous?",
@@ -169,8 +193,8 @@ class PipelineRunner:
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self.run_actions(len(self.state.raw_states), row)
-        return row <= len(self.state.raw_states)
+            self.run_actions(len(self.state.data_states), row)
+        return row <= len(self.state.data_states)
 
     def run_in_thread(self, fn, message="Processing..."):
         """Execute a callable in a background QThread with a cancellable progress dialog.
@@ -247,8 +271,9 @@ class PipelineRunner:
             raise error[0]
         return result[0]
 
-    def execute_step(self, action, action_def, step, code, raw):
-        """Execute a single step and return the resulting raw object.
+    def execute_step(self, action, action_def, step, code, data,
+                     input_type: DataType = DataType.RAW, output_type: DataType = DataType.RAW):
+        """Execute a single step and return the resulting data object.
 
         Interactive steps are run synchronously on the main thread via their interactive_runner.
         Non-interactive steps are run in a background QThread.
@@ -258,10 +283,12 @@ class PipelineRunner:
             action_def: The ActionDefinition for the action.
             step: The StepDefinition, or None for single-step actions.
             code: Python source code for this step.
-            raw: Input raw object for this step.
+            data: Input data object for this step.
+            input_type: DataType of the incoming data.
+            output_type: DataType of the expected result.
 
         Returns:
-            The new raw object produced by the step.
+            The new data object produced by the step.
 
         Raises:
             RuntimeError: For interactive steps with no runner, or when the user closes an interactive dialog
@@ -272,13 +299,16 @@ class PipelineRunner:
         if step and step.interactive:
             if not step.interactive_runner:
                 raise RuntimeError("No interactive runner configured.")
-            result = step.interactive_runner(action, raw, parent=self.w)
+            result = step.interactive_runner(action, data, parent=self.w)
             if result is None:
                 raise RuntimeError("Interactive step cancelled.")
             return result
         title = step.title if step else get_action_title(action)
         return self.run_in_thread(
-            lambda c=code, r=raw: exec_action_code(c, r, action, reuse_scope=step is not None),
+            lambda c=code, d=data: exec_action_code(
+                c, d, action, reuse_scope=step is not None,
+                input_type=input_type, output_type=output_type,
+            ),
             f"Running: {title}...",
         )
 
@@ -287,13 +317,13 @@ class PipelineRunner:
 
     def run_to_selected(self):
         """Run all actions from the beginning up to and including the selected row."""
-        row = self.w.action_list.currentRow()
+        row = self.w.get_selected_action_row()
         if row >= 0:
             self.run_actions(0, row + 1)
 
     def run_single(self):
         """Run the currently selected action."""
-        row = self.w.action_list.currentRow()
+        row = self.w.get_selected_action_row()
         if row < 0:
             return
         self.run_action_at(row)
@@ -313,7 +343,7 @@ class PipelineRunner:
     def run_all(self):
         """Run all actions that have not yet been executed."""
         if self.require_data():
-            self.run_actions(len(self.state.raw_states), len(self.state.actions))
+            self.run_actions(len(self.state.data_states), len(self.state.actions))
 
     def run_actions(self, start_idx, end_idx):
         """Run a contiguous range of pipeline actions.
@@ -333,7 +363,11 @@ class PipelineRunner:
         logger.info("======== Running actions %d to %d ========", start_idx, end_idx)
         QApplication.processEvents()
 
-        raw = self.state.raw_states[start_idx - 1].copy() if start_idx > 0 and self.state.raw_states else self.state.raw_original.copy()
+        if start_idx > 0 and self.state.data_states:
+            stored = self.state.data_states[start_idx - 1]
+            data = stored.copy() if stored is not None else self.state.raw_original.copy()
+        else:
+            data = self.state.raw_original.copy()
 
         for i in range(start_idx, min(end_idx, len(self.state.actions))):
             action = self.state.actions[i]
@@ -346,10 +380,25 @@ class PipelineRunner:
                 final_status = "Pipeline stopped (missing prerequisites)"
                 break
 
+            action_def = get_action_by_id(action.action_id)
+            in_type = action_def.input_type if action_def else DataType.RAW
+            pipeline_type = self.get_data_type_at(i)
+            if in_type != pipeline_type:
+                action.status = ActionStatus.ERROR
+                action.error_msg = (
+                    f"Type mismatch: pipeline produces {pipeline_type.value} data, "
+                    f"but this action expects {in_type.value}"
+                )
+                logger.error("Type mismatch at action %d: pipeline=%s action_input=%s", i + 1, pipeline_type, in_type)
+                self.w.update_action_list(sync_code=False)
+                final_status = f"Pipeline stopped: type mismatch at action {i + 1}"
+                break
+
             try:
-                action_def = get_action_by_id(action.action_id)
                 action.step_state = {}
                 action.completed_steps = 0
+
+                out_type = action_def.output_type if action_def else DataType.RAW
 
                 code = self.w.get_action_code(i, action)
                 step_blocks = get_step_blocks(action_def, action, code)
@@ -357,15 +406,17 @@ class PipelineRunner:
                 if step_blocks:
                     for step_idx, block in enumerate(step_blocks):
                         step = action_def.steps[step_idx] if step_idx < len(action_def.steps) else None
-                        raw = self.execute_step(action, action_def, step, block["code"], raw)
+                        data = self.execute_step(action, action_def, step, block["code"], data,
+                                                 input_type=in_type, output_type=out_type)
                         action.completed_steps = step_idx + 1
                         self.w.update_action_list(sync_code=False)
                 else:
-                    raw = self.execute_step(action, action_def, None, code, raw)
+                    data = self.execute_step(action, action_def, None, code, data,
+                                             input_type=in_type, output_type=out_type)
                     if action_def and action_def.steps:
                         action.completed_steps = len(action_def.steps)
 
-                self.store_action_raw(i, raw)
+                self.store_action_result(i, data)
                 action.status = ActionStatus.COMPLETE
                 logger.info("Completed action %d: %s", i + 1, title)
             except OperationCancelled:
@@ -383,7 +434,7 @@ class PipelineRunner:
 
             self.w.update_action_list()
 
-        self.w.viz_panel.step_combo.setCurrentIndex(min(end_idx, len(self.state.raw_states)))
+        self.w.viz_panel.step_combo.setCurrentIndex(min(end_idx, len(self.state.data_states)))
         self.w.update_visualization()
         self.w.status.showMessage(final_status)
 
@@ -438,7 +489,9 @@ class PipelineRunner:
 
         action = self.state.actions[row]
         action_def = get_action_by_id(action.action_id)
-        raw = self.get_step_input_raw(action, row)
+        in_type = action_def.input_type if action_def else DataType.RAW
+        out_type = action_def.output_type if action_def else DataType.RAW
+        data = self.get_step_input(action, row)
         code = self.w.get_action_code(row, action)
         step_blocks = get_step_blocks(action_def, action, code)
 
@@ -459,7 +512,8 @@ class PipelineRunner:
                 title = step.title if step else f"Step {step_idx + 1}"
                 self.w.status.showMessage(f"Running: {title}...")
                 QApplication.processEvents()
-                raw = self.execute_step(action, action_def, step, step_blocks[step_idx]["code"], raw)
+                data = self.execute_step(action, action_def, step, step_blocks[step_idx]["code"], data,
+                                         input_type=in_type, output_type=out_type)
                 action.completed_steps = step_idx + 1
                 if action.status == ActionStatus.ERROR:
                     action.status = ActionStatus.PENDING
@@ -471,7 +525,7 @@ class PipelineRunner:
             done = action.completed_steps >= len(action_def.steps)
             if done:
                 action.status = ActionStatus.COMPLETE
-                self.store_action_raw(row, raw)
+                self.store_action_result(row, data)
             self.w.update_action_list()
             if done:
                 self.w.update_visualization()
@@ -497,7 +551,7 @@ class PipelineRunner:
         if row < 0 or row >= len(self.state.actions):
             return
         self.state.actions[row].reset()
-        self.state.raw_states = self.state.raw_states[:row]
+        self.state.data_states = self.state.data_states[:row]
         for a in self.state.actions[row + 1:]:
             if not a.is_custom:
                 a.reset()

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QDialog, QMenu, QMessageBox
 
 from typing import TYPE_CHECKING
@@ -58,17 +58,17 @@ class ActionController:
                 self.w.update_action_list()
 
                 row = len(self.state.actions) - 1
-                self.w.action_list.setCurrentRow(row)
+                self.w.set_selected_action_row(row)
                 self.edit_action(row)
 
                 logger.info("Added action: %s", get_action_title(action))
 
     def remove_action(self):
         """Remove the currently selected action from the pipeline."""
-        row = self.w.action_list.currentRow()
+        row = self.w.get_selected_action_row()
         if row >= 0:
             self.state.actions.pop(row)
-            self.state.raw_states = self.state.raw_states[:row]
+            self.state.data_states = self.state.data_states[:row]
             for action in self.state.actions[row:]:
                 if not action.is_custom:
                     action.reset()
@@ -80,21 +80,23 @@ class ActionController:
         Args:
             direction: -1: up, +1: down.
         """
-        row = self.w.action_list.currentRow()
+        row = self.w.get_selected_action_row()
         new_row = row + direction
         if 0 <= new_row < len(self.state.actions):
             self.state.actions[row], self.state.actions[new_row] = self.state.actions[new_row], self.state.actions[row]
-            self.state.raw_states = self.state.raw_states[: min(row, new_row)]
+            self.state.data_states = self.state.data_states[: min(row, new_row)]
             for action in self.state.actions[min(row, new_row) :]:
                 if not action.is_custom:
                     action.reset()
             self.w.update_action_list()
-            self.w.action_list.setCurrentRow(new_row)
+            self.w.set_selected_action_row(new_row)
             self.w.update_button_states()
 
     def on_action_clicked(self):
         """Respond to an action item being clicked in the list."""
-        row = self.w.action_list.currentRow()
+        row = self.w.get_selected_action_row()
+        if row < 0:
+            return
         self.w.update_button_states()
         self.w.viz_panel.step_combo.setCurrentIndex(row + 1)
 
@@ -110,8 +112,10 @@ class ActionController:
         item = self.w.action_list.itemAt(pos)
         if item is None:
             return
-        row = self.w.action_list.row(item)
-        self.w.action_list.setCurrentRow(row)
+        row = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(row, int) or row < 0:
+            return
+        self.w.set_selected_action_row(row)
 
         action = self.state.actions[row]
         action_def = get_action_by_id(action.action_id)
@@ -169,7 +173,7 @@ class ActionController:
 
     def on_action_double_clicked(self):
         """Open the action editor when the user double-clicks an action."""
-        row = self.w.action_list.currentRow()
+        row = self.w.get_selected_action_row()
         if row >= 0:
             self.edit_action(row)
 
@@ -200,14 +204,14 @@ class ActionController:
                 QMessageBox.warning(self.w, "Steps Incomplete", "Run the previous steps first.")
                 return
             try:
-                raw = self.w.runner.get_step_input_raw(action, row)
+                raw = self.w.runner.get_step_input(action, row)
                 runner = step.interactive_runner
                 if not runner:
                     raise RuntimeError("No interactive runner configured for this action.")
                 new_raw = runner(action, raw, parent=self.w)
                 if new_raw is None:
                     return
-                self.w.runner.store_action_raw(row, new_raw)
+                self.w.runner.store_action_result(row, new_raw)
                 action.completed_steps = max(action.completed_steps, step_idx + 1)
                 if action.completed_steps >= len(action_def.steps):
                     action.status = ActionStatus.COMPLETE
@@ -244,7 +248,7 @@ class ActionController:
     def apply_manual_code_edit(self):
         """Apply the buffered code edit to the action list.
 
-        Performs a minimal diff: only actions whose id, params, or code actually changed are reset, and raw_states
+        Performs a minimal diff: only actions whose id, params, or code actually changed are reset, and data_states
         are trimmed from the first changed index onward.
         """
         code = self.pending_code
@@ -291,7 +295,7 @@ class ActionController:
         if changed:
             if first_changed_idx is None:
                 first_changed_idx = 0
-            self.state.raw_states = self.state.raw_states[:first_changed_idx]
+            self.state.data_states = self.state.data_states[:first_changed_idx]
             for action in self.state.actions[first_changed_idx:]:
                 action.reset()
 
@@ -316,8 +320,8 @@ class ActionController:
         action = self.state.actions[row]
         if row == 0:
             current_raw = self.state.raw_original
-        elif row <= len(self.state.raw_states):
-            current_raw = self.state.raw_states[row - 1]
+        elif row <= len(self.state.data_states):
+            current_raw = self.state.data_states[row - 1]
         else:
             current_raw = self.state.raw_original
 
@@ -342,7 +346,7 @@ class ActionController:
             # If the action was previously marked as custom but now matches the default code, reset it
             if not action.is_custom:
                 action.reset()
-            self.state.raw_states = self.state.raw_states[:row]
+            self.state.data_states = self.state.data_states[:row]
             for a in self.state.actions[row:]:
                 if not a.is_custom:
                     a.reset()

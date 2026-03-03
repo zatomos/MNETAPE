@@ -1,7 +1,8 @@
 """Visualization panel with PSD, time-series, sensor map, and topomap tabs.
 
-VisualizationPanel displays the current raw object at a user-selected pipeline step.
-It contains four tabs (PSD, Time Series, Sensors, Topomap) that are rendered on demand when the active tab changes.
+VisualizationPanel displays the current data object at a user-selected pipeline step.
+It contains tabs that are rendered on demand when the active tab changes.
+The active tab set switches depending on the data type.
 The time-series tab embeds an MNE interactive browser widget.
 """
 
@@ -25,31 +26,40 @@ from mnetape.gui.widgets import PlotCanvas
 
 logger = logging.getLogger(__name__)
 
+# Tab indices for each mode
+RAW_TAB_NAMES = ["PSD", "Time Series", "Sensors", "Topomap"]
+EPOCHS_TAB_NAMES = ["PSD", "Epochs Browser", "Sensors", "Topomap", "Epochs Image"]
+
 
 class VisualizationPanel(QWidget):
-    """Panel showing EEG visualizations across four tabs for a selected pipeline step.
+    """Panel showing EEG visualizations across tabs for a selected pipeline step.
+
+    Switches based on the data type being visualized.
 
     Attributes:
         step_combo: Combo box for choosing which pipeline step to visualize.
         btn_prev: Button to step backward through the pipeline.
         btn_next: Button to step forward through the pipeline.
-        status_label: Displays a warning when the selected step has no computed raw.
-        tabs: QTabWidget containing the four visualization tabs.
+        status_label: Displays a warning when the selected step has no computed data.
+        tabs: QTabWidget containing the visualization tabs.
         plot_psd: PlotCanvas for the PSD plot.
         plot_sensors: PlotCanvas for the sensor map.
         plot_topomap: PlotCanvas for the topomap plot.
-        current_raw: The MNE Raw object currently being visualized.
-        psd_raw_id: id() of the raw used for the cached PSD, to skip redraws.
-        topomap_raw_id: id() of the raw used for the cached topomap.
-        browser: The embedded MNE time-series browser widget, or None.
+        plot_image: PlotCanvas for the epochs image plot (Epochs mode only).
+        current_data: The MNE object currently being visualized.
+        psd_data_id: id of the data used for the cached PSD, to skip redraws.
+        topomap_data_id: id of the data used for the cached topomap.
+        browser: The embedded MNE browser widget, or None.
+        is_epochs_mode: True when the panel is currently in Epochs tab mode.
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.current_raw = None
-        self.psd_raw_id = None
-        self.topomap_raw_id = None
+        self.current_data = None
+        self.psd_data_id = None
+        self.topomap_data_id = None
         self.browser = None
+        self.is_epochs_mode = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -80,8 +90,9 @@ class VisualizationPanel(QWidget):
         self.plot_psd = PlotCanvas()
         self.plot_sensors = PlotCanvas()
         self.plot_topomap = PlotCanvas()
+        self.plot_image = PlotCanvas()
 
-        # Time-series tab
+        # Time-series tab (Raw mode)
         self.time_container = QWidget()
         self.time_layout = QVBoxLayout(self.time_container)
         self.time_layout.setContentsMargins(0, 0, 0, 0)
@@ -91,38 +102,62 @@ class VisualizationPanel(QWidget):
         )
         self.time_layout.addWidget(self.time_placeholder)
 
+        # Epochs browser tab (Epochs mode)
+        self.epochs_container = QWidget()
+        self.epochs_layout = QVBoxLayout(self.epochs_container)
+        self.epochs_layout.setContentsMargins(0, 0, 0, 0)
+        self.epochs_placeholder = QLabel("Run epoching to view")
+        self.epochs_placeholder.setStyleSheet(
+            "color: #999999; font-size: 14pt; qproperty-alignment: AlignCenter;"
+        )
+        self.epochs_layout.addWidget(self.epochs_placeholder)
+
+        self.build_raw_tabs()
+        layout.addWidget(self.tabs)
+        self.show_placeholder()
+
+
+    # -------- Tab set switching --------
+
+    def build_raw_tabs(self):
+        """Populate the tab widget with Raw mode tabs."""
+        self.tabs.clear()
         self.tabs.addTab(self.plot_psd, "PSD")
         self.tabs.addTab(self.time_container, "Time Series")
         self.tabs.addTab(self.plot_sensors, "Sensors")
         self.tabs.addTab(self.plot_topomap, "Topomap")
+        self.is_epochs_mode = False
 
-        layout.addWidget(self.tabs)
-
-        self.show_placeholder()
+    def build_epochs_tabs(self):
+        """Populate the tab widget with Epochs mode tabs."""
+        self.tabs.clear()
+        self.tabs.addTab(self.plot_psd, "PSD")
+        self.tabs.addTab(self.epochs_container, "Epochs Browser")
+        self.tabs.addTab(self.plot_sensors, "Sensors")
+        self.tabs.addTab(self.plot_topomap, "Topomap")
+        self.tabs.addTab(self.plot_image, "Image")
+        self.is_epochs_mode = True
 
 
     # -------- Helper methods --------
 
     def close_browser(self):
         """Close and remove the current MNE browser widget."""
-
         if self.browser is not None:
-            self.time_layout.removeWidget(self.browser)
+            container_layout = self.epochs_layout if self.is_epochs_mode else self.time_layout
+            container_layout.removeWidget(self.browser)
             self.browser.close()
             self.browser.deleteLater()
             self.browser = None
 
     def disable_browser_clicks(self):
         """Disable click-to-mark-bad on traces and channel axis."""
-
         if self.browser is None:
             return
         try:
             mne_params = self.browser.mne
-            # Disable clicks on each channel trace
             for trace in mne_params.traces:
                 trace.setClickable(False)
-            # Disable clicks on the channel name axis
             ch_axis = mne_params.channel_axis
             ch_axis.mouseClickEvent = lambda ev: ev.ignore()
         except Exception as e:
@@ -130,23 +165,35 @@ class VisualizationPanel(QWidget):
 
     def update_time_plot(self):
         """Render the time-series tab by embedding an MNE browser widget."""
-        if self.current_raw is None:
+        if self.current_data is None or isinstance(self.current_data, mne.Epochs):
             return
         try:
             self.close_browser()
             self.time_placeholder.setVisible(False)
-            self.browser = self.current_raw.plot(show=False)
+            self.browser = self.current_data.plot(show=False)
             self.disable_browser_clicks()
             self.time_layout.addWidget(self.browser)
         except Exception as e:
             logger.warning("Time-series plot update failed: %s", e)
 
+    def update_epochs_browser(self):
+        """Render the epochs browser tab by embedding an MNE Epochs browser widget."""
+        if self.current_data is None or not isinstance(self.current_data, mne.Epochs):
+            return
+        try:
+            self.close_browser()
+            self.epochs_placeholder.setVisible(False)
+            self.browser = self.current_data.plot(show=False)
+            self.disable_browser_clicks()
+            self.epochs_layout.addWidget(self.browser)
+        except Exception as e:
+            logger.warning("Epochs browser update failed: %s", e)
+
     def show_placeholder(self):
         """Show placeholder text when no data is loaded."""
-
-        self.psd_raw_id = None
-        self.topomap_raw_id = None
-        for plot in [self.plot_psd, self.plot_sensors, self.plot_topomap]:
+        self.psd_data_id = None
+        self.topomap_data_id = None
+        for plot in [self.plot_psd, self.plot_sensors, self.plot_topomap, self.plot_image]:
             fig = Figure(figsize=(8, 4))
             ax = fig.add_subplot(111)
             ax.text(0.5, 0.5, "Load data to view", ha="center", va="center", fontsize=14, color="#999999")
@@ -156,6 +203,7 @@ class VisualizationPanel(QWidget):
             plot.update_figure(fig)
         self.close_browser()
         self.time_placeholder.setVisible(True)
+        self.epochs_placeholder.setVisible(True)
 
     def update_step_list(self, actions: list[ActionConfig]):
         """Repopulate the step combo box to reflect the current action list.
@@ -165,7 +213,8 @@ class VisualizationPanel(QWidget):
         Args:
             actions: The ordered list of pipeline actions.
         """
-        current = self.step_combo.currentIndex()
+        old_index = self.step_combo.currentIndex()
+        self.step_combo.blockSignals(True)
         self.step_combo.clear()
         self.step_combo.addItem("Original (no processing)")
         for i, action in enumerate(actions, 1):
@@ -174,41 +223,49 @@ class VisualizationPanel(QWidget):
             if action.is_custom:
                 name += " [CUSTOM]"
             self.step_combo.addItem(f"{status} {i}. {name}")
-        if current < self.step_combo.count():
-            self.step_combo.setCurrentIndex(current)
+        new_index = old_index if 0 <= old_index < self.step_combo.count() else 0
+        self.step_combo.setCurrentIndex(new_index)
+        self.step_combo.blockSignals(False)
 
-    def update_plots(self, raw: mne.io.Raw | None, current_step: int = 0, computed_steps: int = 0):
-        """Update the active tab's plot for a new raw object or step selection.
+    def update_plots(self, data: mne.io.Raw | mne.Epochs | None, current_step: int = 0, computed_steps: int = 0):
+        """Update the active tab's plot for a new data object or step selection.
 
+        Switches between tab sets when the data type changes.
         Sets status_label when the requested step has not been computed yet.
         Reconnects the tab-changed signal so that switching tabs triggers a fresh render.
 
         Args:
-            raw: The MNE Raw object to visualize, or None to show a placeholder.
+            data: The MNE object to visualize, or None to show a placeholder.
             current_step: Index of the step combo selection (0 = original).
             computed_steps: Number of actions whose results are available.
         """
-        self.current_raw = raw
+        self.current_data = data
 
         if current_step > computed_steps and current_step > 0:
             self.status_label.setText("(not computed - showing original)")
         else:
             self.status_label.setText("")
 
-        if raw is None:
+        if data is None:
             self.show_placeholder()
             return
 
-        current_tab = self.tabs.currentIndex()
+        is_epochs = isinstance(data, mne.Epochs)
 
-        if current_tab == 0:
-            self.update_psd_plot()
-        elif current_tab == 1:
-            self.update_time_plot()
-        elif current_tab == 2:
-            self.update_sensors_plot()
-        elif current_tab == 3:
-            self.update_topomap_plot()
+        # Switch tab set if data type changed
+        if is_epochs and not self.is_epochs_mode:
+            current_tab = 0
+            self.build_epochs_tabs()
+        elif not is_epochs and self.is_epochs_mode:
+            current_tab = 0
+            self.build_raw_tabs()
+        else:
+            current_tab = self.tabs.currentIndex()
+
+        if is_epochs:
+            self.render_epochs_tab(current_tab)
+        else:
+            self.render_raw_tab(current_tab)
 
         try:
             self.tabs.currentChanged.disconnect()
@@ -223,10 +280,17 @@ class VisualizationPanel(QWidget):
         """Render the newly selected tab when the user switches tabs.
 
         Args:
-            index: The tab index that was just selected (0=PSD, 1=Time, 2=Sensors, 3=Topomap).
+            index: The tab index that was just selected.
         """
-        if self.current_raw is None:
+        if self.current_data is None:
             return
+        if isinstance(self.current_data, mne.Epochs):
+            self.render_epochs_tab(index)
+        else:
+            self.render_raw_tab(index)
+
+    def render_raw_tab(self, index: int):
+        """Render tab by index (0=PSD, 1=Time, 2=Sensors, 3=Topomap) for Raw mode."""
         if index == 0:
             self.update_psd_plot()
         elif index == 1:
@@ -236,44 +300,64 @@ class VisualizationPanel(QWidget):
         elif index == 3:
             self.update_topomap_plot()
 
+    def render_epochs_tab(self, index: int):
+        """Render a tab by index (0=PSD, 1=Browser, 2=Sensors, 3=Topomap, 4=Image) for Epochs mode."""
+        if index == 0:
+            self.update_psd_plot()
+        elif index == 1:
+            self.update_epochs_browser()
+        elif index == 2:
+            self.update_sensors_plot()
+        elif index == 3:
+            self.update_topomap_plot()
+        elif index == 4:
+            self.update_image_plot()
+
     def update_psd_plot(self):
-        """Compute and display the PSD plot, skipping if the raw object is unchanged."""
-        if self.current_raw is None:
+        """Compute and display the PSD plot, skipping if the data object is unchanged."""
+        if self.current_data is None:
             return
-        raw_id = id(self.current_raw)
-        if raw_id == self.psd_raw_id:
+        data_id = id(self.current_data)
+        if data_id == self.psd_data_id:
             return
         try:
-            fig_psd = self.current_raw.compute_psd(fmax=60).plot(
-                show=False,
-            )
+            fig_psd = self.current_data.compute_psd(fmax=60).plot(show=False)
             self.plot_psd.update_figure(fig_psd)
-            self.psd_raw_id = raw_id
+            self.psd_data_id = data_id
         except Exception as e:
             logger.warning("PSD plot update failed: %s", e)
 
     def update_sensors_plot(self):
-        """Render a 3-D sensor map plot for the current raw object."""
-        if self.current_raw is None:
+        """Render a sensor map plot for the current data object."""
+        if self.current_data is None:
             return
         try:
-            fig_sensors = self.current_raw.plot_sensors(show=False, show_names=True, kind="3d")
+            fig_sensors = self.current_data.plot_sensors(show=False, show_names=True, kind="3d")
             self.plot_sensors.update_figure(fig_sensors)
         except Exception as e:
             logger.warning("Sensor plot update failed: %s", e)
 
     def update_topomap_plot(self):
-        """Compute and display the PSD topomap, skipping if the raw object is unchanged."""
-        if self.current_raw is None:
+        """Compute and display the PSD topomap, skipping if the data object is unchanged."""
+        if self.current_data is None:
             return
-        raw_id = id(self.current_raw)
-        if raw_id == self.topomap_raw_id:
+        data_id = id(self.current_data)
+        if data_id == self.topomap_data_id:
             return
         try:
-            fig_topo = self.current_raw.compute_psd(fmax=60).plot_topomap(
-                show=False,
-            )
+            fig_topo = self.current_data.compute_psd(fmax=60).plot_topomap(show=False)
             self.plot_topomap.update_figure(fig_topo)
-            self.topomap_raw_id = raw_id
+            self.topomap_data_id = data_id
         except Exception as e:
             logger.warning("Topomap plot update failed: %s", e)
+
+    def update_image_plot(self):
+        """Render an epochs image plot (Epochs mode only)."""
+        if self.current_data is None or not isinstance(self.current_data, mne.Epochs):
+            return
+        try:
+            figs = self.current_data.plot_image(show=False)
+            if figs:
+                self.plot_image.update_figure(figs[0])
+        except Exception as e:
+            logger.warning("Epochs image plot update failed: %s", e)

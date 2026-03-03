@@ -105,6 +105,9 @@ def get_widget_value(widget):
         return widget.isChecked()
     if isinstance(widget, QLineEdit):
         return widget.text()
+    # Custom widgets can return arbitrary Python values
+    if hasattr(widget, "get_value") and callable(widget.get_value):
+        return widget.get_value()
     return None
 
 

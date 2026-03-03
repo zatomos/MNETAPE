@@ -26,6 +26,8 @@ import sys
 import textwrap
 from typing import Annotated, Any, Callable, get_args, get_origin, get_type_hints
 
+from mnetape.core.models import DataType
+
 logger = logging.getLogger(__name__)
 
 ParamsSchema = dict[str, dict]
@@ -110,7 +112,7 @@ class Fragment:
     """
 
     # Variables always available in exec scope and never get injected
-    SCOPE_VARS: frozenset[str] = frozenset({"raw"})
+    SCOPE_VARS: frozenset[str] = frozenset({"raw", "epochs"})
 
     def __init__(self, fn: Callable) -> None:
         self._fn = fn
@@ -302,9 +304,10 @@ def extract_schema_from_signature(fn: Callable) -> dict[str, dict]:
         logger.warning("Failed to get type hints for function '%s': %s", fn.__name__, e)
         hints = {}
 
+    schema_excluded = frozenset({"raw", "epochs"})
     result: dict[str, dict] = {}
     for name, param in sig.parameters.items():
-        if name == "raw":
+        if name in schema_excluded:
             continue
 
         annotation = hints.get(name)
@@ -495,6 +498,8 @@ class ActionDefinition:
         prerequisites: Tuple of Prerequisite objects checked before running.
         param_widget_factories: Optional dict mapping custom param-type strings to factory callables that produce
             (container, value_widget) pairs.
+        input_type: Expected input data type for this action.
+        output_type: Output data type for this action.
     """
 
     action_id: str
@@ -507,6 +512,8 @@ class ActionDefinition:
     template_schema: TemplateSchema | None = None
     prerequisites: tuple[Prerequisite, ...] = ()
     param_widget_factories: dict[str, Callable] | None = None
+    input_type: DataType = field(default_factory=lambda: DataType.RAW)
+    output_type: DataType = field(default_factory=lambda: DataType.RAW)
 
     def default_params(self) -> dict:
         """Return a dict of parameter defaults taken from params_schema.
@@ -606,6 +613,8 @@ def action_from_templates(
     prerequisites: tuple[Prerequisite, ...] = (),
     param_widget_factories: dict[str, Callable] | None = None,
     interactive_runners: dict[str, InteractiveRunner] | None = None,
+    input_type: DataType = DataType.RAW,
+    output_type: DataType = DataType.RAW,
 ) -> ActionDefinition:
     """Build an ActionDefinition by loading and introspecting a templates.py module.
 
@@ -630,6 +639,8 @@ def action_from_templates(
             (container, value_widget) pairs.
         interactive_runners: Optional dict mapping step_id strings to interactive runner callables
             for interactive steps.
+        input_type: Expected input data type for this action.
+        output_type: Output data type for this action.
 
     Returns:
         A fully wired ActionDefinition ready for registration.
@@ -704,6 +715,8 @@ def action_from_templates(
             mne_doc_urls=mne_doc_urls or {},
             prerequisites=prerequisites,
             param_widget_factories=param_widget_factories,
+            input_type=input_type,
+            output_type=output_type,
         )
 
     # --- Multi-step action ---
@@ -732,4 +745,6 @@ def action_from_templates(
         mne_doc_urls=mne_doc_urls or {},
         prerequisites=prerequisites,
         param_widget_factories=param_widget_factories,
+        input_type=input_type,
+        output_type=output_type,
     )
