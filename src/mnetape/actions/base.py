@@ -115,21 +115,21 @@ class Fragment:
     SCOPE_VARS: frozenset[str] = frozenset({"raw", "epochs"})
 
     def __init__(self, fn: Callable) -> None:
-        self._fn = fn
-        self._param_names: list[str] = []
-        self._body_source: str = ""
+        self.fn = fn
+        self.param_names: list[str] = []
+        self.body_source: str = ""
         self.extract()
 
     def extract(self) -> None:
-        source = inspect.getsource(self._fn)
+        source = inspect.getsource(self.fn)
         source = textwrap.dedent(source)
         tree = ast.parse(source)
         func_def = next(
             n for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef) and n.name == self._fn.__name__
+            if isinstance(n, ast.FunctionDef) and n.name == self.fn.__name__
         )
-        self._param_names = [a.arg for a in func_def.args.args]
-        self._body_source = "\n".join(ast.unparse(stmt) for stmt in func_def.body)
+        self.param_names = [a.arg for a in func_def.args.args]
+        self.body_source = "\n".join(ast.unparse(stmt) for stmt in func_def.body)
 
     def inline(self, **kwargs: object) -> str:
         """Return the fragment body with param names substituted by their literal values.
@@ -138,16 +138,16 @@ class Fragment:
         """
 
         substitutions: dict[str, ast.expr] = {}
-        for name in self._param_names:
+        for name in self.param_names:
             if name in self.SCOPE_VARS:
                 continue
             if name in kwargs:
                 substitutions[name] = value_to_ast(kwargs[name])
 
         if not substitutions:
-            return self._body_source
+            return self.body_source
 
-        tree = ast.parse(self._body_source)
+        tree = ast.parse(self.body_source)
         tree = NameSubstitutor(substitutions).visit(tree)
         tree = ConstantBranchPruner().visit(tree)
         ast.fix_missing_locations(tree)
@@ -155,7 +155,7 @@ class Fragment:
 
     def __call__(self) -> object:
         raise TypeError(
-            f"Fragment '{self._fn.__name__}' is a code template, not a callable. "
+            f"Fragment '{self.fn.__name__}' is a code template, not a callable. "
             "Use .inline(**kwargs) to generate source code."
         )
 

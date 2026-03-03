@@ -6,6 +6,7 @@ and a live code-preview panel. It supports both full-action editing and step-lev
 
 import logging
 
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
@@ -15,7 +16,9 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QGraphicsOpacityEffect,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -36,6 +39,56 @@ logger = logging.getLogger(__name__)
 
 # -------- Widget creation helpers --------
 
+
+class NullableWidget(QWidget):
+    """A wrapper widget that adds a checkbox to enable/disable a param widget.
+
+    When the checkbox is unchecked, the inner widget is disabled and get_value() returns None.
+    When checked, returns the inner widget's current value.
+    """
+
+    value_changed = pyqtSignal()
+
+    def __init__(self, inner: QWidget, has_value: bool, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(has_value)
+        self.inner = inner
+
+        self.opacity = QGraphicsOpacityEffect()
+        self.opacity.setOpacity(1.0 if has_value else 0.35)
+        inner.setGraphicsEffect(self.opacity)
+        inner.setEnabled(has_value)
+
+        self.checkbox.toggled.connect(self._on_toggle)
+        self.checkbox.toggled.connect(lambda _: self.value_changed.emit())
+
+        if isinstance(inner, (QSpinBox, QDoubleSpinBox)):
+            inner.valueChanged.connect(self.value_changed)
+        elif isinstance(inner, QComboBox):
+            inner.currentTextChanged.connect(self.value_changed)
+        elif isinstance(inner, QCheckBox):
+            inner.stateChanged.connect(self.value_changed)
+        elif isinstance(inner, QLineEdit):
+            inner.textChanged.connect(self.value_changed)
+
+        layout.addWidget(self.checkbox)
+        layout.addWidget(inner, 1)
+
+    def _on_toggle(self, checked: bool):
+        self.inner.setEnabled(checked)
+        self.opacity.setOpacity(1.0 if checked else 0.35)
+
+    def get_value(self):
+        if not self.checkbox.isChecked():
+            return None
+        return get_widget_value(self.inner)
+
+
 def create_widget_for_param(param_def: dict, current_value):
     """Create an appropriate Qt widget for a single parameter definition.
 
@@ -49,6 +102,9 @@ def create_widget_for_param(param_def: dict, current_value):
     Returns:
         A configured Qt widget, or None if the type is not supported.
     """
+    nullable = param_def.get("nullable", False)
+    # When current_value is None and the param is nullable, display the default in the widget
+    display_value = current_value if current_value is not None else param_def.get("default")
     ptype = param_def.get("type", "text")
 
     if ptype == "float":
@@ -57,34 +113,39 @@ def create_widget_for_param(param_def: dict, current_value):
         widget.setDecimals(param_def.get("decimals", 2))
         widget.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
         try:
-            widget.setValue(float(current_value) if current_value is not None else 0.0)
+            widget.setValue(float(display_value) if display_value is not None else 0.0)
         except (TypeError, ValueError):
             widget.setValue(param_def.get("default", 0.0))
-        return widget
+        inner = widget
 
-    if ptype == "int":
+    elif ptype == "int":
         widget = QSpinBox()
         widget.setRange(param_def.get("min", -999999), param_def.get("max", 999999))
         widget.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
         try:
-            widget.setValue(int(current_value) if current_value is not None else 0)
+            widget.setValue(int(display_value) if display_value is not None else 0)
         except (TypeError, ValueError):
             widget.setValue(param_def.get("default", 0))
-        return widget
+        inner = widget
 
-    if ptype == "choice":
+    elif ptype == "choice":
         widget = QComboBox()
         widget.addItems(param_def.get("choices", []))
-        widget.setCurrentText(str(current_value))
-        return widget
+        widget.setCurrentText(str(display_value))
+        inner = widget
 
-    if ptype == "bool":
+    elif ptype == "bool":
         widget = QCheckBox()
-        widget.setChecked(bool(current_value))
-        return widget
+        widget.setChecked(bool(display_value))
+        inner = widget
 
-    # text / fallback
-    widget = QLineEdit(str(current_value) if current_value is not None else "")
+    else:
+        # text / fallback
+        widget = QLineEdit(str(display_value) if display_value is not None else "")
+        inner = widget
+
+    if nullable:
+        return NullableWidget(inner, has_value=(current_value is not None))
     return widget
 
 
@@ -118,7 +179,9 @@ def connect_widget_signal(widget, slot):
         widget: A Qt widget created by create_widget_for_param.
         slot: Callable to invoke whenever the widget's value changes.
     """
-    if isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+    if isinstance(widget, NullableWidget):
+        widget.value_changed.connect(slot)
+    elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
         widget.valueChanged.connect(slot)
     elif isinstance(widget, QComboBox):
         widget.currentTextChanged.connect(slot)
