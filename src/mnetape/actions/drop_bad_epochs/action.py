@@ -14,7 +14,7 @@ ACTION = action_from_templates(
     action_file=__file__,
     mne_doc_urls={
         "mne.Epochs.drop_bad": "https://mne.tools/stable/generated/mne.Epochs.html#mne.Epochs.drop_bad",
-        "https://autoreject.github.io/stable/index.html"
+        "autoreject": "https://autoreject.github.io/stable/index.html"
     },
     input_type=DataType.EPOCHS,
     output_type=DataType.EPOCHS,
