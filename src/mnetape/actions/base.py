@@ -40,7 +40,8 @@ InteractiveRunner = Callable[..., object]
 def value_to_ast(value: object) -> ast.expr:
     """Convert a Python value to an AST expression node.
 
-    Supports None, bool, int, float, str, list, and dict. Falls back to a string representation for other types.
+    Supports None, bool, int, float, str, list, dict, and CodeRef.
+    Falls back to a string representation for other types.
 
     Args:
         value: Python value to convert.
@@ -62,6 +63,12 @@ def value_to_ast(value: object) -> ast.expr:
             keys=[ast.Constant(value=k) for k in value.keys()],
             values=[value_to_ast(v) for v in value.values()],
         )
+    if isinstance(value, CodeRef):
+        try:
+            expr = ast.parse(value.expr, mode="eval")
+            return expr.body
+        except SyntaxError:
+            return ast.Constant(value=value.expr)
     return ast.Constant(value=str(value))
 
 
@@ -227,6 +234,7 @@ class ParamMeta:
     decimals: int | None = None
     choices: list[str] | None = None
     nullable: bool | None = None
+    visible_when: dict[str, list] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a params_schema-compatible dict, omitting unset optional fields."""
@@ -245,7 +253,16 @@ class ParamMeta:
             d["choices"] = self.choices
         if self.nullable is not None:
             d["nullable"] = self.nullable
+        if self.visible_when is not None:
+            d["visible_when"] = self.visible_when
         return d
+
+
+@dataclass(frozen=True)
+class CodeRef:
+    """Reference to a Python expression inserted verbatim during substitution."""
+
+    expr: str
 
 
 # -------- Schema extraction from Annotated signatures --------
