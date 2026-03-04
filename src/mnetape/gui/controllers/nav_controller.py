@@ -29,7 +29,7 @@ class NavController:
 
         idx = self.w.viz_panel.step_combo.currentIndex()
         if 0 < idx <= len(self.state.actions):
-            self.w.action_list.setCurrentRow(idx - 1)
+            self.w.set_selected_action_row(idx - 1)
         else:
             self.w.action_list.clearSelection()
         self.w.update_button_states()
@@ -47,12 +47,16 @@ class NavController:
             self.w.viz_panel.step_combo.setCurrentIndex(idx + 1)
 
     def open_browser(self):
-        """Open MNE's interactive raw browser for the currently selected step."""
+        """Open MNE's interactive browser for the currently selected step."""
 
         step = self.w.viz_panel.step_combo.currentIndex()
         if step == 0 and self.state.raw_original:
             self.state.raw_original.plot(block=True, title="Original")
-        elif 0 < step <= len(self.state.raw_states):
-            self.state.raw_states[step - 1].plot(block=True, title=f"After step {step}")
+        elif 0 < step <= len(self.state.data_states):
+            data = self.state.data_states[step - 1]
+            if data is None:
+                QMessageBox.warning(self.w, "No Data", "This step has not been computed yet.")
+            else:
+                data.plot(block=True, title=f"After step {step}")
         else:
             QMessageBox.warning(self.w, "No Data", "No data to display.")

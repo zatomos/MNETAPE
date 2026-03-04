@@ -21,9 +21,9 @@ class AppState:
 
     Attributes:
         raw_original: The raw MNE object loaded from disk. Never modified in-place;
-            processing results are stored in raw_states.
-        raw_states: One entry per completed action, each a processed copy of raw.
-            raw_states[i] is the result after actions[i].
+            processing results are stored in data_states.
+        data_states: One entry per completed action, each a processed copy of raw.
+            data_states[i] is the result after actions[i].
         actions: Ordered list of pipeline actions configured by the user.
         data_filepath: Absolute path of the currently loaded EEG file, or None.
         pipeline_filepath: Absolute path of the currently open pipeline script, or None.
@@ -32,7 +32,7 @@ class AppState:
     """
 
     raw_original: mne.io.Raw | None = None
-    raw_states: list[mne.io.Raw] = field(default_factory=list)
+    data_states: list[mne.io.Raw | mne.Epochs | None] = field(default_factory=list)
     actions: list[ActionConfig] = field(default_factory=list)
     data_filepath: Path | None = None
     pipeline_filepath: Path | None = None

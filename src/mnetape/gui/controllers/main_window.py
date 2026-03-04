@@ -7,7 +7,7 @@ the action list, code panel, and visualization panel in sync.
 """
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QKeySequence, QShortcut
+from PyQt6.QtGui import QAction, QBrush, QColor, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -22,11 +22,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from mnetape.actions.registry import get_action_by_id
 from mnetape.core.codegen import (
     extract_action_blocks,
     generate_action_code,
     generate_full_script,
 )
+from mnetape.core.models import DataType
 from mnetape.gui.controllers.action_controller import ActionController
 from mnetape.gui.controllers.file_handler import FileHandler
 from mnetape.gui.controllers.nav_controller import NavController
@@ -34,6 +36,20 @@ from mnetape.gui.controllers.pipeline_runner import PipelineRunner
 from mnetape.gui.controllers.state import AppState
 from mnetape.gui.panels import CodePanel, VisualizationPanel
 from mnetape.gui.widgets import ActionListItem
+
+
+def make_type_header(data_type: DataType) -> QListWidgetItem:
+    """Create a section header item for the given data type."""
+    label_name = data_type.value.capitalize()
+    header = QListWidgetItem(f"── {label_name} ──")
+    header.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+    header.setForeground(QBrush(QColor("#888888")))
+    font = header.font()
+    font.setItalic(True)
+    header.setFont(font)
+    header.setFlags(Qt.ItemFlag.NoItemFlags)
+    header.setData(Qt.ItemDataRole.UserRole, -1)
+    return header
 
 
 class MainWindow(QMainWindow):
@@ -302,9 +318,20 @@ class MainWindow(QMainWindow):
             current state to avoid a feedback loop (e.g. after a manual code edit).
         """
         self.action_list.clear()
-        for i, action in enumerate(self.state.actions, 1):
+        pipeline_type = DataType.RAW
+
+        if self.state.actions:
+            self.action_list.addItem(make_type_header(DataType.RAW))
+
+        for i, action in enumerate(self.state.actions):
+            action_def = get_action_by_id(action.action_id)
+            input_type = action_def.input_type if action_def else DataType.RAW
+            output_type = action_def.output_type if action_def else DataType.RAW
+            is_mismatch = input_type != pipeline_type
+
             item = QListWidgetItem()
-            widget = ActionListItem(i, action)
+            item.setData(Qt.ItemDataRole.UserRole, i)
+            widget = ActionListItem(i + 1, action, type_mismatch=is_mismatch)
             item.setSizeHint(widget.sizeHint())
             widget.size_changed.connect(lambda it=item, w=widget: it.setSizeHint(w.sizeHint()))
             widget.step_clicked.connect(self.action_ctrl.on_step_clicked)
@@ -312,14 +339,36 @@ class MainWindow(QMainWindow):
             self.action_list.addItem(item)
             self.action_list.setItemWidget(item, widget)
 
+            if not is_mismatch and output_type != pipeline_type:
+                pipeline_type = output_type
+                self.action_list.addItem(make_type_header(pipeline_type))
+            elif not is_mismatch:
+                pipeline_type = output_type
+
         self.viz_panel.update_step_list(self.state.actions)
         if sync_code:
             self.update_code()
         self.update_button_states()
 
+    def get_selected_action_row(self) -> int:
+        """Return the action index of the currently selected list item, or -1."""
+        item = self.action_list.currentItem()
+        if item is None:
+            return -1
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        return idx if isinstance(idx, int) and idx >= 0 else -1
+
+    def set_selected_action_row(self, action_row: int):
+        """Select the given action list item."""
+        for i in range(self.action_list.count()):
+            item = self.action_list.item(i)
+            if item and item.data(Qt.ItemDataRole.UserRole) == action_row:
+                self.action_list.setCurrentRow(i)
+                return
+
     def update_button_states(self):
         """Enable or disable the move-up and move-down buttons based on selection."""
-        row = self.action_list.currentRow()
+        row = self.get_selected_action_row()
         has_selection = row >= 0
         self.btn_move_up.setEnabled(has_selection and row > 0)
         self.btn_move_down.setEnabled(has_selection and row < len(self.state.actions) - 1)
@@ -335,25 +384,32 @@ class MainWindow(QMainWindow):
         step = self.viz_panel.step_combo.currentIndex()
 
         if step == 0:
-            raw_to_show = self.state.raw_original
-        elif 0 < step <= len(self.state.raw_states):
-            raw_to_show = self.state.raw_states[step - 1]
+            data_to_show = self.state.raw_original
+        elif 0 < step <= len(self.state.data_states):
+            stored = self.state.data_states[step - 1]
+            # If None, epochs slot that hasn't been computed yet. Fall back to original
+            data_to_show = stored if stored is not None else self.state.raw_original
         else:
-            raw_to_show = self.state.raw_original
+            data_to_show = self.state.raw_original
 
-        self.viz_panel.update_plots(raw_to_show, step, len(self.state.raw_states))
-        self.update_raw_info(raw_to_show)
+        self.viz_panel.update_plots(data_to_show, step, len(self.state.data_states))
+        self.update_raw_info(data_to_show)
 
 
-    def update_raw_info(self, raw):
-        if raw is None:
+    def update_raw_info(self, data):
+        import mne
+        if data is None:
             self.raw_info_label.setText("")
             return
         name = self.state.data_filepath.name if self.state.data_filepath else ""
-        n_ch = len(raw.ch_names)
-        sfreq = raw.info["sfreq"]
-        dur = raw.times[-1]
-        self.raw_info_label.setText(f"{name}  ·  {n_ch} ch  ·  {sfreq:.0f} Hz  ·  {dur:.1f} s")
+        n_ch = len(data.ch_names)
+        sfreq = data.info["sfreq"]
+        if isinstance(data, mne.Epochs):
+            n_epochs = len(data)
+            self.raw_info_label.setText(f"{name}  ·  {n_ch} ch  ·  {sfreq:.0f} Hz  ·  {n_epochs} epochs")
+        else:
+            dur = data.times[-1]
+            self.raw_info_label.setText(f"{name}  ·  {n_ch} ch  ·  {sfreq:.0f} Hz  ·  {dur:.1f} s")
 
     # --------- Code generation and execution ---------
 

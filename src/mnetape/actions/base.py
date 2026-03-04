@@ -26,6 +26,8 @@ import sys
 import textwrap
 from typing import Annotated, Any, Callable, get_args, get_origin, get_type_hints
 
+from mnetape.core.models import DataType
+
 logger = logging.getLogger(__name__)
 
 ParamsSchema = dict[str, dict]
@@ -38,7 +40,8 @@ InteractiveRunner = Callable[..., object]
 def value_to_ast(value: object) -> ast.expr:
     """Convert a Python value to an AST expression node.
 
-    Supports None, bool, int, float, str, list, and dict. Falls back to a string representation for other types.
+    Supports None, bool, int, float, str, list, dict, and CodeRef.
+    Falls back to a string representation for other types.
 
     Args:
         value: Python value to convert.
@@ -60,6 +63,12 @@ def value_to_ast(value: object) -> ast.expr:
             keys=[ast.Constant(value=k) for k in value.keys()],
             values=[value_to_ast(v) for v in value.values()],
         )
+    if isinstance(value, CodeRef):
+        try:
+            expr = ast.parse(value.expr, mode="eval")
+            return expr.body
+        except SyntaxError:
+            return ast.Constant(value=value.expr)
     return ast.Constant(value=str(value))
 
 
@@ -110,24 +119,24 @@ class Fragment:
     """
 
     # Variables always available in exec scope and never get injected
-    SCOPE_VARS: frozenset[str] = frozenset({"raw"})
+    SCOPE_VARS: frozenset[str] = frozenset({"raw", "epochs"})
 
     def __init__(self, fn: Callable) -> None:
-        self._fn = fn
-        self._param_names: list[str] = []
-        self._body_source: str = ""
+        self.fn = fn
+        self.param_names: list[str] = []
+        self.body_source: str = ""
         self.extract()
 
     def extract(self) -> None:
-        source = inspect.getsource(self._fn)
+        source = inspect.getsource(self.fn)
         source = textwrap.dedent(source)
         tree = ast.parse(source)
         func_def = next(
             n for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef) and n.name == self._fn.__name__
+            if isinstance(n, ast.FunctionDef) and n.name == self.fn.__name__
         )
-        self._param_names = [a.arg for a in func_def.args.args]
-        self._body_source = "\n".join(ast.unparse(stmt) for stmt in func_def.body)
+        self.param_names = [a.arg for a in func_def.args.args]
+        self.body_source = "\n".join(ast.unparse(stmt) for stmt in func_def.body)
 
     def inline(self, **kwargs: object) -> str:
         """Return the fragment body with param names substituted by their literal values.
@@ -136,16 +145,16 @@ class Fragment:
         """
 
         substitutions: dict[str, ast.expr] = {}
-        for name in self._param_names:
+        for name in self.param_names:
             if name in self.SCOPE_VARS:
                 continue
             if name in kwargs:
                 substitutions[name] = value_to_ast(kwargs[name])
 
         if not substitutions:
-            return self._body_source
+            return self.body_source
 
-        tree = ast.parse(self._body_source)
+        tree = ast.parse(self.body_source)
         tree = NameSubstitutor(substitutions).visit(tree)
         tree = ConstantBranchPruner().visit(tree)
         ast.fix_missing_locations(tree)
@@ -153,7 +162,7 @@ class Fragment:
 
     def __call__(self) -> object:
         raise TypeError(
-            f"Fragment '{self._fn.__name__}' is a code template, not a callable. "
+            f"Fragment '{self.fn.__name__}' is a code template, not a callable. "
             "Use .inline(**kwargs) to generate source code."
         )
 
@@ -225,6 +234,7 @@ class ParamMeta:
     decimals: int | None = None
     choices: list[str] | None = None
     nullable: bool | None = None
+    visible_when: dict[str, list] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a params_schema-compatible dict, omitting unset optional fields."""
@@ -243,7 +253,16 @@ class ParamMeta:
             d["choices"] = self.choices
         if self.nullable is not None:
             d["nullable"] = self.nullable
+        if self.visible_when is not None:
+            d["visible_when"] = self.visible_when
         return d
+
+
+@dataclass(frozen=True)
+class CodeRef:
+    """Reference to a Python expression inserted verbatim during substitution."""
+
+    expr: str
 
 
 # -------- Schema extraction from Annotated signatures --------
@@ -302,9 +321,10 @@ def extract_schema_from_signature(fn: Callable) -> dict[str, dict]:
         logger.warning("Failed to get type hints for function '%s': %s", fn.__name__, e)
         hints = {}
 
+    schema_excluded = frozenset({"raw", "epochs"})
     result: dict[str, dict] = {}
     for name, param in sig.parameters.items():
-        if name == "raw":
+        if name in schema_excluded:
             continue
 
         annotation = hints.get(name)
@@ -495,6 +515,8 @@ class ActionDefinition:
         prerequisites: Tuple of Prerequisite objects checked before running.
         param_widget_factories: Optional dict mapping custom param-type strings to factory callables that produce
             (container, value_widget) pairs.
+        input_type: Expected input data type for this action.
+        output_type: Output data type for this action.
     """
 
     action_id: str
@@ -507,6 +529,8 @@ class ActionDefinition:
     template_schema: TemplateSchema | None = None
     prerequisites: tuple[Prerequisite, ...] = ()
     param_widget_factories: dict[str, Callable] | None = None
+    input_type: DataType = field(default_factory=lambda: DataType.RAW)
+    output_type: DataType = field(default_factory=lambda: DataType.RAW)
 
     def default_params(self) -> dict:
         """Return a dict of parameter defaults taken from params_schema.
@@ -606,6 +630,8 @@ def action_from_templates(
     prerequisites: tuple[Prerequisite, ...] = (),
     param_widget_factories: dict[str, Callable] | None = None,
     interactive_runners: dict[str, InteractiveRunner] | None = None,
+    input_type: DataType = DataType.RAW,
+    output_type: DataType = DataType.RAW,
 ) -> ActionDefinition:
     """Build an ActionDefinition by loading and introspecting a templates.py module.
 
@@ -630,6 +656,8 @@ def action_from_templates(
             (container, value_widget) pairs.
         interactive_runners: Optional dict mapping step_id strings to interactive runner callables
             for interactive steps.
+        input_type: Expected input data type for this action.
+        output_type: Output data type for this action.
 
     Returns:
         A fully wired ActionDefinition ready for registration.
@@ -704,6 +732,8 @@ def action_from_templates(
             mne_doc_urls=mne_doc_urls or {},
             prerequisites=prerequisites,
             param_widget_factories=param_widget_factories,
+            input_type=input_type,
+            output_type=output_type,
         )
 
     # --- Multi-step action ---
@@ -732,4 +762,6 @@ def action_from_templates(
         mne_doc_urls=mne_doc_urls or {},
         prerequisites=prerequisites,
         param_widget_factories=param_widget_factories,
+        input_type=input_type,
+        output_type=output_type,
     )

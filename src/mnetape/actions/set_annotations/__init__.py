@@ -1,0 +1,1 @@
+"""Set annotations action package."""

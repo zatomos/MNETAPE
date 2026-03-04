@@ -15,6 +15,13 @@ class ActionStatus(Enum):
     ERROR = auto()
 
 
+class DataType(Enum):
+    """Data type flowing through the pipeline at a given point."""
+
+    RAW = "raw"
+    EPOCHS = "epochs"
+
+
 STATUS_ICONS = {
     ActionStatus.PENDING: "\u25cb",   # ○
     ActionStatus.COMPLETE: "\u2713",  # ✓

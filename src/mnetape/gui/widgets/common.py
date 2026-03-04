@@ -101,17 +101,19 @@ class ActionListItem(QWidget):
     step_clicked = pyqtSignal(int, int)
     run_clicked = pyqtSignal(int)
 
-    def __init__(self, index: int, action: ActionConfig, parent=None):
+    def __init__(self, index: int, action: ActionConfig, parent=None, type_mismatch: bool = False):
         super().__init__(parent)
         self.index = index
         self.row = index - 1
         self.action = action
         self.expanded = False
+        self.type_mismatch = type_mismatch
 
         # Layout setup
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(4)
+
         top_row = QHBoxLayout()
         top_row.setSpacing(4)
         top_row.setContentsMargins(0, 0, 0, 0)
@@ -120,6 +122,7 @@ class ActionListItem(QWidget):
         action_def = get_action_by_id(action.action_id)
         self.has_steps = action_def is not None and action_def.has_steps()
         self.steps = action_def.steps if self.has_steps else ()
+
 
         # Expand/collapse button
         if self.has_steps:
@@ -155,8 +158,11 @@ class ActionListItem(QWidget):
         self.run_btn.setStyleSheet(
             "QPushButton { background-color:#2E7D32; color:white; border:none; border-radius:4px; }"
             "QPushButton:hover { background-color:#388E3C; }"
+            "QPushButton:disabled { background-color:#BDBDBD; color:#757575; }"
         )
         self.run_btn.clicked.connect(lambda _, r=self.row: self.run_clicked.emit(r))
+        if type_mismatch:
+            self.run_btn.setEnabled(False)
         top_row.addWidget(self.run_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
         main_layout.addLayout(top_row)
@@ -217,9 +223,13 @@ class ActionListItem(QWidget):
             label.setStyleSheet(f"font-size: 11px; color: {color};")
 
     def update_status_icon(self):
-        """Update the status icon label colour to match the action's current status."""
-        self.status_label.setText(STATUS_ICONS[self.action.status])
-        self.status_label.setStyleSheet(f"color: {STATUS_COLORS[self.action.status]}; font-weight: bold;")
+        """Update the status icon label color to match the action's current status."""
+        if self.type_mismatch:
+            self.status_label.setText("⚠")
+            self.status_label.setStyleSheet("color: #D32F2F; font-weight: bold;")
+        else:
+            self.status_label.setText(STATUS_ICONS[self.action.status])
+            self.status_label.setStyleSheet(f"color: {STATUS_COLORS[self.action.status]}; font-weight: bold;")
 
     def update_status(self, status: ActionStatus):
         """Set a new action status and refresh all status-related UI elements.
