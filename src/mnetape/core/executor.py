@@ -9,6 +9,7 @@ created in step 1 and used in step 2).
 import logging
 import mne
 import numpy
+from autoreject import AutoReject
 
 from mnetape.core.models import ActionConfig, DataType
 
@@ -64,7 +65,14 @@ def exec_action_code(
         scope = action.step_state["scope"]
         scope[in_var] = data
     else:
-        scope = {in_var: data, "mne": mne, "np": numpy, "numpy": numpy}
+        scope = {
+            in_var: data,
+            "mne": mne,
+            "np": numpy,
+            "numpy": numpy,
+            # Backward compatibility for older action snippets using AutoReject directly.
+            "AutoReject": AutoReject,
+        }
     try:
         exec(code, scope, scope)
     except Exception:

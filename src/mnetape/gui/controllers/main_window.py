@@ -327,7 +327,7 @@ class MainWindow(QMainWindow):
             action_def = get_action_by_id(action.action_id)
             input_type = action_def.input_type if action_def else DataType.RAW
             output_type = action_def.output_type if action_def else DataType.RAW
-            is_mismatch = input_type != DataType.ANY and input_type != pipeline_type
+            is_mismatch = input_type != pipeline_type
 
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, i)
@@ -340,7 +340,7 @@ class MainWindow(QMainWindow):
             self.action_list.setItemWidget(item, widget)
 
             if not is_mismatch:
-                new_type = pipeline_type if output_type == DataType.ANY else output_type
+                new_type = output_type
                 if new_type != pipeline_type:
                     pipeline_type = new_type
                     self.action_list.addItem(make_type_header(pipeline_type))

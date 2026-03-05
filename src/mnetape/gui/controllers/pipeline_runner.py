@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 
+import mne
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
@@ -80,7 +81,6 @@ class PipelineRunner:
         """Return the DataType flowing into the action at row.
 
         Walks through all preceding actions to compute the cumulative output type.
-        Actions with DataType.ANY pass through whatever type they receive
 
         Args:
             row: Index of the action to check .
@@ -92,11 +92,17 @@ class PipelineRunner:
         for action in self.state.actions[:row]:
             action_def = get_action_by_id(action.action_id)
             if action_def:
-                out = action_def.output_type
-                if out != DataType.ANY:
-                    current_type = out
-                # ANY pass-through
+                current_type = action_def.output_type
         return current_type
+
+    @staticmethod
+    def infer_data_type(data) -> DataType:
+        """Infer DataType from a concrete MNE object instance."""
+        if isinstance(data, mne.Epochs):
+            return DataType.EPOCHS
+        if isinstance(data, mne.Evoked):
+            return DataType.EVOKED
+        return DataType.RAW
 
     def get_step_input(self, action, row):
         """Return a copy of the correct data object to pass into the next step.
@@ -389,8 +395,8 @@ class PipelineRunner:
 
             action_def = get_action_by_id(action.action_id)
             in_type = action_def.input_type if action_def else DataType.RAW
-            pipeline_type = self.get_data_type_at(i)
-            if in_type != DataType.ANY and in_type != pipeline_type:
+            pipeline_type = self.infer_data_type(data)
+            if in_type != pipeline_type:
                 action.status = ActionStatus.ERROR
                 action.error_msg = (
                     f"Type mismatch: pipeline produces {pipeline_type.value} data, "
@@ -407,10 +413,6 @@ class PipelineRunner:
 
                 out_type = action_def.output_type if action_def else DataType.RAW
 
-                # Resolve ANY to the pipeline type for execution
-                effective_in = pipeline_type if in_type == DataType.ANY else in_type
-                effective_out = pipeline_type if out_type == DataType.ANY else out_type
-
                 code = self.w.get_action_code(i, action)
                 step_blocks = get_step_blocks(action_def, action, code)
 
@@ -418,12 +420,12 @@ class PipelineRunner:
                     for step_idx, block in enumerate(step_blocks):
                         step = action_def.steps[step_idx] if step_idx < len(action_def.steps) else None
                         data = self.execute_step(action, action_def, step, block["code"], data,
-                                                 input_type=effective_in, output_type=effective_out)
+                                                 input_type=in_type, output_type=out_type)
                         action.completed_steps = step_idx + 1
                         self.w.update_action_list(sync_code=False)
                 else:
                     data = self.execute_step(action, action_def, None, code, data,
-                                             input_type=effective_in, output_type=effective_out)
+                                             input_type=in_type, output_type=out_type)
                     if action_def and action_def.steps:
                         action.completed_steps = len(action_def.steps)
 
