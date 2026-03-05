@@ -23,6 +23,11 @@ import mne
 from mnetape.actions.registry import get_action_title
 from mnetape.core.models import ActionConfig, STATUS_ICONS
 from mnetape.gui.widgets import PlotCanvas
+from mnetape.gui.widgets.common import (
+    disable_mne_browser_channel_clicks,
+    disable_psd_span_popups,
+    sanitize_mne_browser_toolbar,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -150,18 +155,15 @@ class VisualizationPanel(QWidget):
             self.browser.deleteLater()
             self.browser = None
 
-    def disable_browser_clicks(self):
-        """Disable click-to-mark-bad on traces and channel axis."""
+    def sanitize_browser_toolbar(self):
+        """Hide unsupported toolbar controls in embedded MNE browsers."""
         if self.browser is None:
             return
         try:
-            mne_params = self.browser.mne
-            for trace in mne_params.traces:
-                trace.setClickable(False)
-            ch_axis = mne_params.channel_axis
-            ch_axis.mouseClickEvent = lambda ev: ev.ignore()
+            sanitize_mne_browser_toolbar(self.browser, allow_annotation_mode=False)
+            disable_mne_browser_channel_clicks(self.browser)
         except Exception as e:
-            logger.warning("Failed to disable browser clicks: %s", e)
+            logger.warning("Failed to sanitize browser toolbar: %s", e)
 
     def update_time_plot(self):
         """Render the time-series tab by embedding an MNE browser widget."""
@@ -171,7 +173,7 @@ class VisualizationPanel(QWidget):
             self.close_browser()
             self.time_placeholder.setVisible(False)
             self.browser = self.current_data.plot(show=False)
-            self.disable_browser_clicks()
+            self.sanitize_browser_toolbar()
             self.time_layout.addWidget(self.browser)
         except Exception as e:
             logger.warning("Time-series plot update failed: %s", e)
@@ -184,7 +186,7 @@ class VisualizationPanel(QWidget):
             self.close_browser()
             self.epochs_placeholder.setVisible(False)
             self.browser = self.current_data.plot(show=False)
-            self.disable_browser_clicks()
+            self.sanitize_browser_toolbar()
             self.epochs_layout.addWidget(self.browser)
         except Exception as e:
             logger.warning("Epochs browser update failed: %s", e)
@@ -322,6 +324,7 @@ class VisualizationPanel(QWidget):
             return
         try:
             fig_psd = self.current_data.compute_psd(fmax=60).plot(show=False)
+            disable_psd_span_popups(fig_psd)
             self.plot_psd.update_figure(fig_psd)
             self.psd_data_id = data_id
         except Exception as e:

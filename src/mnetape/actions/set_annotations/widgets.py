@@ -25,6 +25,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from mnetape.gui.widgets.common import disable_mne_browser_channel_clicks, sanitize_mne_browser_toolbar
+
 logger = logging.getLogger(__name__)
 
 
@@ -100,6 +102,8 @@ class AnnotationEditorDialog(QDialog):
         if self.raw_copy is not None:
             try:
                 self.browser = self.raw_copy.plot(show=False)
+                sanitize_mne_browser_toolbar(self.browser, allow_annotation_mode=True)
+                disable_mne_browser_channel_clicks(self.browser)
                 self.right_layout.addWidget(self.browser)
             except Exception as e:
                 logger.warning("Could not embed MNE browser in annotation editor: %s", e)

@@ -10,6 +10,11 @@ import logging
 from PyQt6.QtWidgets import QMessageBox
 from typing import TYPE_CHECKING
 
+from mnetape.gui.widgets.common import (
+    disable_mne_browser_channel_clicks,
+    sanitize_mne_browser_toolbar,
+)
+
 if TYPE_CHECKING:
     from mnetape.gui.controllers.main_window import MainWindow
 
@@ -51,12 +56,16 @@ class NavController:
 
         step = self.w.viz_panel.step_combo.currentIndex()
         if step == 0 and self.state.raw_original:
-            self.state.raw_original.plot(block=True, title="Original")
+            browser = self.state.raw_original.plot(block=False, title="Original")
+            sanitize_mne_browser_toolbar(browser, allow_annotation_mode=False)
+            disable_mne_browser_channel_clicks(browser)
         elif 0 < step <= len(self.state.data_states):
             data = self.state.data_states[step - 1]
             if data is None:
                 QMessageBox.warning(self.w, "No Data", "This step has not been computed yet.")
             else:
-                data.plot(block=True, title=f"After step {step}")
+                browser = data.plot(block=False, title=f"After step {step}")
+                sanitize_mne_browser_toolbar(browser, allow_annotation_mode=False)
+                disable_mne_browser_channel_clicks(browser)
         else:
             QMessageBox.warning(self.w, "No Data", "No data to display.")
