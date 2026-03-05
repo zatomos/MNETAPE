@@ -40,7 +40,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MONTAGE_FILE_FILTER = (
-    "Montage files (*.loc *.locs *.elc *.sfp *.csd *.elp *.htps *.bvef);;"
+    "Montage files (*.loc *.locs *.elc *.sfp *.csd *.elp *.htps *.bvef *.bvct);;"
+    "CapTrak files (*.bvct);;"
     "All files (*)"
 )
 
@@ -229,7 +230,10 @@ class MontageDialog(QDialog):
                 if not self._montage_path:
                     QMessageBox.warning(self, "No File", "Please select a montage file first.")
                     return
-                montage = mne.channels.read_custom_montage(self._montage_path)
+                if self._montage_path.lower().endswith(".bvct"):
+                    montage = mne.channels.read_dig_captrak(self._montage_path)
+                else:
+                    montage = mne.channels.read_custom_montage(self._montage_path)
                 self.raw.set_montage(montage, on_missing="warn")
                 logger.info("Applied custom montage from %s", self._montage_path)
 
