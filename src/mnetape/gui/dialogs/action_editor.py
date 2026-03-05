@@ -158,6 +158,9 @@ def get_widget_value(widget):
     Returns:
         The widget's current value in its native Python type, or None for unrecognized widget types.
     """
+    # Custom get_value() takes priority over built-in type detection
+    if hasattr(widget, "get_value") and callable(widget.get_value):
+        return widget.get_value()
     if isinstance(widget, (QSpinBox, QDoubleSpinBox)):
         return widget.value()
     if isinstance(widget, QComboBox):
@@ -166,9 +169,6 @@ def get_widget_value(widget):
         return widget.isChecked()
     if isinstance(widget, QLineEdit):
         return widget.text()
-    # Custom widgets can return arbitrary Python values
-    if hasattr(widget, "get_value") and callable(widget.get_value):
-        return widget.get_value()
     return None
 
 
