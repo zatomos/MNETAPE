@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PyQt6.QtWidgets import QComboBox
 
-_AUTO_DETECT = "Auto-detect"
+AUTO_DETECT = "Auto-detect"
 
 
 class ChannelCombo(QComboBox):
@@ -15,7 +15,7 @@ class ChannelCombo(QComboBox):
 
     def get_value(self) -> str:
         t = self.currentText()
-        return "" if t == _AUTO_DETECT else t
+        return "" if t == AUTO_DETECT else t
 
 
 def channel_factory(preferred_type: str):
@@ -28,7 +28,7 @@ def channel_factory(preferred_type: str):
     def factory(param_def, current_value, raw, parent):
         combo = ChannelCombo()
 
-        combo.addItem(_AUTO_DETECT)
+        combo.addItem(AUTO_DETECT)
 
         if raw is not None:
             types = raw.get_channel_types()
