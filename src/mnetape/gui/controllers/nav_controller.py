@@ -53,6 +53,7 @@ class NavController:
 
     def open_browser(self):
         """Open MNE's interactive browser for the currently selected step."""
+        import mne
 
         step = self.w.viz_panel.step_combo.currentIndex()
         if step == 0 and self.state.raw_original:
@@ -64,8 +65,11 @@ class NavController:
             if data is None:
                 QMessageBox.warning(self.w, "No Data", "This step has not been computed yet.")
             else:
-                browser = data.plot(block=False, title=f"After step {step}")
-                sanitize_mne_browser_toolbar(browser, allow_annotation_mode=False)
-                disable_mne_browser_channel_clicks(browser)
+                if isinstance(data, mne.Evoked):
+                    data.plot(show=True)
+                else:
+                    browser = data.plot(block=False, title=f"After step {step}")
+                    sanitize_mne_browser_toolbar(browser, allow_annotation_mode=False)
+                    disable_mne_browser_channel_clicks(browser)
         else:
             QMessageBox.warning(self.w, "No Data", "No data to display.")
