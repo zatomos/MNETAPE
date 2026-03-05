@@ -119,7 +119,7 @@ class Fragment:
     """
 
     # Variables always available in exec scope and never get injected
-    SCOPE_VARS: frozenset[str] = frozenset({"raw", "epochs"})
+    SCOPE_VARS: frozenset[str] = frozenset({"raw", "epochs", "evoked"})
 
     def __init__(self, fn: Callable) -> None:
         self.fn = fn

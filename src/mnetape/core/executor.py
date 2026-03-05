@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 SCOPE_VAR: dict[DataType, str] = {
     DataType.RAW: "raw",
     DataType.EPOCHS: "epochs",
+    DataType.EVOKED: "evoked",
 }
 
 
