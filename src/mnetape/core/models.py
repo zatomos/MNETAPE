@@ -20,6 +20,7 @@ class DataType(Enum):
 
     RAW = "raw"
     EPOCHS = "epochs"
+    EVOKED = "evoked"
 
 
 STATUS_ICONS = {

@@ -18,17 +18,18 @@ logger = logging.getLogger(__name__)
 SCOPE_VAR: dict[DataType, str] = {
     DataType.RAW: "raw",
     DataType.EPOCHS: "epochs",
+    DataType.EVOKED: "evoked",
 }
 
 
 def exec_action_code(
     code: str,
-    data: mne.io.Raw | mne.Epochs,
+    data: mne.io.Raw | mne.Epochs | mne.Evoked,
     action: ActionConfig,
     reuse_scope: bool = False,
     input_type: DataType = DataType.RAW,
     output_type: DataType = DataType.RAW,
-) -> mne.io.Raw | mne.Epochs:
+) -> mne.io.Raw | mne.Epochs | mne.Evoked:
     """Execute action code in a managed scope and return the resulting data object.
 
     The scope always exposes mne, np, numpy, and the input data under its type-appropriate variable name.

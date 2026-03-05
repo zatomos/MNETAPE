@@ -407,6 +407,12 @@ class MainWindow(QMainWindow):
         if isinstance(data, mne.Epochs):
             n_epochs = len(data)
             self.raw_info_label.setText(f"{name}  ·  {n_ch} ch  ·  {sfreq:.0f} Hz  ·  {n_epochs} epochs")
+        elif isinstance(data, mne.Evoked):
+            n_ave = getattr(data, "nave", 0)
+            dur = data.times[-1] - data.times[0] if len(data.times) else 0.0
+            self.raw_info_label.setText(
+                f"{name}  ·  {n_ch} ch  ·  {sfreq:.0f} Hz  ·  {dur:.3f} s  ·  nave={n_ave}"
+            )
         else:
             dur = data.times[-1]
             self.raw_info_label.setText(f"{name}  ·  {n_ch} ch  ·  {sfreq:.0f} Hz  ·  {dur:.1f} s")
