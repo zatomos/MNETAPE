@@ -31,6 +31,8 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.path import Path as MplPath
 import mne
 
+from mnetape.gui.widgets.common import sanitize_mne_browser_toolbar
+
 logger = logging.getLogger(__name__)
 
 YELLOW_COLOR = np.array([1.0, 0.85, 0.0, 1.0])
@@ -315,6 +317,7 @@ class ChannelPickerDialog(QDialog):
     def build_raw_preview(self, parent_layout: QVBoxLayout) -> None:
         n_channels = min(len(self.raw.ch_names), 20)
         self.raw_preview = self.raw.plot(show=False, duration=10.0, n_channels=n_channels, block=False)
+        sanitize_mne_browser_toolbar(self.raw_preview, allow_annotation_mode=False)
 
         if hasattr(self.raw_preview, "setParent"):
             # MNEQtBrowser embed directly as a widget

@@ -7,13 +7,62 @@ Exports:
         step expansion and an inline run button.
 """
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QToolBar
 from PyQt6.QtCore import pyqtSignal, Qt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 
 from mnetape.actions.registry import get_action_by_id, get_action_title
 from mnetape.core.models import ActionConfig, ActionStatus, STATUS_ICONS, STATUS_COLORS
+
+
+def disable_psd_span_popups(fig: Figure) -> None:
+    """Disable span selectors in MNE PSD figures that open popup windows."""
+    from matplotlib.widgets import SpanSelector
+
+    for ax in fig.axes:
+        for attr in vars(ax).values():
+            if isinstance(attr, SpanSelector):
+                attr.set_active(False)
+
+
+def sanitize_mne_browser_toolbar(browser: QWidget, *, allow_annotation_mode: bool) -> None:
+    """Hide selected controls from MNE browser toolbars."""
+    if browser is None or not hasattr(browser, "findChildren"):
+        return
+
+    HIDE_KEYWORDS = {"settings", "setting", "config", "options", "projector", "proj", "ssp"}
+    if not allow_annotation_mode:
+        HIDE_KEYWORDS.add("annotation")
+
+    def _should_hide(action) -> bool:
+        label = " ".join(
+            filter(None, (action.text(), action.toolTip(), action.whatsThis(), action.objectName()))
+        ).lower()
+        return any(k in label for k in HIDE_KEYWORDS)
+
+    for toolbar in browser.findChildren(QToolBar):
+        for action in toolbar.actions():
+            if _should_hide(action):
+                action.setVisible(False)
+
+
+def disable_mne_browser_channel_clicks(browser: QWidget) -> None:
+    """Disable channel click interactions in an MNE browser widget."""
+    if browser is None:
+        return
+
+    mne_state = getattr(browser, "mne", None)
+    if mne_state is None:
+        return
+
+    for trace in getattr(mne_state, "traces", []):
+        if hasattr(trace, "setClickable"):
+            trace.setClickable(False)
+
+    ch_axis = getattr(mne_state, "channel_axis", None)
+    if ch_axis is not None and hasattr(ch_axis, "mouseClickEvent"):
+        ch_axis.mouseClickEvent = lambda ev: ev.ignore()
 
 
 class Toolbar(NavigationToolbar2QT):
