@@ -1,0 +1,20 @@
+"""Average epochs action."""
+
+from mnetape.actions.average_epochs.widgets import event_key_factory
+from mnetape.actions.base import action_from_templates
+from mnetape.core.models import DataType
+
+ACTION = action_from_templates(
+    action_id="average_epochs",
+    title="Average Epochs",
+    doc="Average epochs to produce a single evoked response.",
+    action_file=__file__,
+    mne_doc_urls={
+        "mne.Epochs.average": "https://mne.tools/stable/generated/mne.Epochs.html#mne.Epochs.average",
+    },
+    input_type=DataType.EPOCHS,
+    output_type=DataType.EVOKED,
+    param_widget_factories={
+        "event_key": event_key_factory,
+    },
+)
