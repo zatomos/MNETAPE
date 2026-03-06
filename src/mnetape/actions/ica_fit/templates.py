@@ -25,7 +25,7 @@ def _fit_all_eeg(raw, method: str = "infomax", fit_params: dict | None = None) -
         random_state=42,
         fit_params=fit_params,
     )
-    ica.fit(raw)
+    ica.fit(raw, picks="eeg")
 
 
 @fragment
@@ -38,7 +38,7 @@ def _fit_fixed(
         random_state=42,
         fit_params=fit_params,
     )
-    ica.fit(raw)
+    ica.fit(raw, picks="eeg")
 
 
 @builder

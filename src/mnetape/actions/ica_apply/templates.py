@@ -10,11 +10,14 @@ from typing import Annotated
 
 from mnetape.actions.base import ParamMeta, builder, fragment
 
+PRIMARY_PARAMS = {
+    "ica.apply": ["exclude"],
+}
+
 
 @fragment
 def _apply(ica, raw, exclude: list = None) -> None:
-    ica.exclude = exclude
-    raw = ica.apply(raw, verbose=False)
+    raw = ica.apply(raw, exclude=exclude, verbose=False)
 
 
 @builder

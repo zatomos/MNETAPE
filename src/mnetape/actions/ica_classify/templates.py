@@ -36,8 +36,8 @@ def _classify(
         raw_lbl.resample(100, verbose=False)
         ic_labels = label_components(raw_lbl, ica, method='iclabel')
         detected_component_artifacts.extend(
-            i for i, (lbl, _prob) in enumerate(zip(ic_labels['labels'], ic_labels['y_pred_proba']))
-            if lbl != 'brain' and np.max(_prob) >= iclabel_threshold
+            i for i, (lbl, prob) in enumerate(zip(ic_labels['labels'], ic_labels['y_pred_proba']))
+            if lbl != 'brain' and np.max(prob) >= iclabel_threshold
         )
 
     if enable_eog:

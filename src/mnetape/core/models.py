@@ -81,9 +81,23 @@ class ICASolution:
     @classmethod
     def from_scope(cls, scope: dict, original: "ICASolution") -> "ICASolution":
         """Bundle a new ICASolution from exec scope variables."""
+        if "ica" in scope:
+            ica = scope["ica"]
+        else:
+            ica = getattr(original, "ica", None)
+        if ica is None:
+            raise RuntimeError("ICA action did not produce an 'ica' object in execution scope.")
+
+        if "raw" in scope:
+            raw = scope["raw"]
+        else:
+            raw = getattr(original, "raw", None)
+        if raw is None:
+            raise RuntimeError("ICA action did not provide a 'raw' object in execution scope.")
+
         return cls(
-            ica=scope.get("ica", original.ica),
-            raw=scope.get("raw", original.raw),
+            ica=ica,
+            raw=raw,
             ic_labels=scope.get("ic_labels"),
             detected_artifacts=scope.get("detected_component_artifacts"),
         )

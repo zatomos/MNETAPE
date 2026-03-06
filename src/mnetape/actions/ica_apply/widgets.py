@@ -585,6 +585,10 @@ def exclude_components_factory(param_def, current_value, raw, parent=None):
     label.setAlignment(Qt.AlignmentFlag.AlignVCenter)
     layout.addWidget(label, 1)
 
+    def notify_change() -> None:
+        if parent is not None and hasattr(parent, "update_code_preview"):
+            parent.update_code_preview()
+
     def update_label():
         label.setText(format_exclude_label(state["exclude"]))
 
@@ -600,6 +604,7 @@ def exclude_components_factory(param_def, current_value, raw, parent=None):
                 state["exclude"] = auto_exclude if checked else []
                 update_label()
                 btn.setEnabled(not checked)
+                notify_change()
 
             use_auto_cb.toggled.connect(on_use_auto_toggled)
 
@@ -615,6 +620,7 @@ def exclude_components_factory(param_def, current_value, raw, parent=None):
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 state["exclude"] = sorted(dialog.ica.exclude)
                 update_label()
+                notify_change()
             if dialog.poll_timer is not None:
                 dialog.poll_timer.stop()
             dialog.cleanup_figures()
