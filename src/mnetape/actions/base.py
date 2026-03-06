@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 ParamsSchema = dict[str, dict]
 CodeBuilder = Callable[..., str]
-InteractiveRunner = Callable[..., object]
 
 
 # -------- Value to AST conversion --------
@@ -179,38 +178,15 @@ def fragment(fn: Callable) -> Fragment:
 class ActionBuilder:
     """Typed wrapper returned by the @builder decorator.
 
-    Holds the action id, display title, and the builder callable.
+    Holds the builder callable. action_id and title are supplied by action_from_templates.
     """
 
-    action_id: str
-    title: str
     fn: Callable[..., str]
 
 
-def builder(
-    action_id: str,
-    *,
-    title: str = "",
-) -> Callable[[Callable[..., str]], ActionBuilder]:
-    """Mark a builder function as the code generator for an action.
-
-    Args:
-        action_id: Unique identifier for this action.
-        title: Optional display title. Defaults to action_id title-cased.
-    """
-
-    def decorator(fn: Callable[..., str]) -> ActionBuilder:
-        return ActionBuilder(
-            action_id=action_id,
-            title=title or action_id.replace("_", " ").title(),
-            fn=fn,
-        )
-
-    return decorator
-
-
-# Backward-compatible alias — existing templates.py files may still use @step.
-step = builder
+def builder(fn: Callable[..., str]) -> ActionBuilder:
+    """Mark a function as the code-generator for an action."""
+    return ActionBuilder(fn=fn)
 
 
 # -------- Parameter metadata type --------
@@ -375,7 +351,7 @@ class FunctionParamGroup:
 
 @dataclass(frozen=True)
 class TemplateSchema:
-    """Schema describing the params and MNE function calls for one action or step.
+    """Schema describing params and MNE function calls for a single action template.
 
     Used for two purposes:
         - Reverse-parsing: function_groups describe which MNE call kwargs to extract when reading params back out of
@@ -383,12 +359,9 @@ class TemplateSchema:
         - Editor awareness: all_primary_params() returns the full set of configurable params so the action editor knows
           what fields to show and the context menu can tell whether a step is configurable.
 
-    For single-step actions, function_groups is populated and virtual_params is empty.
-    For multistep actions, function_groups is empty and virtual_params holds the step's params.
-
     Attributes:
         function_groups: MNE function calls to introspect for param recovery and advanced-param discovery.
-        virtual_params: Params_schema dict for steps that do not map directly to a single MNE function call.
+        virtual_params: Params_schema dict for templates that do not map directly to a single MNE function call.
     """
 
     function_groups: tuple[FunctionParamGroup, ...]
@@ -488,9 +461,6 @@ class ActionDefinition:
         prerequisites: Tuple of Prerequisite objects checked before running.
         param_widget_factories: Optional dict mapping custom param-type strings to factory callables that produce
             (container, value_widget) pairs.
-        interactive: When True, this action requires user interaction on the main Qt thread.
-        interactive_runner: Callable invoked on the main Qt thread for interactive actions.
-            Receives (action, data, parent) and returns the new data object or None to cancel.
         input_type: Expected input data type for this action.
         output_type: Output data type for this action.
     """
@@ -504,8 +474,6 @@ class ActionDefinition:
     template_schema: TemplateSchema | None = None
     prerequisites: tuple[Prerequisite, ...] = ()
     param_widget_factories: dict[str, Callable] | None = None
-    interactive: bool = False
-    interactive_runner: InteractiveRunner | None = None
     input_type: DataType = field(default_factory=lambda: DataType.RAW)
     output_type: DataType = field(default_factory=lambda: DataType.RAW)
 
@@ -540,7 +508,6 @@ def action_from_templates(
     mne_doc_urls: dict[str, str] | None = None,
     prerequisites: tuple[Prerequisite, ...] = (),
     param_widget_factories: dict[str, Callable] | None = None,
-    interactive_runner: InteractiveRunner | None = None,
     input_type: DataType = DataType.RAW,
     output_type: DataType = DataType.RAW,
 ) -> ActionDefinition:
@@ -561,8 +528,6 @@ def action_from_templates(
         prerequisites: Tuple of Prerequisite objects checked before running.
         param_widget_factories: Optional dict mapping custom param-type strings to factory callables that produce
             (container, value_widget) pairs.
-        interactive_runner: Optional callable invoked on the main Qt thread for interactive actions.
-            Receives (action, data, parent) and returns the new data object, or None to cancel.
         input_type: Expected input data type for this action.
         output_type: Output data type for this action.
 
@@ -594,7 +559,9 @@ def action_from_templates(
         if isinstance(obj, ActionBuilder)
     ]
     if not action_builders:
-        raise AttributeError(f"{templates_path} must define at least one @builder(...) function.")
+        raise AttributeError(f"{templates_path} must define at least one @builder function.")
+    if len(action_builders) > 1:
+        raise AttributeError(f"{templates_path} must define exactly one @builder function.")
 
     ab = action_builders[0]
     params_schema: dict[str, dict] = extract_schema_from_signature(ab.fn)
@@ -607,7 +574,7 @@ def action_from_templates(
     template_schema = TemplateSchema(function_groups=tuple(groups))
 
     sig = inspect.signature(ab.fn)
-    builder_param_names = frozenset(n for n in sig.parameters if n != "raw")
+    builder_param_names = frozenset(n for n in sig.parameters if n not in Fragment.SCOPE_VARS)
 
     def code_builder(params: dict, advanced_params: dict | None = None) -> str:
         filtered: dict = {}
@@ -637,8 +604,6 @@ def action_from_templates(
         mne_doc_urls=mne_doc_urls or {},
         prerequisites=prerequisites,
         param_widget_factories=param_widget_factories,
-        interactive=interactive_runner is not None,
-        interactive_runner=interactive_runner,
         input_type=input_type,
         output_type=output_type,
     )

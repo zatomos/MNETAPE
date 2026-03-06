@@ -17,7 +17,7 @@ def _apply(ica, raw, exclude: list = None) -> None:
     raw = ica.apply(raw, verbose=False)
 
 
-@builder("ica_apply", title="Apply ICA")
+@builder
 def apply_builder(
     exclude: Annotated[
         list | None,

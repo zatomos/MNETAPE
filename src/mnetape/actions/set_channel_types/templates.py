@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Annotated
 
-from mnetape.actions.base import ParamMeta, fragment, step
+from mnetape.actions.base import ParamMeta, builder, fragment
 
 PRIMARY_PARAMS = {"raw.set_channel_types": ["mapping"]}
 
@@ -49,7 +49,7 @@ def _do_set_channel_types(raw, channel_mapping: dict | None = None) -> None:
     raw.set_channel_types(mapping=channel_mapping)
 
 
-@step("apply")
+@builder
 def template_builder(
     channel_mapping: Annotated[
         dict | None,

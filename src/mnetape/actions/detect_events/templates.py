@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Annotated, TYPE_CHECKING
 
-from mnetape.actions.base import ParamMeta, fragment, step
+from mnetape.actions.base import ParamMeta, builder, fragment
 
 if TYPE_CHECKING:
     import mne
@@ -39,7 +39,7 @@ def _do_find_eog(raw, ch_name, annotation_label) -> None:
     raw.set_annotations(raw.annotations + new_annotations)
 
 
-@step("detect_events")
+@builder
 def template_builder(
     method: Annotated[
         str,

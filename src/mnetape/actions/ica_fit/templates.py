@@ -41,7 +41,7 @@ def _fit_fixed(
     ica.fit(raw)
 
 
-@builder("ica_fit", title="Fit ICA")
+@builder
 def fit_builder(
     n_components: Annotated[
         int,

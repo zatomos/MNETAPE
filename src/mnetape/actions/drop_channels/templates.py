@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from mnetape.actions.base import ParamMeta, fragment, step
+from mnetape.actions.base import ParamMeta, builder, fragment
 
 PRIMARY_PARAMS = {"raw.drop_channels": ["ch_names"]}
 
@@ -37,7 +37,7 @@ def _parse_channels(value: str | list | None) -> list[str]:
     return [c.strip() for c in str(value).split(",") if c.strip()]
 
 
-@step("apply")
+@builder
 def template_builder(
     channels: Annotated[
         list[str] | None,

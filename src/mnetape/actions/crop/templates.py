@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from mnetape.actions.base import ParamMeta, fragment, step
+from mnetape.actions.base import ParamMeta, builder, fragment
 
 PRIMARY_PARAMS = {"raw.crop": ["tmin", "tmax"]}
 
@@ -14,7 +14,7 @@ def _do_crop(raw, tmin: float = 0.0, tmax: float = 0.0) -> None:
     raw.crop(tmin=tmin, tmax=tmax)
 
 
-@step("crop")
+@builder
 def template_builder(
     tmin: Annotated[
         float,

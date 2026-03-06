@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from mnetape.actions.base import ParamMeta, fragment, step
+from mnetape.actions.base import ParamMeta, builder, fragment
 
 PRIMARY_PARAMS = {"raw.filter": ["l_freq", "h_freq"]}
 
@@ -14,7 +14,7 @@ def _do_filter(raw, l_freq: float | None = None, h_freq: float | None = None) ->
     raw.filter(l_freq=l_freq, h_freq=h_freq)
 
 
-@step("apply")
+@builder
 def template_builder(
     l_freq: Annotated[
         float | None,

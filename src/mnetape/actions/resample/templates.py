@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from mnetape.actions.base import ParamMeta, fragment, step
+from mnetape.actions.base import ParamMeta, builder, fragment
 
 PRIMARY_PARAMS = {"raw.resample": ["sfreq"]}
 
@@ -14,7 +14,7 @@ def _do_resample(raw, sfreq: float = 250.0) -> None:
     raw.resample(sfreq=sfreq)
 
 
-@step("apply")
+@builder
 def template_builder(
     sfreq: Annotated[
         float,

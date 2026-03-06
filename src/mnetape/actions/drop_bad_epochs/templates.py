@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Annotated, TYPE_CHECKING
 
-from mnetape.actions.base import ParamMeta, fragment, step
+from mnetape.actions.base import ParamMeta, builder, fragment
 
 if TYPE_CHECKING:
     import mne
@@ -27,7 +27,7 @@ def _do_autoreject(epochs) -> None:
     epochs = ar.fit_transform(epochs)
 
 
-@step("drop_bad_epochs")
+@builder
 def template_builder(
     method: Annotated[
         str,

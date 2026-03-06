@@ -31,8 +31,7 @@ class OperationCancelled(Exception):
 class PipelineRunner:
     """Orchestrates action execution for the main window.
 
-    All heavy processing runs inside a QThread via run_in_thread(). Interactive actions run on the main Qt thread via
-    their interactive_runner callable.
+    All heavy processing runs inside a QThread via run_in_thread().
     """
 
     def __init__(self, window: MainWindow) -> None:
@@ -215,8 +214,7 @@ class PipelineRunner:
                        input_type: DataType = DataType.RAW, output_type: DataType = DataType.RAW):
         """Execute a single action and return the resulting data object.
 
-        Interactive actions are run synchronously on the main thread via their interactive_runner.
-        Non-interactive actions are run in a background QThread.
+        Actions are run in a background QThread.
 
         Args:
             action: The ActionConfig being executed.
@@ -230,17 +228,8 @@ class PipelineRunner:
             The new data object produced by the action.
 
         Raises:
-            RuntimeError: For interactive actions with no runner, or when the user closes without applying.
             OperationCancelled: When the user cancels a threaded action.
         """
-        if action_def and action_def.interactive:
-            if not action_def.interactive_runner:
-                raise RuntimeError("No interactive runner configured.")
-            result = action_def.interactive_runner(action, data, parent=self.w)
-            if result is None:
-                raise RuntimeError("Interactive action cancelled.")
-            return result
-
         title = get_action_title(action)
         return self.run_in_thread(
             lambda c=code, d=data: exec_action_code(c, d, action, input_type=input_type, output_type=output_type),

@@ -63,27 +63,6 @@ It carries the metadata needed to render the right widget in the action editor.
 | `nullable`    | Allows the field to be left empty (None)                        |
 
 ---
-
-### Single-step action
-
-Most actions have one step.
-`action_from_templates` reads `templates.py` adjacent to `action.py`, discovers all `@step` builders,
-extracts the `params_schema` from their signatures, and builds an `ActionDefinition`.
-
----
-
-### Multi-step action
-
-When preprocessing requires several stages that share state, define multiple `@step` builders.
-Each step gets its own code block in the generated script, delimited by `# Step[id]` / `# EndStep[id]` markers.
-
-Steps share an execution scope: a `dict` containing `raw`, `ica`, `mne`, `numpy`, etc.,
-persisted in `action.step_state["scope"]` between steps.
-
-Interactive steps run on the Qt main thread via an `interactive_runner` callable provided to `action_from_templates`.
-
----
-
 ### Advanced parameters
 
 For any MNE function listed in `PRIMARY_PARAMS`, `introspect.py` uses Python's `inspect` module to enumerate all kwargs
@@ -108,7 +87,7 @@ Import errors in individual `action.py` files are caught and logged; they never 
 2. Write `templates.py`:
    - Define `PRIMARY_PARAMS` (the MNE kwargs you expose directly).
    - Write `@fragment` helpers that produce MNE calls.
-   - Write a `@step("apply")` `template_builder(**params) -> str` function.
+   - Write a `@builder` `template_builder(**params) -> str` function.
 
 3. Write `action.py`:
    ```python

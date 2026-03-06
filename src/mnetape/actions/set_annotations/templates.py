@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from mnetape.actions.base import ParamMeta, fragment, step
+from mnetape.actions.base import ParamMeta, builder, fragment
 
 
 @fragment
@@ -12,7 +12,7 @@ def _do_set_annotations(raw, onsets, durations, descriptions) -> None:
     raw.set_annotations(mne.Annotations(onset=onsets, duration=durations, description=descriptions))
 
 
-@step("set_annotations")
+@builder
 def template_builder(
     annotations: Annotated[
         list,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, TYPE_CHECKING
 
-from mnetape.actions.base import ParamMeta, fragment, step
+from mnetape.actions.base import ParamMeta, builder, fragment
 
 if TYPE_CHECKING:
     import mne
@@ -23,7 +23,7 @@ def _do_average_event(epochs, event_key) -> None:
     evoked = subset.average()
 
 
-@step("average_epochs")
+@builder
 def template_builder(
     event_key: Annotated[
         str | None,

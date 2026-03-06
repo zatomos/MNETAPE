@@ -55,7 +55,7 @@ def _classify(
     detected_component_artifacts = sorted(set(detected_component_artifacts))
 
 
-@builder("ica_classify", title="Classify ICA Components")
+@builder
 def classify_builder(
     enable_iclabel: Annotated[
         bool,

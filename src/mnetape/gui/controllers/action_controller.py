@@ -1,7 +1,7 @@
 """Action management and context-menu handling for the main window.
 
 ActionController manages the action list: adding, removing, reordering, editing, and reconciling actions
-from manually edited code. It also handles right-click context menus for multistep actions.
+from manually edited code. It also handles right-click context menus for actions.
 """
 
 from __future__ import annotations

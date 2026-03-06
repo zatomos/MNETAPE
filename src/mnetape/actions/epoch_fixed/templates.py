@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, TYPE_CHECKING
 
-from mnetape.actions.base import ParamMeta, fragment, step
+from mnetape.actions.base import ParamMeta, builder, fragment
 
 PRIMARY_PARAMS = {"mne.make_fixed_length_epochs": ["duration", "overlap"]}
 
@@ -23,7 +23,7 @@ def _do_epoch_fixed_baseline(raw, duration, overlap, baseline_tmin, baseline_tma
     epochs.apply_baseline(baseline=(baseline_tmin, baseline_tmax))
 
 
-@step("epoch_fixed")
+@builder
 def template_builder(
     duration: Annotated[
         float,

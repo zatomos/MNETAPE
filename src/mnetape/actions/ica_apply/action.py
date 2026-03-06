@@ -9,8 +9,6 @@ ACTION = action_from_templates(
     title="Apply ICA",
     doc=(
         "Set the ICA component exclusion list and apply it to produce clean raw data. "
-        "Use 'Browse Components' in the editor to open the inspection dialog and select "
-        "which components to remove. The exclusion list is stored in the generated code."
     ),
     action_file=__file__,
     mne_doc_urls={

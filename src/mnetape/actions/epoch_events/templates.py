@@ -108,7 +108,7 @@ def _build_get_events_code(
     return _do_get_events_annotations.inline(event_id=event_ids)
 
 
-@builder("epoch_events", title="Event-Based Epochs")
+@builder
 def epoch_events_builder(
     event_source: Annotated[
         str,

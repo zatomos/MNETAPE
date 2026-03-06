@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from mnetape.actions.base import ParamMeta, fragment, step
+from mnetape.actions.base import ParamMeta, builder, fragment
 
 PRIMARY_PARAMS = {"raw.notch_filter": ["freqs"]}
 
@@ -14,7 +14,7 @@ def _do_notch(raw, freqs: list[float] | None = None) -> None:
     raw.notch_filter(freqs=freqs)
 
 
-@step("apply")
+@builder
 def template_builder(
     freqs: Annotated[
         float,
