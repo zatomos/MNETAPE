@@ -334,7 +334,6 @@ class MainWindow(QMainWindow):
             widget = ActionListItem(i + 1, action, type_mismatch=is_mismatch)
             item.setSizeHint(widget.sizeHint())
             widget.size_changed.connect(lambda it=item, w=widget: it.setSizeHint(w.sizeHint()))
-            widget.step_clicked.connect(self.action_ctrl.on_step_clicked)
             widget.run_clicked.connect(self.runner.run_action_at)
             self.action_list.addItem(item)
             self.action_list.setItemWidget(item, widget)
@@ -381,25 +380,35 @@ class MainWindow(QMainWindow):
 
     def update_visualization(self):
         """Refresh the visualization panel for the currently selected pipeline step."""
+        from mnetape.core.models import ICASolution
+
         step = self.viz_panel.step_combo.currentIndex()
 
         if step == 0:
             data_to_show = self.state.raw_original
         elif 0 < step <= len(self.state.data_states):
             stored = self.state.data_states[step - 1]
-            # If None, epochs slot that hasn't been computed yet. Fall back to original
-            data_to_show = stored if stored is not None else self.state.raw_original
+            # ICASolution slots show the raw contained within; None slots fall back to original
+            if isinstance(stored, ICASolution):
+                data_to_show = stored.raw
+            else:
+                data_to_show = stored if stored is not None else self.state.raw_original
         else:
             data_to_show = self.state.raw_original
 
         self.viz_panel.update_plots(data_to_show, step, len(self.state.data_states))
         self.update_raw_info(data_to_show)
 
-
     def update_raw_info(self, data):
         import mne
+        from mnetape.core.models import ICASolution
+
         if data is None:
             self.raw_info_label.setText("")
+            return
+        if isinstance(data, ICASolution):
+            n_components = data.ica.n_components_ if data.ica else 0
+            self.raw_info_label.setText(f"ICA fitted  ·  {n_components} components")
             return
         name = self.state.data_filepath.name if self.state.data_filepath else ""
         n_ch = len(data.ch_names)
@@ -433,7 +442,11 @@ class MainWindow(QMainWindow):
         return extract_action_blocks(script)
 
     def get_action_code(self, index: int, action) -> str:
-        """Return the source code for a single action, from the editor or generated.
+        """Return the source code for a single action, for execution.
+
+        Non-custom actions are regenerated fresh from their definition so that imports
+        extracted into the full-script header are still present when the block is exec'd
+        individually. Custom/edited actions use the code from the editor as-is.
 
         Args:
             index: Position of the action in the pipeline.
@@ -442,7 +455,9 @@ class MainWindow(QMainWindow):
         Returns:
             Python source code string for the action.
         """
+        if not action.is_custom and not action.custom_code:
+            return generate_action_code(action)
         blocks = self.get_action_blocks()
         if index < len(blocks):
             return blocks[index]["code"]
-        return generate_action_code(action)
+        return action.custom_code or ""

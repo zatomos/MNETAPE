@@ -1,9 +1,6 @@
 """Code execution for the EEG pipeline.
 
-Provides a single entry point for executing generated action code inside a controlled Python scope that exposes
-mne, numpy, and the current raw object.
-The scope is persisted on the action's step_state so that multistep actions can share variables (e.g. an ICA object
-created in step 1 and used in step 2).
+Provides a single entry point for executing generated action code inside a controlled Python scope.
 """
 
 import logging
@@ -11,7 +8,7 @@ import mne
 import numpy
 from autoreject import AutoReject
 
-from mnetape.core.models import ActionConfig, DataType
+from mnetape.core.models import ActionConfig, DataType, DATA_BUNDLERS
 
 logger = logging.getLogger(__name__)
 
@@ -20,63 +17,58 @@ SCOPE_VAR: dict[DataType, str] = {
     DataType.RAW: "raw",
     DataType.EPOCHS: "epochs",
     DataType.EVOKED: "evoked",
+    DataType.ICA: "ica",
 }
 
 
 def exec_action_code(
     code: str,
-    data: mne.io.Raw | mne.Epochs | mne.Evoked,
+    data,
     action: ActionConfig,
-    reuse_scope: bool = False,
     input_type: DataType = DataType.RAW,
     output_type: DataType = DataType.RAW,
-) -> mne.io.Raw | mne.Epochs | mne.Evoked:
+):
     """Execute action code in a managed scope and return the resulting data object.
 
-    The scope always exposes mne, np, numpy, and the input data under its type-appropriate variable name.
-    When reuse_scope is True and a prior scope exists on the action, that scope is reused so variables assigned in
-    earlier steps remain accessible.
-
-    After execution the scope is stored so subsequent steps can access intermediate results.
+    The input data is injected when defined, otherwise under its SCOPE_VAR name.
+    The output is extracted via DATA_BUNDLERS when registered, otherwise from SCOPE_VAR.
 
     Args:
         code: Python source code to execute.
-        data: The current data object. Injected into the scope.
-        action: The action whose step_state will hold the scope after execution.
-        reuse_scope: When True, reuse the existing scope from a previous step
-            rather than creating a fresh one.
-        input_type: DataType of the incoming data; determines the scope variable name on entry.
+        data: The current data object.
+        action: The ActionConfig being executed.
+        input_type: DataType of the incoming data; determines scope variable injection.
         output_type: DataType of the expected result; determines which scope variable to return.
 
     Returns:
-        The data object found in scope after execution under SCOPE_VAR[output_type].
-        Falls back to the input data when the output variable is absent.
+        The data object found in scope after execution, reconstructed via the appropriate
+        bundler when registered. Falls back to the input data when the output variable is absent.
 
     Raises:
         Exception: Re-raises any exception thrown by the executed code.
     """
+    logger.debug("Executing action code for action_id=%s", action.action_id)
 
-    in_var = SCOPE_VAR[input_type]
-    out_var = SCOPE_VAR[output_type]
+    scope: dict = {
+        "mne": mne,
+        "np": numpy,
+        "numpy": numpy,
+        "AutoReject": AutoReject,
+    }
 
-    logger.debug("Executing action code (reuse_scope=%s) for action_id=%s", reuse_scope, action.action_id)
-
-    if reuse_scope and action.step_state.get("scope"):
-        scope = action.step_state["scope"]
-        scope[in_var] = data
+    if hasattr(data, "scope_vars"):
+        scope.update(data.scope_vars())
     else:
-        scope = {
-            in_var: data,
-            "mne": mne,
-            "np": numpy,
-            "numpy": numpy,
-            # Backward compatibility for older action snippets using AutoReject directly.
-            "AutoReject": AutoReject,
-        }
+        scope[SCOPE_VAR[input_type]] = data
+
     try:
         exec(code, scope, scope)
     except Exception:
         logger.exception("Action code execution failed for action_id=%s", action.action_id)
         raise
-    action.step_state["scope"] = scope
+
+    if output_type in DATA_BUNDLERS:
+        return DATA_BUNDLERS[output_type].from_scope(scope, data)
+
+    out_var = SCOPE_VAR[output_type]
     return scope.get(out_var, data)

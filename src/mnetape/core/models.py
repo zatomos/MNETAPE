@@ -3,8 +3,14 @@
 This module defines the shared data structures used throughout the pipeline.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import mne
 
 
 class ActionStatus(Enum):
@@ -21,6 +27,7 @@ class DataType(Enum):
     RAW = "raw"
     EPOCHS = "epochs"
     EVOKED = "evoked"
+    ICA = "ica_solution"
 
 
 STATUS_ICONS = {
@@ -39,11 +46,61 @@ STATUS_COLORS = {
 
 
 @dataclass
+class ICASolution:
+    """Bundle pairing a fitted ICA object with the raw data it was fitted on.
+
+    Flows through the pipeline as DataType.ICA. Carries optional classification results.
+
+    Attributes:
+        ica: The fitted MNE ICA object.
+        raw: The raw data the ICA was fitted on; used by ica_apply for source
+            plotting and applying the decomposition.
+        ic_labels: Optional ICLabel output dict.
+        detected_artifacts: Optional sorted list of component indices flagged as artifacts.
+    """
+
+    ica: mne.preprocessing.ICA
+    raw: mne.io.Raw
+    ic_labels: dict | None = None
+    detected_artifacts: list[int] | None = None
+
+    def copy(self) -> ICASolution:
+        """Return a shallow copy with a copied raw object."""
+        return ICASolution(
+            ica=self.ica,
+            raw=self.raw.copy(),
+            ic_labels=self.ic_labels,
+            detected_artifacts=self.detected_artifacts,
+        )
+
+    def scope_vars(self) -> dict:
+        """Variables to inject into the executor scope for this data type."""
+        return {"ica": self.ica, "raw": self.raw}
+
+    @classmethod
+    def from_scope(cls, scope: dict, original: "ICASolution") -> "ICASolution":
+        """Bundle a new ICASolution from exec scope variables."""
+        return cls(
+            ica=scope.get("ica", original.ica),
+            raw=scope.get("raw", original.raw),
+            ic_labels=scope.get("ic_labels"),
+            detected_artifacts=scope.get("detected_component_artifacts"),
+        )
+
+
+# Registry mapping DataType to a bundler class.
+# Used to reconstruct typed data objects after code execution without containing any type-specific logic itself.
+DATA_BUNDLERS: dict[DataType, type] = {
+    DataType.ICA: ICASolution,
+}
+
+
+@dataclass
 class ActionConfig:
     """Mutable runtime configuration for a single preprocessing action.
 
     Stores all user-facing settings for one pipeline step: which action to run, its parameter values, execution status,
-    and transient step state accumulated during multistep execution.
+    and any user-customized code.
 
     Attributes:
         action_id: Identifier matching an entry in the action registry.
@@ -54,8 +111,6 @@ class ActionConfig:
         is_custom: True when the code was manually edited and no longer matches the generated output.
         title_override: Display name shown in the action list, falling back to the action definition title when empty.
         advanced_params: Non-primary kwargs grouped by dotted MNE function name.
-        completed_steps: Number of steps that have successfully run for multistep actions.
-        step_state: Transient inter-step data excluded from repr to avoid cluttering logs.
     """
 
     action_id: str
@@ -66,12 +121,8 @@ class ActionConfig:
     is_custom: bool = False
     title_override: str = ""
     advanced_params: dict = field(default_factory=dict)
-    completed_steps: int = 0
-    step_state: dict = field(default_factory=dict, repr=False)
 
     def reset(self):
-        """Reset action to pending state, clearing step progress and transient state."""
+        """Reset action to pending state."""
         self.status = ActionStatus.PENDING
         self.error_msg = ""
-        self.completed_steps = 0
-        self.step_state = {}

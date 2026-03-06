@@ -12,7 +12,7 @@ from pathlib import Path
 import mne
 from PyQt6.QtCore import QSettings
 
-from mnetape.core.models import ActionConfig
+from mnetape.core.models import ActionConfig, ICASolution
 
 
 @dataclass(slots=True)
@@ -32,7 +32,7 @@ class AppState:
     """
 
     raw_original: mne.io.Raw | None = None
-    data_states: list[mne.io.Raw | mne.Epochs | None] = field(default_factory=list)
+    data_states: list[mne.io.Raw | mne.Epochs | ICASolution | None] = field(default_factory=list)
     actions: list[ActionConfig] = field(default_factory=list)
     data_filepath: Path | None = None
     pipeline_filepath: Path | None = None

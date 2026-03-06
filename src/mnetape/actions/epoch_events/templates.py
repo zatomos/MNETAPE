@@ -1,15 +1,13 @@
 """Event-based epoching action templates.
 
-Two steps:
-  - get_events: extract events from annotations, stim channel, or a file
-  - create_epochs: create mne.Epochs with tmin/tmax and optional baseline
+Single action that first extracts events then creates mne.Epochs.
 """
 
 from __future__ import annotations
 
 from typing import Annotated, TYPE_CHECKING
 
-from mnetape.actions.base import CodeRef, ParamMeta, fragment, step
+from mnetape.actions.base import CodeRef, ParamMeta, builder, fragment
 
 if TYPE_CHECKING:
     import mne
@@ -81,7 +79,7 @@ def _do_create_epochs_baseline(raw, events, event_ids, tmin, tmax, baseline_tmin
                         preload=True)
 
 
-# -------- Step builders --------
+# -------- Builder --------
 
 def _build_get_events_code(
     *,
@@ -110,8 +108,8 @@ def _build_get_events_code(
     return _do_get_events_annotations.inline(event_id=event_ids)
 
 
-@step("get_events", title="Get Events")
-def get_events_builder(
+@builder("epoch_events", title="Event-Based Epochs")
+def epoch_events_builder(
     event_source: Annotated[
         str,
         ParamMeta(
@@ -174,19 +172,6 @@ def get_events_builder(
             visible_when={"event_source": ["stim"]},
         ),
     ] = 1,
-) -> str:
-    return _build_get_events_code(
-        event_source=event_source,
-        events_file=events_file,
-        event_ids=event_ids,
-        stim_channel=stim_channel,
-        min_duration=min_duration,
-        shortest_event=shortest_event,
-    )
-
-
-@step("create_epochs", title="Create Epochs")
-def create_epochs_builder(
     tmin: Annotated[
         float,
         ParamMeta(
@@ -239,8 +224,16 @@ def create_epochs_builder(
         ),
     ] = True,
 ) -> str:
+    events_code = _build_get_events_code(
+        event_source=event_source,
+        events_file=events_file,
+        event_ids=event_ids,
+        stim_channel=stim_channel,
+        min_duration=min_duration,
+        shortest_event=shortest_event,
+    )
     if baseline_tmin is not None and baseline_tmax is not None:
-        return _do_create_epochs_baseline.inline(
+        epochs_code = _do_create_epochs_baseline.inline(
             events=CodeRef("events"),
             event_ids=CodeRef("event_ids"),
             tmin=tmin,
@@ -249,10 +242,12 @@ def create_epochs_builder(
             baseline_tmin=baseline_tmin,
             baseline_tmax=baseline_tmax,
         )
-    return _do_create_epochs.inline(
-        events=CodeRef("events"),
-        event_ids=CodeRef("event_ids"),
-        tmin=tmin,
-        tmax=tmax,
-        reject_by_annotation=reject_by_annotation,
-    )
+    else:
+        epochs_code = _do_create_epochs.inline(
+            events=CodeRef("events"),
+            event_ids=CodeRef("event_ids"),
+            tmin=tmin,
+            tmax=tmax,
+            reject_by_annotation=reject_by_annotation,
+        )
+    return f"{events_code}\n{epochs_code}"

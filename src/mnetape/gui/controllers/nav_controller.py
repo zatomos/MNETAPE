@@ -54,6 +54,7 @@ class NavController:
     def open_browser(self):
         """Open MNE's interactive browser for the currently selected step."""
         import mne
+        from mnetape.core.models import ICASolution
 
         step = self.w.viz_panel.step_combo.currentIndex()
         if step == 0 and self.state.raw_original:
@@ -64,12 +65,16 @@ class NavController:
             data = self.state.data_states[step - 1]
             if data is None:
                 QMessageBox.warning(self.w, "No Data", "This step has not been computed yet.")
+            elif isinstance(data, ICASolution):
+                # ICA slots: show the raw the ICA was fitted on
+                browser = data.raw.plot(block=False, title=f"Raw at ICA step {step}")
+                sanitize_mne_browser_toolbar(browser, allow_annotation_mode=False)
+                disable_mne_browser_channel_clicks(browser)
+            elif isinstance(data, mne.Evoked):
+                data.plot(show=True)
             else:
-                if isinstance(data, mne.Evoked):
-                    data.plot(show=True)
-                else:
-                    browser = data.plot(block=False, title=f"After step {step}")
-                    sanitize_mne_browser_toolbar(browser, allow_annotation_mode=False)
-                    disable_mne_browser_channel_clicks(browser)
+                browser = data.plot(block=False, title=f"After step {step}")
+                sanitize_mne_browser_toolbar(browser, allow_annotation_mode=False)
+                disable_mne_browser_channel_clicks(browser)
         else:
             QMessageBox.warning(self.w, "No Data", "No data to display.")

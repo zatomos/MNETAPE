@@ -156,7 +156,6 @@ def parse_params_from_code(action_id: str, code: str) -> dict:
     """Extract primary parameters from generated code for a registered action.
 
     Walks the AST to recover function-group param values from function call kwargs.
-    For multistep actions, each step block is walked with its own step schema.
     Falls back to defaults for any param that cannot be parsed.
 
     Args:
@@ -172,18 +171,8 @@ def parse_params_from_code(action_id: str, code: str) -> dict:
         return {}
     defaults = action_def.default_params()
 
-    # Single-step action: walk the whole code with the main schema
     if action_def.template_schema:
         return extract_params_from_schema(action_def.template_schema, code, defaults)
-
-    # Multistep actions: each step has its own schema
-    if action_def.steps:
-        result = dict(defaults)
-        for block in extract_step_blocks(code):
-            step = next((s for s in action_def.steps if s.step_id == block["id"]), None)
-            if step and step.template_schema:
-                result.update(extract_params_from_schema(step.template_schema, block["code"], {}))
-        return result
 
     return defaults
 
@@ -206,29 +195,25 @@ def parse_advanced_params_from_code(action_id: str, code: str) -> dict:
     if action_def.template_schema:
         return extract_advanced_from_schema(action_def.template_schema, code)
 
-    if action_def.steps:
-        result: dict[str, dict] = {}
-        for block in extract_step_blocks(code):
-            step = next((s for s in action_def.steps if s.step_id == block["id"]), None)
-            if step and step.template_schema:
-                for func, adv in extract_advanced_from_schema(step.template_schema, block["code"]).items():
-                    result.setdefault(func, {}).update(adv)
-        return result
-
     return {}
 
 
 # -------- Code generation utilities --------
 
 def extract_imports(code: str) -> tuple[list[ast.stmt], str]:
-    """Extract top-level import statements from code.
+    """Extract leading import statements from the preamble of code.
+
+    Only imports that appear before any non-import statement are extracted and moved
+    to the global script header. Inline imports (those that appear after other code,
+    e.g. after branch-pruning flattens a conditional import) are left in place so
+    they remain available when the block is exec'd individually.
 
     Args:
         code: Python source code to parse.
 
     Returns:
         A tuple of (import_nodes, stripped_code) where import_nodes is the list of extracted Import
-        andImportFrom AST nodes, and stripped_code is the code with those import lines removed.
+        and ImportFrom AST nodes, and stripped_code is the code with those import lines removed.
     """
 
     try:
@@ -245,6 +230,9 @@ def extract_imports(code: str) -> tuple[list[ast.stmt], str]:
             start = max(0, node.lineno - 1)
             end = max(start, (node.end_lineno or node.lineno) - 1)
             remove_ranges.append((start, end))
+        else:
+            # Stop at the first non-import statement — inline imports stay in the block.
+            break
 
     if not import_nodes:
         return [], code
@@ -345,15 +333,8 @@ def generate_full_script(filepath: Path | None, actions: list[ActionConfig]) -> 
     for i, action in enumerate(actions, 1):
         title = get_action_title(action)
         code = generate_action_code(action)
-        action_def = get_action_by_id(action.action_id)
-
-        # Keep multi-step action code intact so step markers and in-step imports
-        # round-trip correctly when reloading scripts.
-        if action_def and action_def.has_steps():
-            stripped = code
-        else:
-            imports, stripped = extract_imports(code)
-            all_import_nodes.extend(imports)
+        imports, stripped = extract_imports(code)
+        all_import_nodes.extend(imports)
 
         action_lines.append(f"# In[{i}] {title}")
         action_lines.append(stripped)
@@ -496,52 +477,6 @@ def extract_action_blocks(script: str) -> list[dict]:
 
     return blocks
 
-
-def extract_step_blocks(code: str) -> list[dict]:
-    """Extract step blocks delimited by "# Step[id]" and "# EndStep[id]" markers.
-
-    Args:
-        code: Python source code to parse.
-
-    Returns:
-        List of dicts each with keys: id (str), title (str), code (str).
-    """
-
-    blocks = []
-    lines = code.split("\n")
-    header_re = re.compile(r'^#\s*Step\[(.+?)]\s*(.*?)\s*$')
-    footer_re = re.compile(r'^#\s*EndStep\[(.+?)]\s*$')
-
-    i = 0
-    while i < len(lines):
-        # Look for Step[id] header
-        match = header_re.match(lines[i].strip())
-        if match:
-            block = {
-                "id": match.group(1).strip(),
-                "title": match.group(2).strip(),
-                "code_lines": [],
-            }
-            i += 1
-            while i < len(lines):
-                # Stop if we hit another header or the corresponding footer
-                if header_re.match(lines[i].strip()):
-                    break
-                footer_match = footer_re.match(lines[i].strip())
-                if footer_match and footer_match.group(1).strip() == block["id"]:
-                        i += 1
-                        break
-                block["code_lines"].append(lines[i])
-                i += 1
-
-            while block["code_lines"] and not block["code_lines"][-1].strip():
-                block["code_lines"].pop()
-            block["code"] = "\n".join(block["code_lines"])
-            blocks.append(block)
-        else:
-            i += 1
-
-    return blocks
 
 
 def parse_script_to_actions(script: str) -> list[ActionConfig]:

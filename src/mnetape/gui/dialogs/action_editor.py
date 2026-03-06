@@ -217,31 +217,14 @@ class ActionEditor(QDialog):
         action: ActionConfig,
         raw: mne.io.Raw | None = None,
         parent=None,
-        step_idx: int | None = None,
     ):
         super().__init__(parent)
         self.action = action
         self.raw = raw
         self.action_def = get_action_by_id(action.action_id)
-        self.step_idx = step_idx
-        self.step_def = None
 
-        # Determine title and which params to show
-        if step_idx is not None and self.action_def and self.action_def.steps:
-            self.step_def = self.action_def.steps[step_idx]
-            self.setWindowTitle(f"Edit: {self.step_def.title}")
-
-            # Filter params_schema to only this step's params
-            step_params = (
-                self.step_def.template_schema.all_primary_params()
-                if self.step_def.template_schema
-                else {}
-            )
-
-            visible_params = step_params
-        else:
-            self.setWindowTitle(f"Edit: {get_action_title(action)}")
-            visible_params = self.action_def.params_schema if self.action_def else {}
+        self.setWindowTitle(f"Edit: {get_action_title(action)}")
+        visible_params = self.action_def.params_schema if self.action_def else {}
 
         self.setMinimumWidth(400)
 
@@ -364,13 +347,7 @@ class ActionEditor(QDialog):
     def build_advanced_section(self, parent_layout: QVBoxLayout):
         """Build the collapsible advanced params section."""
 
-        # Use step-specific schema when editing a single step
-        if self.step_def is not None:
-            schema = self.step_def.template_schema
-        elif self.action_def:
-            schema = self.action_def.template_schema
-        else:
-            schema = None
+        schema = self.action_def.template_schema if self.action_def else None
 
         if not schema:
             return
@@ -467,13 +444,7 @@ class ActionEditor(QDialog):
     def get_advanced_params(self) -> dict:
         """Return advanced params grouped by function name, only non-default values."""
 
-        # When editing a specific step, the schema lives on the step, not the action.
-        if self.step_def is not None:
-            schema = self.step_def.template_schema
-        elif self.action_def:
-            schema = self.action_def.template_schema
-        else:
-            schema = None
+        schema = self.action_def.template_schema if self.action_def else None
         if not schema:
             return {}
 
@@ -503,10 +474,6 @@ class ActionEditor(QDialog):
         """Regenerate the code preview from current widget values."""
         if self.action.is_custom and self.action.custom_code:
             code = self.action.custom_code
-        elif self.step_def is not None and self.step_def.code_builder:
-            # Show only this step's generated code
-            all_params = {**self.action.params, **self.get_current_params()}
-            code = self.step_def.code_builder(all_params)
         else:
             temp_action = ActionConfig(
                 self.action.action_id,

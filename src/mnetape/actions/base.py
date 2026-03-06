@@ -3,14 +3,13 @@
 This module contains the building blocks used to define preprocessing actions:
 
 - Fragment / @fragment: extract a function body as a code template and substitute literal values via inline().
-- @step / StepBuilder: mark a builder function as a named pipeline step.
+- @builder / ActionBuilder: mark a builder function as the code generator for an action.
 - ParamMeta: widget/schema metadata attached to template_builder parameters.
 - extract_schema_from_signature: derive a params_schema dict from Annotated type hints on a template_builder function.
 - TemplateSchema / FunctionParamGroup: schema used for reverse-parsing params from generated code
   and for discovering advanced MNE kwargs.
-- StepDefinition / ActionDefinition: frozen dataclasses describing one step or a complete action
-  (title, code builder, schema, prerequisites, etc.).
-- action_from_templates: single call factory that loads a templates.py module, discovers @step builders,
+- ActionDefinition: frozen dataclass describing a complete action.
+- action_from_templates: single-call factory that loads a templates.py module, discovers the @builder function,
   and wires everything into an ActionDefinition.
 """
 
@@ -119,7 +118,7 @@ class Fragment:
     """
 
     # Variables always available in exec scope and never get injected
-    SCOPE_VARS: frozenset[str] = frozenset({"raw", "epochs", "evoked"})
+    SCOPE_VARS: frozenset[str] = frozenset({"raw", "epochs", "evoked", "ica"})
 
     def __init__(self, fn: Callable) -> None:
         self.fn = fn
@@ -177,42 +176,41 @@ def fragment(fn: Callable) -> Fragment:
 
 
 @dataclass
-class StepBuilder:
-    """Typed wrapper returned by the @step decorator.
+class ActionBuilder:
+    """Typed wrapper returned by the @builder decorator.
 
-    Holds step metadata and the builder callable.
+    Holds the action id, display title, and the builder callable.
     """
 
-    step_id: str
+    action_id: str
     title: str
-    interactive: bool
     fn: Callable[..., str]
 
 
-def step(
-    step_id: str,
+def builder(
+    action_id: str,
     *,
     title: str = "",
-    interactive: bool = False,
-) -> Callable[[Callable[..., str]], StepBuilder]:
-    """Mark a builder function as an action step.
+) -> Callable[[Callable[..., str]], ActionBuilder]:
+    """Mark a builder function as the code generator for an action.
 
     Args:
-        step_id: Unique identifier embedded in generated code markers.
-        title: Step label shown in the UI. Defaults to step_id title-cased.
-        interactive: When True, the step requires user interaction and is
-            dispatched to an interactive_runner rather than a background thread.
+        action_id: Unique identifier for this action.
+        title: Optional display title. Defaults to action_id title-cased.
     """
 
-    def decorator(fn: Callable[..., str]) -> StepBuilder:
-        return StepBuilder(
-            step_id=step_id,
-            title=title or step_id.replace("_", " ").title(),
-            interactive=interactive,
+    def decorator(fn: Callable[..., str]) -> ActionBuilder:
+        return ActionBuilder(
+            action_id=action_id,
+            title=title or action_id.replace("_", " ").title(),
             fn=fn,
         )
 
     return decorator
+
+
+# Backward-compatible alias — existing templates.py files may still use @step.
+step = builder
 
 
 # -------- Parameter metadata type --------
@@ -456,31 +454,7 @@ class AdvancedParamInjector(ast.NodeTransformer):
         return node
 
 
-# -------- Step and action definitions --------
-
-@dataclass(frozen=True)
-class StepDefinition:
-    """Descriptor for a single step within a multistep action.
-
-    Attributes:
-        step_id: Unique identifier embedded in generated step-block markers.
-        title: Human-readable label shown in the action list and context menu.
-        code_builder: Callable that accepts a params dict and returns Python source for this step.
-            None for interactive-only steps.
-        interactive: When True, this step requires user interaction and is dispatched to interactive_runner
-            instead of the background thread.
-        interactive_runner: Callable invoked on the main Qt thread for interactive steps.
-            Receives (action, raw, parent) and returns a new Raw object or None to cancel.
-        template_schema: Schema used to reverse-parse params from the step's generated code block.
-    """
-
-    step_id: str
-    title: str
-    code_builder: Callable[[dict], str] | None = None
-    interactive: bool = False
-    interactive_runner: InteractiveRunner | None = None
-    template_schema: TemplateSchema | None = None
-
+# -------- Action definitions --------
 
 @dataclass(frozen=True)
 class Prerequisite:
@@ -509,12 +483,14 @@ class ActionDefinition:
         params_schema: Dict mapping parameter names to widget spec dicts.
         doc: Short description shown in the action editor dialog.
         mne_doc_urls: Optional dict mapping label strings to MNE documentation URLs.
-        code_builder: Callable that generates code from params; used for single-step actions.
-        steps: Tuple of StepDefinition objects for multistep actions.
-        template_schema: Schema for the whole action used by the editor to discover advanced MNE kwargs.
+        code_builder: Callable that generates code from params.
+        template_schema: Schema used by the editor to discover advanced MNE kwargs and reverse-parse params.
         prerequisites: Tuple of Prerequisite objects checked before running.
         param_widget_factories: Optional dict mapping custom param-type strings to factory callables that produce
             (container, value_widget) pairs.
+        interactive: When True, this action requires user interaction on the main Qt thread.
+        interactive_runner: Callable invoked on the main Qt thread for interactive actions.
+            Receives (action, data, parent) and returns the new data object or None to cancel.
         input_type: Expected input data type for this action.
         output_type: Output data type for this action.
     """
@@ -525,26 +501,20 @@ class ActionDefinition:
     doc: str
     mne_doc_urls: dict[str, str] = field(default_factory=dict)
     code_builder: CodeBuilder | None = None
-    steps: tuple[StepDefinition, ...] | None = None
     template_schema: TemplateSchema | None = None
     prerequisites: tuple[Prerequisite, ...] = ()
     param_widget_factories: dict[str, Callable] | None = None
+    interactive: bool = False
+    interactive_runner: InteractiveRunner | None = None
     input_type: DataType = field(default_factory=lambda: DataType.RAW)
     output_type: DataType = field(default_factory=lambda: DataType.RAW)
 
     def default_params(self) -> dict:
-        """Return a dict of parameter defaults taken from params_schema.
-
-        Returns:
-            Dict mapping each param name to its declared default value.
-        """
+        """Return a dict of parameter defaults taken from params_schema."""
         return {name: spec["default"] for name, spec in self.params_schema.items()}
 
     def build_code(self, params: dict, advanced_params: dict | None = None) -> str:
-        """Generate the full Python code string for this action.
-
-        For multistep actions, each step's code is wrapped in "# Step[id]" / "# EndStep[id]" markers so the runner
-        can split them at execution time. Advanced params are only injected for single-step actions.
+        """Generate the Python code string for this action.
 
         Args:
             params: Parameter values to substitute into the code template.
@@ -554,37 +524,9 @@ class ActionDefinition:
         Returns:
             Python source code string.
         """
-        if self.steps:
-            if len(self.steps) == 1:
-                step_def = self.steps[0]
-                if step_def.code_builder:
-                    return step_def.code_builder(params)
-                return ""
-            parts = []
-            for step_def in self.steps:
-                if step_def.code_builder:
-                    parts.append(f"# Step[{step_def.step_id}] {step_def.title}")
-                    parts.append(step_def.code_builder(params))
-                    parts.append(f"# EndStep[{step_def.step_id}]")
-            return "\n\n".join(filter(None, parts))
-
         if not self.code_builder:
             return ""
         return self.code_builder(params, advanced_params=advanced_params)
-
-    def has_steps(self) -> bool:
-        """Return True when this action has more than one step.
-
-        Actions with exactly one step are treated as single-step for execution
-        purposes; they do not show step-level controls in the UI.
-        """
-        return bool(self.steps) and len(self.steps) > 1
-
-    def single_step(self) -> StepDefinition | None:
-        """Return the sole StepDefinition when there is exactly one step, else None."""
-        if self.steps and len(self.steps) == 1:
-            return self.steps[0]
-        return None
 
 
 # -------- Builder utilities --------
@@ -629,21 +571,17 @@ def action_from_templates(
     mne_doc_urls: dict[str, str] | None = None,
     prerequisites: tuple[Prerequisite, ...] = (),
     param_widget_factories: dict[str, Callable] | None = None,
-    interactive_runners: dict[str, InteractiveRunner] | None = None,
+    interactive_runner: InteractiveRunner | None = None,
     input_type: DataType = DataType.RAW,
     output_type: DataType = DataType.RAW,
 ) -> ActionDefinition:
     """Build an ActionDefinition by loading and introspecting a templates.py module.
 
-    Discovers all @step-decorated builder functions in the templates module adjacent to action_file,
-    then wires them into an ActionDefinition automatically.
+    Discovers the single @builder-decorated function in the templates module adjacent to action_file,
+    extracts its params_schema from Annotated type hints, and wires everything into an ActionDefinition.
 
-    For single-step actions, the builder signature becomes the params_schema.
-    Declare PRIMARY_PARAMS at module level to enable advanced-param introspection. All other function kwargs become
-    available in the Advanced section of the editor.
-
-    For multistep actions, each @step builder becomes a StepDefinition in definition order.
-    Pass interactive_runners to handle interactive steps. PRIMARY_PARAMS is ignored for multistep actions.
+    Declare PRIMARY_PARAMS at module level to enable advanced-param introspection. All other function kwargs
+    become available in the Advanced section of the editor.
 
     Args:
         action_id: Unique identifier string for the action.
@@ -654,8 +592,8 @@ def action_from_templates(
         prerequisites: Tuple of Prerequisite objects checked before running.
         param_widget_factories: Optional dict mapping custom param-type strings to factory callables that produce
             (container, value_widget) pairs.
-        interactive_runners: Optional dict mapping step_id strings to interactive runner callables
-            for interactive steps.
+        interactive_runner: Optional callable invoked on the main Qt thread for interactive actions.
+            Receives (action, data, parent) and returns the new data object, or None to cancel.
         input_type: Expected input data type for this action.
         output_type: Output data type for this action.
 
@@ -664,7 +602,7 @@ def action_from_templates(
 
     Raises:
         ImportError: When the templates module cannot be loaded.
-        AttributeError: When the templates module has no @step-decorated builder.
+        AttributeError: When the templates module has no @builder-decorated function.
     """
     here = Path(action_file).parent
 
@@ -681,87 +619,57 @@ def action_from_templates(
     else:
         module = sys.modules[module_name]
 
-    # Collect @step builders in definition order
-    step_builders: list[StepBuilder] = [
+    # Collect @builder functions in definition order
+    action_builders: list[ActionBuilder] = [
         obj for obj in vars(module).values()
-        if isinstance(obj, StepBuilder)
+        if isinstance(obj, ActionBuilder)
     ]
-    if not step_builders:
-        raise AttributeError(f"{templates_path} must define at least one @step(...) builder.")
+    if not action_builders:
+        raise AttributeError(f"{templates_path} must define at least one @builder(...) function.")
 
-    # --- Single-step action ---
-    if len(step_builders) == 1:
-        sb = step_builders[0]
-        params_schema: dict[str, dict] = extract_schema_from_signature(sb.fn)
+    ab = action_builders[0]
+    params_schema: dict[str, dict] = extract_schema_from_signature(ab.fn)
 
-        primary_raw: dict = getattr(module, "PRIMARY_PARAMS", {})
-        groups: list[FunctionParamGroup] = [
-            FunctionParamGroup(dotted_name=fn_name, params={k: {} for k in (owned or [])})
-            for fn_name, owned in primary_raw.items()
-        ]
-        template_schema = TemplateSchema(function_groups=tuple(groups))
+    primary_raw: dict = getattr(module, "PRIMARY_PARAMS", {})
+    groups: list[FunctionParamGroup] = [
+        FunctionParamGroup(dotted_name=fn_name, params={k: {} for k in (owned or [])})
+        for fn_name, owned in primary_raw.items()
+    ]
+    template_schema = TemplateSchema(function_groups=tuple(groups))
 
-        sig = inspect.signature(sb.fn)
-        builder_param_names = frozenset(n for n in sig.parameters if n != "raw")
+    sig = inspect.signature(ab.fn)
+    builder_param_names = frozenset(n for n in sig.parameters if n != "raw")
 
-        def code_builder(params: dict, advanced_params: dict | None = None) -> str:
-            filtered: dict = {}
-            for name in builder_param_names:
-                if name in params:
-                    filtered[name] = params[name]
-                elif name in params_schema and "default" in params_schema[name]:
-                    filtered[name] = params_schema[name]["default"]
-            code: str = sb.fn(**filtered)
-            if advanced_params:
-                try:
-                    tree = ast.parse(code)
-                    tree = AdvancedParamInjector(advanced_params).visit(tree)
-                    ast.fix_missing_locations(tree)
-                    code = ast.unparse(tree)
-                except Exception as e:
-                    logger.exception("Failed to inject advanced params for action '%s': %s", action_id, e)
-            return code
-
-        return ActionDefinition(
-            action_id=action_id,
-            title=title,
-            params_schema=params_schema,
-            code_builder=code_builder,
-            template_schema=template_schema,
-            doc=doc,
-            mne_doc_urls=mne_doc_urls or {},
-            prerequisites=prerequisites,
-            param_widget_factories=param_widget_factories,
-            input_type=input_type,
-            output_type=output_type,
-        )
-
-    # --- Multi-step action ---
-    all_params: dict[str, dict] = {}
-    step_defs: list[StepDefinition] = []
-    runners: dict[str, InteractiveRunner] = interactive_runners or {}
-    for sb in step_builders:
-        step_params = extract_schema_from_signature(sb.fn)
-        all_params.update(step_params)
-        defaults = {n: s.get("default") for n, s in step_params.items()}
-        step_defs.append(StepDefinition(
-            step_id=sb.step_id,
-            title=sb.title,
-            code_builder=wrap_builder(sb.fn, defaults),
-            interactive=sb.interactive,
-            interactive_runner=runners.get(sb.step_id),
-            template_schema=TemplateSchema(function_groups=(), virtual_params=step_params),
-        ))
+    def code_builder(params: dict, advanced_params: dict | None = None) -> str:
+        filtered: dict = {}
+        for name in builder_param_names:
+            if name in params:
+                filtered[name] = params[name]
+            elif name in params_schema and "default" in params_schema[name]:
+                filtered[name] = params_schema[name]["default"]
+        code: str = ab.fn(**filtered)
+        if advanced_params:
+            try:
+                tree = ast.parse(code)
+                tree = AdvancedParamInjector(advanced_params).visit(tree)
+                ast.fix_missing_locations(tree)
+                code = ast.unparse(tree)
+            except Exception as e:
+                logger.exception("Failed to inject advanced params for action '%s': %s", action_id, e)
+        return code
 
     return ActionDefinition(
         action_id=action_id,
         title=title,
-        params_schema=all_params,
-        steps=tuple(step_defs),
+        params_schema=params_schema,
+        code_builder=code_builder,
+        template_schema=template_schema,
         doc=doc,
         mne_doc_urls=mne_doc_urls or {},
         prerequisites=prerequisites,
         param_widget_factories=param_widget_factories,
+        interactive=interactive_runner is not None,
+        interactive_runner=interactive_runner,
         input_type=input_type,
         output_type=output_type,
     )
