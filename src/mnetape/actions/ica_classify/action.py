@@ -8,8 +8,8 @@ ACTION = action_from_templates(
     title="Classify ICA Components",
     doc=(
         "Automatically classify ICA components using ICLabel, EOG/ECG channel correlation, "
-        "and muscle artifact detection. Sets ica.exclude and stores classification scores "
-        "for review in the Apply step."
+        "and muscle artifact detection. Produces a list of artifact component indices "
+        "available for review and exclusion in the Apply step."
     ),
     action_file=__file__,
     mne_doc_urls={

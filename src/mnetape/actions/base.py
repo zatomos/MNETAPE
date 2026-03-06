@@ -319,7 +319,7 @@ def extract_schema_from_signature(fn: Callable) -> dict[str, dict]:
         logger.warning("Failed to get type hints for function '%s': %s", fn.__name__, e)
         hints = {}
 
-    schema_excluded = frozenset({"raw", "epochs"})
+    schema_excluded = Fragment.SCOPE_VARS
     result: dict[str, dict] = {}
     for name, param in sig.parameters.items():
         if name in schema_excluded:
@@ -527,37 +527,6 @@ class ActionDefinition:
         if not self.code_builder:
             return ""
         return self.code_builder(params, advanced_params=advanced_params)
-
-
-# -------- Builder utilities --------
-
-def wrap_builder(fn: Callable[..., str], defaults: dict[str, Any] | None = None) -> Callable[[dict], str]:
-    """Wrap a template builder function into the (params: dict) -> str step interface.
-
-    The returned callable filters the params dict to only the kwargs accepted by fn, filling missing keys from defaults.
-
-    Args:
-        fn: The template builder function to wrap.
-        defaults: Optional dict of default values for fn's parameters, used
-            when a param is absent from the runtime params dict.
-
-    Returns:
-        A callable that accepts a single params dict and returns a code string.
-    """
-    sig = inspect.signature(fn)
-    param_names = frozenset(n for n in sig.parameters if n != "raw")
-    _defaults: dict[str, Any] = defaults or {}
-
-    def builder(params: dict) -> str:
-        filtered: dict = {}
-        for name in param_names:
-            if name in params:
-                filtered[name] = params[name]
-            elif name in _defaults:
-                filtered[name] = _defaults[name]
-        return fn(**filtered)
-
-    return builder
 
 
 # -------- action_from_templates factory --------

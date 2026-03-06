@@ -14,7 +14,7 @@ from mnetape.actions.base import ParamMeta, builder, fragment
 @fragment
 def _apply(ica, raw, exclude: list = None) -> None:
     ica.exclude = exclude
-    raw = ica.apply(raw.copy(), verbose=False)
+    raw = ica.apply(raw, verbose=False)
 
 
 @builder("ica_apply", title="Apply ICA")

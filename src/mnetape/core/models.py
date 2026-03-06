@@ -5,6 +5,7 @@ This module defines the shared data structures used throughout the pipeline.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING
@@ -65,9 +66,9 @@ class ICASolution:
     detected_artifacts: list[int] | None = None
 
     def copy(self) -> ICASolution:
-        """Return a shallow copy with a copied raw object."""
+        """Return a copy with independent ica and raw objects."""
         return ICASolution(
-            ica=self.ica,
+            ica=copy.copy(self.ica),
             raw=self.raw.copy(),
             ic_labels=self.ic_labels,
             detected_artifacts=self.detected_artifacts,

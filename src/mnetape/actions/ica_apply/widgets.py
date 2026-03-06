@@ -54,7 +54,7 @@ def format_component_labels(
 
     iclabel_lines = [""] * n_components
     if ic_labels and ic_labels.get("labels"):
-        probs = ic_labels.get("y_pred_proba") or ic_labels.get("probabilities")
+        probs = ic_labels.get("y_pred_proba")
         if probs is not None:
             iclabel_lines = [
                 f"{label[:3].upper()} {np.max(prob):.0%}"
@@ -534,6 +534,12 @@ class ICAInspectionDialog(QDialog):
         for fig in self.extra_figs:
             close_figure_safely(fig)
         self.extra_figs.clear()
+
+    def closeEvent(self, event):
+        if self.poll_timer is not None:
+            self.poll_timer.stop()
+        self.cleanup_figures()
+        super().closeEvent(event)
 
 
 # -------- Param widget factory --------

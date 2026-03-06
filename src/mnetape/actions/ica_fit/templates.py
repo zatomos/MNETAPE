@@ -5,12 +5,12 @@ Fits an ICA decomposition on the raw data.
 
 from __future__ import annotations
 
-from typing import Annotated
-
-import mne
+from typing import Annotated, TYPE_CHECKING
 
 from mnetape.actions.base import ParamMeta, fragment, builder
 
+if TYPE_CHECKING:
+    import mne
 
 PRIMARY_PARAMS = {
     "mne.preprocessing.ICA": ["n_components", "method", "fit_params"],

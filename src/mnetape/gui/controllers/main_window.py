@@ -401,14 +401,9 @@ class MainWindow(QMainWindow):
 
     def update_raw_info(self, data):
         import mne
-        from mnetape.core.models import ICASolution
 
         if data is None:
             self.raw_info_label.setText("")
-            return
-        if isinstance(data, ICASolution):
-            n_components = data.ica.n_components_ if data.ica else 0
-            self.raw_info_label.setText(f"ICA fitted  ·  {n_components} components")
             return
         name = self.state.data_filepath.name if self.state.data_filepath else ""
         n_ch = len(data.ch_names)
