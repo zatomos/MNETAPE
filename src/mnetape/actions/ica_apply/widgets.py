@@ -121,7 +121,7 @@ class ICAInspectionDialog(QDialog):
 
     CHUNK_SIZE = 15
 
-    def __init__(self, ica, raw, auto_exclude, ic_labels=None, detected_artifacts=None, parent=None):
+    def __init__(self, ica, raw, auto_exclude, ic_labels=None, parent=None):
         super().__init__(parent)
         self.btn_overlay = None
         self.exclude_display = None
@@ -133,7 +133,8 @@ class ICAInspectionDialog(QDialog):
         self.ica = ica
         self.raw = raw
         self.ic_labels = ic_labels
-        self.detected_artifacts = detected_artifacts or []
+        # Derive detected_artifacts from ic_labels["detected_artifacts"] if available
+        self.detected_artifacts = list(ic_labels.get("detected_artifacts", [])) if ic_labels else []
         self.labels = format_component_labels(ic_labels, self.detected_artifacts, ica.n_components_)
         self.ica.exclude = list(auto_exclude)
         self.ica_names = list(
@@ -559,7 +560,7 @@ def exclude_components_factory(param_def, current_value, raw, parent=None):
     Args:
         param_def: The param schema dict for this parameter.
         current_value: The currently stored exclusion list, or None.
-        raw: The data context — an ICASolution when ica_fit has been run, else None.
+        raw: The data context: an ICASolution when ica_fit has been run, else None.
         parent: Optional parent QWidget.
 
     Returns:
@@ -571,10 +572,9 @@ def exclude_components_factory(param_def, current_value, raw, parent=None):
     exclude = list(current_value) if current_value is not None else []
     state = {"exclude": exclude}
 
-    has_classify = ica_solution is not None and (
-        ica_solution.ic_labels is not None or bool(ica_solution.detected_artifacts)
-    )
-    auto_exclude = list(ica_solution.detected_artifacts or []) if has_classify else []
+    has_classify = ica_solution is not None and ica_solution.ic_labels is not None
+    ic_labels_dict = ica_solution.ic_labels if has_classify else None
+    auto_exclude = list(ic_labels_dict.get("detected_artifacts", [])) if ic_labels_dict else []
 
     container = QWidget(parent)
     layout = QHBoxLayout(container)
@@ -614,7 +614,6 @@ def exclude_components_factory(param_def, current_value, raw, parent=None):
                 raw=ica_solution.raw,
                 auto_exclude=list(state["exclude"]),
                 ic_labels=ica_solution.ic_labels,
-                detected_artifacts=ica_solution.detected_artifacts,
                 parent=parent,
             )
             if dialog.exec() == QDialog.DialogCode.Accepted:

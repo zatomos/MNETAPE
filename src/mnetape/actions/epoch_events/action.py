@@ -6,7 +6,6 @@ from mnetape.actions.epoch_events.widgets import (
     events_file_factory,
     stim_channel_factory,
 )
-from mnetape.core.models import DataType
 
 ACTION = action_from_templates(
     action_id="epoch_events",
@@ -19,8 +18,6 @@ ACTION = action_from_templates(
         "mne.find_events": "https://mne.tools/stable/generated/mne.find_events.html",
         "mne.read_events": "https://mne.tools/stable/generated/mne.read_events.html",
     },
-    input_type=DataType.RAW,
-    output_type=DataType.EPOCHS,
     param_widget_factories={
         "event_ids": event_ids_factory,
         "stim_channel": stim_channel_factory,

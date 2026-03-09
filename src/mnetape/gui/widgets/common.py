@@ -13,7 +13,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolb
 from matplotlib.figure import Figure
 
 from mnetape.actions.registry import get_action_title
-from mnetape.core.models import ActionConfig, ActionStatus, STATUS_ICONS, STATUS_COLORS
+from mnetape.core.models import CUSTOM_ACTION_ID, ActionConfig, ActionStatus, STATUS_ICONS, STATUS_COLORS
 
 
 def disable_psd_span_popups(fig: Figure) -> None:
@@ -171,7 +171,7 @@ class ActionListItem(QWidget):
         # Action name with custom/edited badge
         name = get_action_title(action)
         if action.is_custom:
-            name += " [CUSTOM]" if action.action_id == "custom" else " [EDITED]"
+            name += " [CUSTOM]" if action.action_id == CUSTOM_ACTION_ID else " [EDITED]"
         self.name_label = QLabel(f"{index}. {name}")
         self.name_label.setStyleSheet("font-weight: bold;")
         top_row.addWidget(self.name_label, 1, Qt.AlignmentFlag.AlignVCenter)

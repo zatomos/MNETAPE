@@ -24,11 +24,10 @@ from PyQt6.QtWidgets import (
 
 from mnetape.actions.registry import get_action_by_id
 from mnetape.core.codegen import (
-    extract_action_blocks,
-    generate_action_code,
     generate_full_script,
+    parse_script_to_actions,
 )
-from mnetape.core.models import DataType
+from mnetape.core.models import CUSTOM_ACTION_ID, DataType
 from mnetape.gui.controllers.action_controller import ActionController
 from mnetape.gui.controllers.file_handler import FileHandler
 from mnetape.gui.controllers.nav_controller import NavController
@@ -40,8 +39,7 @@ from mnetape.gui.widgets import ActionListItem
 
 def make_type_header(data_type: DataType) -> QListWidgetItem:
     """Create a section header item for the given data type."""
-    label_name = data_type.value.capitalize()
-    header = QListWidgetItem(f"── {label_name} ──")
+    header = QListWidgetItem(f"── {data_type.label} ──")
     header.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
     header.setForeground(QBrush(QColor("#888888")))
     font = header.font()
@@ -423,36 +421,39 @@ class MainWindow(QMainWindow):
 
     # --------- Code generation and execution ---------
 
-    def get_action_blocks(self) -> list[dict]:
-        """Extract per-action code blocks from the current editor content.
+    def get_execution_code(self, index: int, action) -> tuple[str, str]:
+        """Return (call_site, func_defs) for executing a single action.
 
-        Falls back to generating the script from the action list when the editor is empty.
-
-        Returns:
-            List of block dicts as returned by extract_action_blocks.
-        """
-        script = self.code_panel.get_code()
-        if not script.strip():
-            script = generate_full_script(self.state.data_filepath, self.state.actions)
-        return extract_action_blocks(script)
-
-    def get_action_code(self, index: int, action) -> str:
-        """Return the source code for a single action, for execution.
-
-        Non-custom actions are regenerated fresh from their definition so that imports
-        extracted into the full-script header are still present when the block is exec'd
-        individually. Custom/edited actions use the code from the editor as-is.
+        For custom/inline actions, func_defs is empty and call_site contains the raw code.
+        For standard actions, generates the call-site and the action's function definition fresh.
 
         Args:
             index: Position of the action in the pipeline.
-            action: The ActionConfig whose code should be returned.
+            action: The ActionConfig whose code to generate.
 
         Returns:
-            Python source code string for the action.
+            Tuple of (call_site_str, func_defs_str).
         """
-        if not action.is_custom and not action.custom_code:
-            return generate_action_code(action)
-        blocks = self.get_action_blocks()
-        if index < len(blocks):
-            return blocks[index]["code"]
-        return action.custom_code or ""
+        from mnetape.actions.registry import get_action_by_id
+
+        if action.action_id == CUSTOM_ACTION_ID:
+            return action.custom_code or "", ""
+
+        action_def = get_action_by_id(action.action_id)
+        if not action_def:
+            return action.custom_code or "", ""
+
+        if action.is_custom and action.custom_code:
+            # Custom-edited body: wrap in canonical signature so call site still works
+            func_defs = action_def.build_function_def_with_body(action.action_id, action.custom_code)
+            params = {**action_def.default_params(), **action.params}
+            adv = action.advanced_params or None
+            call_site = action_def.build_call_site(action.action_id, params, adv)
+            return call_site, func_defs
+
+        # Standard action: generate function def + call site using action_id as func name
+        params = {**action_def.default_params(), **action.params}
+        adv = action.advanced_params or None
+        func_defs = action_def.build_function_def(action.action_id)
+        call_site = action_def.build_call_site(action.action_id, params, adv)
+        return call_site, func_defs

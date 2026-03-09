@@ -15,7 +15,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QMessageBox, QProgressDialog
 
 from mnetape.actions.registry import get_action_by_id, get_action_title
-from mnetape.core.executor import exec_action_code
+from mnetape.core.executor import exec_action
 from mnetape.core.models import ActionStatus, DataType, ICASolution
 
 if TYPE_CHECKING:
@@ -104,7 +104,9 @@ class PipelineRunner:
             data: The processed data object to store.
         """
         while len(self.state.data_states) < row:
-            if self.get_data_type_at(len(self.state.data_states)) == DataType.RAW:
+            pad_index = len(self.state.data_states)
+            pad_type = self.get_data_type_at(pad_index)
+            if pad_type == DataType.RAW:
                 self.state.data_states.append(self.state.raw_original.copy())
             else:
                 self.state.data_states.append(None)
@@ -210,7 +212,7 @@ class PipelineRunner:
             raise error[0]
         return result[0]
 
-    def execute_action(self, action, action_def, code: str, data,
+    def execute_action(self, action, action_def, call_site: str, func_defs: str, data,
                        input_type: DataType = DataType.RAW, output_type: DataType = DataType.RAW):
         """Execute a single action and return the resulting data object.
 
@@ -219,7 +221,8 @@ class PipelineRunner:
         Args:
             action: The ActionConfig being executed.
             action_def: The ActionDefinition for the action.
-            code: Python source code for this action.
+            call_site: Call-site Python statement (or custom code block).
+            func_defs: Function definition(s) to exec before the call site.
             data: Input data object.
             input_type: DataType of the incoming data.
             output_type: DataType of the expected result.
@@ -232,7 +235,9 @@ class PipelineRunner:
         """
         title = get_action_title(action)
         return self.run_in_thread(
-            lambda c=code, d=data: exec_action_code(c, d, action, input_type=input_type, output_type=output_type),
+            lambda cs=call_site, fd=func_defs, d=data: exec_action(
+                cs, fd, d, action, input_type=input_type, output_type=output_type
+            ),
             f"Running: {title}...",
         )
 
@@ -307,8 +312,8 @@ class PipelineRunner:
             if in_type != pipeline_type:
                 action.status = ActionStatus.ERROR
                 action.error_msg = (
-                    f"Type mismatch: pipeline produces {pipeline_type.value} data, "
-                    f"but this action expects {in_type.value}"
+                    f"Type mismatch: pipeline produces {pipeline_type.label} data, "
+                    f"but this action expects {in_type.label}"
                 )
                 logger.error("Type mismatch at action %d: pipeline=%s action_input=%s", i + 1, pipeline_type, in_type)
                 self.w.update_action_list(sync_code=False)
@@ -316,8 +321,8 @@ class PipelineRunner:
                 break
 
             try:
-                code = self.w.get_action_code(i, action)
-                data = self.execute_action(action, action_def, code, data,
+                call_site, func_defs = self.w.get_execution_code(i, action)
+                data = self.execute_action(action, action_def, call_site, func_defs, data,
                                            input_type=in_type, output_type=out_type)
                 self.store_action_result(i, data)
                 action.status = ActionStatus.COMPLETE

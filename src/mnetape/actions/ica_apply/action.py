@@ -2,7 +2,6 @@
 
 from mnetape.actions.base import Prerequisite, action_from_templates
 from mnetape.actions.ica_apply.widgets import exclude_components_factory
-from mnetape.core.models import DataType
 
 ACTION = action_from_templates(
     action_id="ica_apply",
@@ -18,6 +17,4 @@ ACTION = action_from_templates(
         Prerequisite("ica_fit", "ICA must be fitted before it can be applied."),
     ),
     param_widget_factories={"exclude_components": exclude_components_factory},
-    input_type=DataType.ICA,
-    output_type=DataType.RAW,
 )

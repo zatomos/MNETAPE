@@ -172,11 +172,13 @@ class ActionController:
 
             if (
                 old.params != new.params
+                or old.advanced_params != new.advanced_params
                 or old.custom_code != new.custom_code
                 or old.is_custom != new.is_custom
                 or old.title_override != new.title_override
             ):
                 old.params = new.params
+                old.advanced_params = new.advanced_params
                 old.custom_code = new.custom_code
                 old.is_custom = new.is_custom
                 old.title_override = new.title_override

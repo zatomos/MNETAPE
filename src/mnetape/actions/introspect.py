@@ -11,13 +11,12 @@ import inspect
 import logging
 from typing import Any, Callable
 
+from mnetape.actions.base import SCOPE_VARS
+
 logger = logging.getLogger(__name__)
 
-# Parameters to always exclude from advanced params
-EXCLUDED_PARAMS = frozenset({
-    "self", "return", "inst", "raw", "epochs",
-    "verbose", "n_jobs",
-})
+# Parameters to always exclude from advanced params (scope vars are excluded too)
+EXCLUDED_PARAMS = frozenset({"self", "return", "inst", "verbose", "n_jobs"}) | SCOPE_VARS
 
 
 def resolve_method(dotted_name: str) -> Callable | None:

@@ -1,7 +1,6 @@
 """ICA classify action: automatic component classification via ICLabel, EOG, ECG, and muscle detection."""
 
 from mnetape.actions.base import Prerequisite, action_from_templates
-from mnetape.core.models import DataType
 
 ACTION = action_from_templates(
     action_id="ica_classify",
@@ -20,6 +19,4 @@ ACTION = action_from_templates(
     prerequisites=(
         Prerequisite("ica_fit", "ICA must be fitted before classification."),
     ),
-    input_type=DataType.ICA,
-    output_type=DataType.ICA,
 )

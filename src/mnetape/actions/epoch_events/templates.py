@@ -1,115 +1,16 @@
-"""Event-based epoching action templates.
-
-Single action that first extracts events then creates mne.Epochs.
-"""
+"""Event-based epoching action templates."""
 
 from __future__ import annotations
 
-from typing import Annotated, TYPE_CHECKING
+from typing import Annotated
 
-from mnetape.actions.base import CodeRef, ParamMeta, builder, fragment
-
-if TYPE_CHECKING:
-    import mne
-    import numpy as np
-
-
-# -------- get event fragments --------
-
-@fragment
-def _do_get_events_annotations(raw, event_id) -> None:
-    events, event_ids = mne.events_from_annotations(raw, event_id=event_id)
-
-
-@fragment
-def _do_get_events_stim(raw, stim_channel, min_duration, shortest_event, event_ids) -> None:
-    events = mne.find_events(raw, stim_channel=stim_channel, min_duration=min_duration, shortest_event=shortest_event)
-    event_ids = event_ids  # inlined value; sets the scope variable for step 2
-
-
-@fragment
-def _do_get_events_file(raw, events_file, event_ids) -> None:
-    events = mne.read_events(events_file)
-    event_ids = event_ids  # inlined value; sets the scope variable for step 2
-
-
-@fragment
-def _do_get_events_bids_tsv(raw, events_file, event_ids) -> None:
-    import pandas as pd
-    df = pd.read_csv(events_file, sep='\t')
-    if 'event_type' in df.columns:
-        col = 'event_type'
-    elif 'trial_type' in df.columns:
-        col = 'trial_type'
-    else:
-        raise ValueError(f"BIDS events file has no 'event_type' or 'trial_type' column. Available columns: {list(df.columns)}")
-    descs = df[col].fillna('n/a').astype(str)
-    id_map = {d: i + 1 for i, d in enumerate(sorted(set(descs)))}
-    events = np.column_stack([
-        (df['onset'].values * raw.info['sfreq']).round().astype(int),
-        np.zeros(len(df), dtype=int),
-        [id_map[d] for d in descs],
-    ])
-    event_ids = event_ids  # inlined value; sets the scope variable for step 2
-
-
-# -------- create epochs fragments --------
-
-@fragment
-def _do_create_epochs(raw, events, event_ids, tmin, tmax, reject_by_annotation) -> None:
-    epochs = mne.Epochs(raw,
-                        events,
-                        event_id=event_ids,
-                        tmin=tmin,
-                        tmax=tmax,
-                        baseline=None,
-                        reject_by_annotation=reject_by_annotation,
-                        preload=True)
-
-
-@fragment
-def _do_create_epochs_baseline(raw, events, event_ids, tmin, tmax, baseline_tmin, baseline_tmax, reject_by_annotation) -> None:
-    epochs = mne.Epochs(raw,
-                        events,
-                        event_id=event_ids,
-                        tmin=tmin,
-                        tmax=tmax,
-                        baseline=(baseline_tmin, baseline_tmax),
-                        reject_by_annotation=reject_by_annotation,
-                        preload=True)
-
-
-# -------- Builder --------
-
-def _build_get_events_code(
-    *,
-    event_source: str,
-    events_file: str,
-    event_ids: dict | None,
-    stim_channel: str,
-    min_duration: float,
-    shortest_event: int,
-) -> str:
-    if event_source == "stim":
-        return _do_get_events_stim.inline(
-            stim_channel=stim_channel or None,
-            min_duration=min_duration,
-            shortest_event=shortest_event,
-            event_ids=event_ids,
-        )
-    if event_source == "file":
-        if events_file.lower().endswith(".tsv"):
-            return _do_get_events_bids_tsv.inline(events_file=events_file, event_ids=event_ids)
-        return _do_get_events_file.inline(
-            events_file=events_file,
-            event_ids=event_ids,
-        )
-    # Default: annotations
-    return _do_get_events_annotations.inline(event_id=event_ids)
+import mne
+from mnetape.actions.base import ParamMeta, builder
 
 
 @builder
-def epoch_events_builder(
+def template_builder(
+    raw: mne.io.Raw,
     event_source: Annotated[
         str,
         ParamMeta(
@@ -197,7 +98,7 @@ def epoch_events_builder(
         ParamMeta(
             type="float",
             label="Baseline start (s)",
-            description="Start of the baseline window. None = beginning of epoch. Leave baseline end as None to skip baseline correction.",
+            description="Start of the baseline window. Leave baseline end as None to skip correction.",
             default=None,
             decimals=3,
             nullable=True,
@@ -208,7 +109,7 @@ def epoch_events_builder(
         ParamMeta(
             type="float",
             label="Baseline end (s)",
-            description="End of the baseline window. Set to apply baseline correction; leave as None to skip.",
+            description="End of the baseline window. Set to apply baseline correction.",
             default=None,
             decimals=3,
             nullable=True,
@@ -219,35 +120,59 @@ def epoch_events_builder(
         ParamMeta(
             type="bool",
             label="Reject by annotation",
-            description="If True, epochs overlapping with annotations marked as bad are rejected.",
+            description="If True, epochs overlapping bad annotations are rejected.",
             default=True,
         ),
     ] = True,
-) -> str:
-    events_code = _build_get_events_code(
-        event_source=event_source,
-        events_file=events_file,
-        event_ids=event_ids,
-        stim_channel=stim_channel,
-        min_duration=min_duration,
-        shortest_event=shortest_event,
-    )
-    if baseline_tmin is not None and baseline_tmax is not None:
-        epochs_code = _do_create_epochs_baseline.inline(
-            events=CodeRef("events"),
-            event_ids=CodeRef("event_ids"),
-            tmin=tmin,
-            tmax=tmax,
-            reject_by_annotation=reject_by_annotation,
-            baseline_tmin=baseline_tmin,
-            baseline_tmax=baseline_tmax,
+    **kwargs,
+) -> mne.BaseEpochs:
+    if event_source == "stim":
+        events = mne.find_events(
+            raw,
+            stim_channel=stim_channel or None,
+            min_duration=min_duration,
+            shortest_event=shortest_event,
         )
+    elif event_source == "file":
+        if events_file.lower().endswith(".tsv"):
+            import numpy as np
+            import pandas as pd
+            df = pd.read_csv(events_file, sep='\t')
+            if 'event_type' in df.columns:
+                col = 'event_type'
+            elif 'trial_type' in df.columns:
+                col = 'trial_type'
+            else:
+                raise ValueError(
+                    f"BIDS events file has no 'event_type' or 'trial_type' column. "
+                    f"Available columns: {list(df.columns)}"
+                )
+            descs = df[col].fillna('n/a').astype(str)
+            id_map = {d: i + 1 for i, d in enumerate(sorted(set(descs)))}
+            events = np.column_stack([
+                (df['onset'].values * raw.info['sfreq']).round().astype(int),
+                np.zeros(len(df), dtype=int),
+                [id_map[d] for d in descs],
+            ])
+        else:
+            events = mne.read_events(events_file)
     else:
-        epochs_code = _do_create_epochs.inline(
-            events=CodeRef("events"),
-            event_ids=CodeRef("event_ids"),
-            tmin=tmin,
-            tmax=tmax,
-            reject_by_annotation=reject_by_annotation,
-        )
-    return f"{events_code}\n{epochs_code}"
+        events, event_ids = mne.events_from_annotations(raw, event_id=event_ids)
+
+    if baseline_tmin is not None and baseline_tmax is not None:
+        baseline = (baseline_tmin, baseline_tmax)
+    else:
+        baseline = None
+
+    epochs = mne.Epochs(
+        raw,
+        events,
+        event_id=event_ids,
+        tmin=tmin,
+        tmax=tmax,
+        baseline=baseline,
+        reject_by_annotation=reject_by_annotation,
+        preload=True,
+        **kwargs,
+    )
+    return epochs

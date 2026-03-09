@@ -1,48 +1,16 @@
-"""ICA fit action templates.
-
-Fits an ICA decomposition on the raw data.
-"""
+"""ICA fit action templates."""
 
 from __future__ import annotations
 
-from typing import Annotated, TYPE_CHECKING
+from typing import Annotated
 
-from mnetape.actions.base import ParamMeta, fragment, builder
-
-if TYPE_CHECKING:
-    import mne
-
-PRIMARY_PARAMS = {
-    "mne.preprocessing.ICA": ["n_components", "method", "fit_params"],
-}
-
-
-@fragment
-def _fit_all_eeg(raw, method: str = "infomax", fit_params: dict | None = None) -> None:
-    ica = mne.preprocessing.ICA(
-        n_components=len(mne.pick_types(raw.info, eeg=True)),
-        method=method,
-        random_state=42,
-        fit_params=fit_params,
-    )
-    ica.fit(raw, picks="eeg")
-
-
-@fragment
-def _fit_fixed(
-    raw, n_components: int = 20, method: str = "infomax", fit_params: dict | None = None
-) -> None:
-    ica = mne.preprocessing.ICA(
-        n_components=n_components,
-        method=method,
-        random_state=42,
-        fit_params=fit_params,
-    )
-    ica.fit(raw, picks="eeg")
+import mne
+from mnetape.actions.base import ParamMeta, builder
 
 
 @builder
-def fit_builder(
+def template_builder(
+    raw: mne.io.Raw,
     n_components: Annotated[
         int,
         ParamMeta(
@@ -64,12 +32,12 @@ def fit_builder(
             default="infomax",
         ),
     ] = "infomax",
-) -> str:
+    ica_kwargs={},
+    fit_kwargs={},
+) -> tuple[mne.preprocessing.ICA, mne.io.Raw, dict | None]:
     fit_params = {"extended": True} if method == "infomax" else None
-    if int(n_components) == 0:
-        return _fit_all_eeg.inline(method=method, fit_params=fit_params)
-    return _fit_fixed.inline(
-        n_components=int(n_components),
-        method=method,
-        fit_params=fit_params,
-    )
+    n_comp = len(mne.pick_types(raw.info, eeg=True)) if n_components == 0 else n_components
+    ica = mne.preprocessing.ICA(n_components=n_comp, method=method, max_iter="auto", fit_params=fit_params, **ica_kwargs)
+    ica.fit(raw, picks="eeg", **fit_kwargs)
+    ic_labels = None
+    return ica, raw, ic_labels

@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
 )
 
 from mnetape.actions.registry import get_action_by_id, list_actions
+from mnetape.core.models import CUSTOM_ACTION_ID
 
 
 class AddActionDialog(QDialog):
@@ -39,7 +40,7 @@ class AddActionDialog(QDialog):
         self.action_list = QListWidget()
         self.action_list.setObjectName("addActionList")
         for action_def in sorted(list_actions(), key=lambda a: a.title.lower()):
-            if action_def.action_id == "custom":
+            if action_def.action_id == CUSTOM_ACTION_ID:
                 continue
             item = QListWidgetItem(action_def.title)
             item.setData(Qt.ItemDataRole.UserRole, action_def.action_id)

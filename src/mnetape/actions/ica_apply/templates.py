@@ -8,20 +8,13 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from mnetape.actions.base import ParamMeta, builder, fragment
-
-PRIMARY_PARAMS = {
-    "ica.apply": ["exclude"],
-}
-
-
-@fragment
-def _apply(ica, raw, exclude: list = None) -> None:
-    raw = ica.apply(raw, exclude=exclude, verbose=False)
+import mne
+from mnetape.actions.base import ParamMeta, builder
 
 
 @builder
-def apply_builder(
+def template_builder(
+    ica: mne.preprocessing.ICA, raw: mne.io.Raw, ic_labels: dict | None,
     exclude: Annotated[
         list | None,
         ParamMeta(
@@ -31,5 +24,8 @@ def apply_builder(
             default=None,
         ),
     ] = None,
-) -> str:
-    return _apply.inline(exclude=exclude or [])
+    **kwargs,
+) -> mne.io.Raw:
+    ica.exclude = exclude or []
+    raw = ica.apply(raw.copy(), **kwargs)
+    return raw

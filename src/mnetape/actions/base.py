@@ -1,16 +1,6 @@
 """Base types and factories for EEG pipeline actions.
 
 This module contains the building blocks used to define preprocessing actions:
-
-- Fragment / @fragment: extract a function body as a code template and substitute literal values via inline().
-- @builder / ActionBuilder: mark a builder function as the code generator for an action.
-- ParamMeta: widget/schema metadata attached to template_builder parameters.
-- extract_schema_from_signature: derive a params_schema dict from Annotated type hints on a template_builder function.
-- TemplateSchema / FunctionParamGroup: schema used for reverse-parsing params from generated code
-  and for discovering advanced MNE kwargs.
-- ActionDefinition: frozen dataclass describing a complete action.
-- action_from_templates: single-call factory that loads a templates.py module, discovers the @builder function,
-  and wires everything into an ActionDefinition.
 """
 
 from __future__ import annotations
@@ -25,29 +15,19 @@ import sys
 import textwrap
 from typing import Annotated, Any, Callable, get_args, get_origin, get_type_hints
 
-from mnetape.core.models import DataType
+from mnetape.core.models import ANNOTATION_TO_DATATYPE, RETURN_VARS, DataType
 
 logger = logging.getLogger(__name__)
 
 ParamsSchema = dict[str, dict]
-CodeBuilder = Callable[..., str]
 
+# Variables always available in the exec scope. Excluded from function param schemas
+SCOPE_VARS: frozenset[str] = frozenset({"raw", "epochs", "evoked", "ica", "ic_labels"})
 
 # -------- Value to AST conversion --------
 
 def value_to_ast(value: object) -> ast.expr:
-    """Convert a Python value to an AST expression node.
-
-    Supports None, bool, int, float, str, list, dict, and CodeRef.
-    Falls back to a string representation for other types.
-
-    Args:
-        value: Python value to convert.
-
-    Returns:
-        An AST expression node representing the value.
-    """
-
+    """Convert a Python value to an AST expression node."""
     if value is None:
         return ast.Constant(value=None)
     if isinstance(value, bool):
@@ -61,143 +41,26 @@ def value_to_ast(value: object) -> ast.expr:
             keys=[ast.Constant(value=k) for k in value.keys()],
             values=[value_to_ast(v) for v in value.values()],
         )
-    if isinstance(value, CodeRef):
-        try:
-            expr = ast.parse(value.expr, mode="eval")
-            return expr.body
-        except SyntaxError:
-            return ast.Constant(value=value.expr)
     return ast.Constant(value=str(value))
 
 
-# -------- Fragment system --------
+# -------- AST utilities --------
 
-class NameSubstitutor(ast.NodeTransformer):
-    """AST transformer that replaces Name nodes in Load context with literal AST expressions.
-
-    Example:
-        - Body: raw.filter(l_freq=l_freq, h_freq=h_freq)
-        - Substitutions: {"l_freq": 0.5, "h_freq": 45.0}
-        - Result: raw.filter(l_freq=0.5, h_freq=45.0)
-    """
-
-    def __init__(self, subs: dict[str, ast.expr]) -> None:
-        self.subs = subs
-
-    def visit_Name(self, node: ast.Name) -> ast.AST:
-        if isinstance(node.ctx, ast.Load) and node.id in self.subs:
-            return ast.copy_location(self.subs[node.id], node)
-        return node
-
-
-class ConstantBranchPruner(ast.NodeTransformer):
-    """AST transformer that removes dead branches after constant folding.
-
-    After NameSubstitutor replaces variables with constants, conditional branches with a known-true or known-false test
-    can be statically removed.
-    Example:
-         "if True:" keeps only its body; "if False:" is replaced by its else branch (or eliminated entirely).
-    """
-
-    def visit_If(self, node: ast.If) -> ast.AST | list[ast.stmt]:
-        self.generic_visit(node)
-        if not isinstance(node.test, ast.Constant):
-            return node
-        return node.body if node.test.value else node.orelse
-
-
-class Fragment:
-    """A code fragment extracted from a function body, used for code generation.
-
-    Fragment functions are decorated with @fragment and are never called directly.
-    Their body is extracted as source and composed into the generated pipeline code by inline().
-
-    Raw may be declared as a parameter but is never injected as a literal assignment. It is always available in
-    the exec scope at pipeline runtime.
-    """
-
-    # Variables always available in exec scope and never get injected
-    SCOPE_VARS: frozenset[str] = frozenset({"raw", "epochs", "evoked", "ica"})
-
-    def __init__(self, fn: Callable) -> None:
-        self.fn = fn
-        self.param_names: list[str] = []
-        self.body_source: str = ""
-        self.extract()
-
-    def extract(self) -> None:
-        source = inspect.getsource(self.fn)
-        source = textwrap.dedent(source)
-        tree = ast.parse(source)
-        func_def = next(
-            n for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef) and n.name == self.fn.__name__
-        )
-        self.param_names = [a.arg for a in func_def.args.args]
-        self.body_source = "\n".join(ast.unparse(stmt) for stmt in func_def.body)
-
-    def inline(self, **kwargs: object) -> str:
-        """Return the fragment body with param names substituted by their literal values.
-
-        Scope variables are never substituted. They are always available in the exec context.
-        """
-
-        substitutions: dict[str, ast.expr] = {}
-        for name in self.param_names:
-            if name in self.SCOPE_VARS:
-                continue
-            if name in kwargs:
-                substitutions[name] = value_to_ast(kwargs[name])
-
-        if not substitutions:
-            return self.body_source
-
-        tree = ast.parse(self.body_source)
-        tree = NameSubstitutor(substitutions).visit(tree)
-        tree = ConstantBranchPruner().visit(tree)
-        ast.fix_missing_locations(tree)
-        return ast.unparse(tree)
-
-    def __call__(self) -> object:
-        raise TypeError(
-            f"Fragment '{self.fn.__name__}' is a code template, not a callable. "
-            "Use .inline(**kwargs) to generate source code."
-        )
-
-
-def fragment(fn: Callable) -> Fragment:
-    """Decorator that turns a function into a class Fragment code template.
-
-    The decorated function's body becomes the template source. It is never executed directly.
-    Use frag.inline(**kwargs) to produce injectable code strings.
-    """
-    return Fragment(fn)
-
-
-@dataclass
-class ActionBuilder:
-    """Typed wrapper returned by the @builder decorator.
-
-    Holds the builder callable. action_id and title are supplied by action_from_templates.
-    """
-
-    fn: Callable[..., str]
-
-
-def builder(fn: Callable[..., str]) -> ActionBuilder:
-    """Mark a function as the code-generator for an action."""
-    return ActionBuilder(fn=fn)
+def get_dotted_name(node: ast.expr) -> str | None:
+    """Return 'a.b.c' string for an AST Name or Attribute chain, or None."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = get_dotted_name(node.value)
+        return f"{base}.{node.attr}" if base else None
+    return None
 
 
 # -------- Parameter metadata type --------
 
 @dataclass
 class ParamMeta:
-    """Widget/schema metadata for parameters annotations.
-
-    Use in template_builder to describe how a parameter should be displayed and validated in the action editor.
-    All fields are optional except type (defaults to "text").
-    """
+    """Widget metadata for parameter annotations."""
 
     type: str = "text"
     label: str = ""
@@ -211,7 +74,6 @@ class ParamMeta:
     visible_when: dict[str, list] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a params_schema-compatible dict, omitting unset optional fields."""
         d: dict[str, Any] = {"type": self.type, "default": self.default}
         if self.label:
             d["label"] = self.label
@@ -232,32 +94,14 @@ class ParamMeta:
         return d
 
 
-@dataclass(frozen=True)
-class CodeRef:
-    """Reference to a Python expression inserted verbatim during substitution."""
-
-    expr: str
-
-
 # -------- Schema extraction from Annotated signatures --------
 
 def infer_param_type(annotation: type | None) -> str:
-    """Map a Python type annotation to an editor widget-type string.
-
-    Used when no explicit ParamMeta is provided on an Annotated parameter.
-    Unwraps Union/Optional to inspect the inner type.
-
-    Args:
-        annotation: A Python type annotation, or None.
-
-    Returns:
-        One of "float", "int", "bool", or "text".
-    """
+    """Map Python type annotations to widget type strings. Defaults to 'text'."""
     if annotation is None:
         return "text"
     origin = get_origin(annotation)
     if origin is not None:
-        # Filter out None and infer the inner type if it's a Union (e.g. Optional[T])
         inner = [a for a in get_args(annotation) if a is not type(None)]
         return infer_param_type(inner[0]) if inner else "text"
     if annotation is float:
@@ -272,40 +116,35 @@ def infer_param_type(annotation: type | None) -> str:
 
 
 def extract_schema_from_signature(fn: Callable) -> dict[str, dict]:
-    """Extract a params_schema dict from a template_builder function signature.
+    """Extract a params_schema dict from a builder function signature.
 
-    Parameters annotated with Annotated[T, ParamMeta(...)] use the ParamMeta for widget metadata.
-    Plain parameters get type and default inferred automatically.
-    The raw parameter is always excluded. Mutable defaults (list, dict) are normalized to None to avoid
-    mutable-default-argument issues.
-
-    Args:
-        fn: The template builder function to inspect.
-
-    Returns:
-        Dict mapping parameter names to widget spec dicts compatible with params_schema.
+    Parameters in SCOPE_VARS, ending with '_kwargs' or named 'kwargs' are excluded.
+    Annotated[T, ParamMeta(...)] parameters use the ParamMeta for widget metadata.
+    Mutable defaults (list, dict) are normalized to None.
     """
-
     sig = inspect.signature(fn)
     try:
         module = inspect.getmodule(fn)
-        global_namespace = vars(module) if module else {}
+        global_namespace = dict(vars(module)) if module else {}
         hints = get_type_hints(fn, globalns=global_namespace, include_extras=True)
     except Exception as e:
         logger.warning("Failed to get type hints for function '%s': %s", fn.__name__, e)
         hints = {}
 
-    schema_excluded = Fragment.SCOPE_VARS
     result: dict[str, dict] = {}
     for name, param in sig.parameters.items():
-        if name in schema_excluded:
+        if name in SCOPE_VARS:
+            continue
+        # Skip kwargs groups
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            continue
+        if name.endswith("_kwargs"):
             continue
 
         annotation = hints.get(name)
         raw_default = param.default
         has_default = raw_default is not inspect.Parameter.empty
 
-        # Mutable defaults to None
         if has_default and isinstance(raw_default, (list, dict)):
             default = None
         else:
@@ -336,109 +175,136 @@ def extract_schema_from_signature(fn: Callable) -> dict[str, dict]:
     return result
 
 
-# -------- TemplateSchema --------
+# -------- Type inference from AST annotations --------
 
-@dataclass(frozen=True)
-class FunctionParamGroup:
-    """Tracks an MNE function call and which of its kwargs are owned by the template."""
+def infer_input_from_ast(func_def: ast.FunctionDef) -> DataType:
+    """Infer input DataType from the annotation on the first scope-variable argument."""
+    for arg in func_def.args.args:
+        if arg.arg not in SCOPE_VARS or arg.annotation is None:
+            continue
+        dotted = get_dotted_name(arg.annotation)
+        dt = ANNOTATION_TO_DATATYPE.get(dotted or "")
+        if dt is not None:
+            return dt
+    raise TypeError(
+        f"Builder '{func_def.name}' must annotate its first scope argument with a recognized MNE type "
+        f"(e.g. raw: mne.io.Raw, epochs: mne.BaseEpochs, ica: mne.preprocessing.ICA)."
+    )
 
-    dotted_name: str
-    params: dict[str, dict]  # kwargs owned by the template (excluded from advanced)
 
-    def __hash__(self) -> int:
-        return hash(self.dotted_name)
+def infer_output_from_ast(func_def: ast.FunctionDef) -> DataType:
+    """Infer output DataType from the function return annotation."""
+    ret = func_def.returns
+    if ret is None:
+        raise TypeError(
+            f"Builder '{func_def.name}' must declare a return annotation "
+            f"(e.g. -> mne.io.Raw, -> mne.BaseEpochs, -> tuple[mne.preprocessing.ICA, ...])."
+        )
+
+    # Simple return type
+    dotted = get_dotted_name(ret)
+    if dotted:
+        dt = ANNOTATION_TO_DATATYPE.get(dotted)
+        if dt is not None:
+            return dt
+
+    # Tuple return
+    if isinstance(ret, ast.Subscript) and get_dotted_name(ret.value) == "tuple":
+        slice_node = ret.slice
+        if isinstance(slice_node, ast.Tuple) and slice_node.elts:
+            first_dotted = get_dotted_name(slice_node.elts[0])
+            if first_dotted == "mne.preprocessing.ICA":
+                return DataType.ICA
+
+    raise TypeError(
+        f"Builder '{func_def.name}' has unrecognized return annotation: {ast.unparse(ret)!r}. "
+        f"Supported: mne.io.Raw, mne.BaseEpochs, mne.Evoked, tuple[mne.preprocessing.ICA, ...]."
+    )
 
 
-@dataclass(frozen=True)
-class TemplateSchema:
-    """Schema describing params and MNE function calls for a single action template.
+# -------- Builder --------
 
-    Used for two purposes:
-        - Reverse-parsing: function_groups describe which MNE call kwargs to extract when reading params back out of
-          generated code.
-        - Editor awareness: all_primary_params() returns the full set of configurable params so the action editor knows
-          what fields to show and the context menu can tell whether a step is configurable.
+@dataclass
+class ActionBuilder:
+    """Holds the template builder callable plus the extracted body, param names, and inferred types."""
 
-    Attributes:
-        function_groups: MNE function calls to introspect for param recovery and advanced-param discovery.
-        virtual_params: Params_schema dict for templates that do not map directly to a single MNE function call.
+    fn: Callable
+    body_source: str = ""
+    input_vars: list = field(default_factory=list)
+    param_names: list = field(default_factory=list)
+    input_type: DataType = field(default_factory=lambda: DataType.RAW)
+    output_type: DataType = field(default_factory=lambda: DataType.RAW)
+    kwargs_groups: list = field(default_factory=list)   # e.g. ["kwargs"] or ["ica_kwargs", "fit_kwargs"]
+    kwargs_targets: dict = field(default_factory=dict)  # group_name -> dotted call name
+
+
+def builder(fn: Callable) -> ActionBuilder:
+    """Mark a function as the body template for an action.
+
+    Scope variables should be declared as the first positional parameters of the function. They are automatically
+    excluded from param_names and used to infer input_type and output_type.
+
+    Args ending with '_kwargs' or **kwargs are detected and stored in kwargs_groups.
+    They are excluded from param_names. The body AST is scanned to build kwargs_targets: a mapping from group_name
+    to the dotted call name that unpacks it.
     """
+    ab = ActionBuilder(fn=fn)
 
-    function_groups: tuple[FunctionParamGroup, ...]
-    virtual_params: dict[str, dict] = field(default_factory=dict)
+    source = textwrap.dedent(inspect.getsource(fn))
+    tree = ast.parse(source)
+    func_def = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == fn.__name__
+    )
+    all_args = [a.arg for a in func_def.args.args]
+    ab.body_source = "\n".join(ast.unparse(stmt) for stmt in func_def.body)
+    ab.input_vars = [a for a in all_args if a in SCOPE_VARS]
 
-    def all_primary_params(self) -> dict[str, dict]:
-        """Return all params (virtual and function-group) as a flat params_schema dict."""
+    # Detect kwargs groups
+    kwargs_groups: list[str] = []
 
-        result = dict(self.virtual_params)
-        for g in self.function_groups:
-            result.update(g.params)
-        return result
+    # Named *_kwargs args
+    for a in func_def.args.args:
+        if a.arg not in SCOPE_VARS and a.arg.endswith("_kwargs"):
+            kwargs_groups.append(a.arg)
 
+    # **kwargs VAR_KEYWORD
+    if func_def.args.kwarg is not None and func_def.args.kwarg.arg == "kwargs":
+        kwargs_groups.append("kwargs")
 
-# -------- AST utilities --------
+    ab.kwargs_groups = kwargs_groups
 
-def match_dotted_name(node: ast.expr, dotted_str: str) -> bool:
-    """Check whether an AST expression node matches a dotted name string.
+    # param_names excludes scope vars and kwargs groups
+    kwargs_group_set = set(kwargs_groups)
+    ab.param_names = [
+        a for a in all_args
+        if a not in SCOPE_VARS and a not in kwargs_group_set
+    ]
 
-    Recursively collects Name and Attribute nodes to build a list of name parts,
-    then compares against the split dotted string.
+    ab.input_type = infer_input_from_ast(func_def)
+    ab.output_type = infer_output_from_ast(func_def)
 
-    Args:
-        node: An AST expression representing a name or attribute chain.
-        dotted_str: A dotted name string such as "raw.filter".
+    # Scan body AST for calls that unpack a kwargs group via **group_name
+    kwargs_targets: dict[str, str] = {}
+    for node in ast.walk(ast.Module(body=func_def.body, type_ignores=[])):
+        if isinstance(node, ast.Call):
+            for kw in node.keywords:
+                if kw.arg is None and isinstance(kw.value, ast.Name):
+                    group_name = kw.value.id
+                    if group_name in kwargs_group_set:
+                        dotted = get_dotted_name(node.func)
+                        if dotted:
+                            kwargs_targets[group_name] = dotted
+    ab.kwargs_targets = kwargs_targets
 
-    Returns:
-        True when the node exactly matches the dotted name.
-    """
-    parts = dotted_str.split(".")
-
-    def collect(n: ast.expr) -> list[str] | None:
-        if isinstance(n, ast.Name):
-            return [n.id]
-        if isinstance(n, ast.Attribute):
-            base = collect(n.value)
-            if base is None:
-                return None
-            return base + [n.attr]
-        return None
-
-    node_parts = collect(node)
-    return node_parts == parts if node_parts is not None else False
-
-
-class AdvancedParamInjector(ast.NodeTransformer):
-    """AST transformer that appends missing kwargs from advanced_params into matching function calls."""
-
-    def __init__(self, advanced_params: dict[str, dict]) -> None:
-        self.advanced_params = advanced_params
-
-    def visit_Call(self, node: ast.Call) -> ast.AST:
-        self.generic_visit(node)
-        for dotted_name, params in self.advanced_params.items():
-            if match_dotted_name(node.func, dotted_name):
-                existing = {kw.arg for kw in node.keywords}
-                for name, value in params.items():
-                    if name not in existing:
-                        node.keywords.append(
-                            ast.keyword(arg=name, value=value_to_ast(value))
-                        )
-                break
-        return node
+    return ab
 
 
 # -------- Action definitions --------
 
 @dataclass(frozen=True)
 class Prerequisite:
-    """A prerequisite action that should be run before this one.
-
-    Used to generate a user-facing warning when a dependency has not been completed.
-
-    Attributes:
-        action_id: Identifier of the required preceding action.
-        message: Warning text shown in the prerequisites' dialog.
-    """
+    """A prerequisite action that should be completed before this one."""
 
     action_id: str
     message: str
@@ -448,53 +314,123 @@ class Prerequisite:
 class ActionDefinition:
     """Immutable descriptor for a pipeline action type.
 
-    Instances are constructed once at import time and stored in the registry.
-
     Attributes:
         action_id: Unique identifier string.
         title: Display name.
         params_schema: Dict mapping parameter names to widget spec dicts.
         doc: Short description shown in the action editor dialog.
+        body_source: unparsed function body from the builder template.
+        param_names: Ordered list of user-facing parameter names (excludes scope vars).
+        kwargs_groups: Tuple of kwargs group names.
+        kwargs_targets: Dict mapping group_name to the dotted call name that unpacks it.
         mne_doc_urls: Optional dict mapping label strings to MNE documentation URLs.
-        code_builder: Callable that generates code from params.
-        template_schema: Schema used by the editor to discover advanced MNE kwargs and reverse-parse params.
         prerequisites: Tuple of Prerequisite objects checked before running.
-        param_widget_factories: Optional dict mapping custom param-type strings to factory callables that produce
-            (container, value_widget) pairs.
+        param_widget_factories: Optional dict mapping custom param-type strings to factory
+            callables that produce (container, value_widget) pairs.
         input_type: Expected input data type for this action.
-        output_type: Output data type for this action.
+        output_type: Output data type produced by this action.
+        interactive_runner: Optional callable for interactive execution (receives action, data, parent).
     """
 
     action_id: str
     title: str
     params_schema: ParamsSchema
     doc: str
-    mne_doc_urls: dict[str, str] = field(default_factory=dict)
-    code_builder: CodeBuilder | None = None
-    template_schema: TemplateSchema | None = None
-    prerequisites: tuple[Prerequisite, ...] = ()
-    param_widget_factories: dict[str, Callable] | None = None
+    body_source: str = ""
+    input_vars: list = field(default_factory=list)
+    param_names: list = field(default_factory=list)
+    kwargs_groups: tuple = ()
+    kwargs_targets: dict = field(default_factory=dict)
+    extra_imports: tuple = ()
+    mne_doc_urls: dict = field(default_factory=dict)
+    prerequisites: tuple = ()
+    param_widget_factories: dict | None = None
     input_type: DataType = field(default_factory=lambda: DataType.RAW)
     output_type: DataType = field(default_factory=lambda: DataType.RAW)
+    interactive_runner: Callable | None = None
 
     def default_params(self) -> dict:
         """Return a dict of parameter defaults taken from params_schema."""
         return {name: spec["default"] for name, spec in self.params_schema.items()}
 
-    def build_code(self, params: dict, advanced_params: dict | None = None) -> str:
-        """Generate the Python code string for this action.
+    def build_function_def(self, func_name: str) -> str:
+        """Generate a Python function definition for this action.
+
+        The signature starts with the data input args, followed by primary param names, then any named _kwargs groups
+        (with {} defaults), then **kwargs if present.
 
         Args:
-            params: Parameter values to substitute into the code template.
-            advanced_params: Optional non-primary MNE kwargs to inject,
-                grouped by dotted function name.
+            func_name: Name to give the generated function.
 
         Returns:
-            Python source code string.
+            Complete Python function definition as a string.
         """
-        if not self.code_builder:
-            return ""
-        return self.code_builder(params, advanced_params=advanced_params)
+        sig_parts = list(self.input_vars) + list(self.param_names)
+        for group in self.kwargs_groups:
+            if group != "kwargs":
+                sig_parts.append(f"{group}={{}}")
+        sig = f"def {func_name}({', '.join(sig_parts)}"
+        if "kwargs" in self.kwargs_groups:
+            sep = ", " if sig_parts else ""
+            sig += f"{sep}**kwargs"
+        sig += "):"
+        indented_body = textwrap.indent(self.body_source, "    ")
+        return f"{sig}\n{indented_body}"
+
+    def build_function_def_with_body(self, func_name: str, body: str) -> str:
+        """Generate a function definition using the canonical signature but a custom body.
+
+        Used when the user has edited a function body in the code panel. The signature stays canonical so the call site
+        remains valid.
+
+        Args:
+            func_name: Name to give the generated function.
+            body: Replacement function body source string.
+
+        Returns:
+            Complete Python function definition as a string.
+        """
+        sig_parts = list(self.input_vars) + list(self.param_names)
+        for group in self.kwargs_groups:
+            if group != "kwargs":
+                sig_parts.append(f"{group}={{}}")
+        sig = f"def {func_name}({', '.join(sig_parts)}"
+        if "kwargs" in self.kwargs_groups:
+            sep = ", " if sig_parts else ""
+            sig += f"{sep}**kwargs"
+        sig += "):"
+        return f"{sig}\n{textwrap.indent(body, '    ')}"
+
+    def build_call_site(self, func_name: str, params: dict, advanced_params: dict | None = None) -> str:
+        """Generate a call-site assignment statement for this action.
+
+        Args:
+            func_name: Name of the function to call.
+            params: Primary parameter values.
+            advanced_params: Optional kwargs grouped by group name.
+
+        Returns:
+            Python assignment statement string.
+        """
+        return_var = RETURN_VARS.get(self.output_type, "raw")
+        adv = advanced_params or {}
+
+        call_parts = list(self.input_vars)
+        for name in self.param_names:
+            value = params.get(name, self.params_schema.get(name, {}).get("default"))
+            call_parts.append(f"{name}={ast.unparse(value_to_ast(value))}")
+
+        if "kwargs" in self.kwargs_groups:
+            # Flat extra kwargs. Only emit non-empty ones.
+            for k, v in adv.get("kwargs", {}).items():
+                call_parts.append(f"{k}={ast.unparse(value_to_ast(v))}")
+        else:
+            # Named group. Always emit explicitly.
+            for group in self.kwargs_groups:
+                group_val = adv.get(group, {})
+                call_parts.append(f"{group}={ast.unparse(value_to_ast(group_val))}")
+
+        return f"{return_var} = {func_name}({', '.join(call_parts)})"
 
 
 # -------- action_from_templates factory --------
@@ -505,42 +441,34 @@ def action_from_templates(
     title: str,
     action_file: str,
     doc: str,
+    extra_imports: tuple[str, ...] = (),
     mne_doc_urls: dict[str, str] | None = None,
-    prerequisites: tuple[Prerequisite, ...] = (),
+    prerequisites: tuple = (),
     param_widget_factories: dict[str, Callable] | None = None,
-    input_type: DataType = DataType.RAW,
-    output_type: DataType = DataType.RAW,
+    interactive_runner: Callable | None = None,
 ) -> ActionDefinition:
     """Build an ActionDefinition by loading and introspecting a templates.py module.
 
-    Discovers the single @builder-decorated function in the templates module adjacent to action_file,
-    extracts its params_schema from Annotated type hints, and wires everything into an ActionDefinition.
-
-    Declare PRIMARY_PARAMS at module level to enable advanced-param introspection. All other function kwargs
-    become available in the Advanced section of the editor.
+    Discovers the single builder function in the template module.
+    input_type and output_type are inferred automatically from the function signature (scope vars as first params)
+    and the return statement.
 
     Args:
         action_id: Unique identifier string for the action.
         title: Human-readable display name shown in the UI.
-        action_file: Path to the action's action.py file; templates.py is looked up in the same directory.
+        action_file: Path to the action's action.py; templates.py is looked up in the same directory.
         doc: Short description shown in the action editor dialog.
-        mne_doc_urls: Optional dict mapping label strings to MNE documentation URLs displayed as clickable links.
+        extra_imports: Tuple of additional import statements to include in the generated function.
+        mne_doc_urls: Optional dict mapping label strings to MNE documentation URLs.
         prerequisites: Tuple of Prerequisite objects checked before running.
-        param_widget_factories: Optional dict mapping custom param-type strings to factory callables that produce
-            (container, value_widget) pairs.
-        input_type: Expected input data type for this action.
-        output_type: Output data type for this action.
+        param_widget_factories: Optional dict mapping custom param-type strings to factory callables.
+        interactive_runner: Optional callable for interactive execution.
 
     Returns:
         A fully wired ActionDefinition ready for registration.
-
-    Raises:
-        ImportError: When the templates module cannot be loaded.
-        AttributeError: When the templates module has no @builder-decorated function.
     """
     here = Path(action_file).parent
 
-    # Import templates.py
     templates_path = here / "templates.py"
     module_name = f"mnetape.actions.{action_id}._templates"
     if module_name not in sys.modules:
@@ -553,7 +481,6 @@ def action_from_templates(
     else:
         module = sys.modules[module_name]
 
-    # Collect @builder functions in definition order
     action_builders: list[ActionBuilder] = [
         obj for obj in vars(module).values()
         if isinstance(obj, ActionBuilder)
@@ -566,44 +493,21 @@ def action_from_templates(
     ab = action_builders[0]
     params_schema: dict[str, dict] = extract_schema_from_signature(ab.fn)
 
-    primary_raw: dict = getattr(module, "PRIMARY_PARAMS", {})
-    groups: list[FunctionParamGroup] = [
-        FunctionParamGroup(dotted_name=fn_name, params={k: {} for k in (owned or [])})
-        for fn_name, owned in primary_raw.items()
-    ]
-    template_schema = TemplateSchema(function_groups=tuple(groups))
-
-    sig = inspect.signature(ab.fn)
-    builder_param_names = frozenset(n for n in sig.parameters if n not in Fragment.SCOPE_VARS)
-
-    def code_builder(params: dict, advanced_params: dict | None = None) -> str:
-        filtered: dict = {}
-        for name in builder_param_names:
-            if name in params:
-                filtered[name] = params[name]
-            elif name in params_schema and "default" in params_schema[name]:
-                filtered[name] = params_schema[name]["default"]
-        code: str = ab.fn(**filtered)
-        if advanced_params:
-            try:
-                tree = ast.parse(code)
-                tree = AdvancedParamInjector(advanced_params).visit(tree)
-                ast.fix_missing_locations(tree)
-                code = ast.unparse(tree)
-            except Exception as e:
-                logger.exception("Failed to inject advanced params for action '%s': %s", action_id, e)
-        return code
-
     return ActionDefinition(
         action_id=action_id,
         title=title,
         params_schema=params_schema,
-        code_builder=code_builder,
-        template_schema=template_schema,
+        body_source=ab.body_source,
+        input_vars=ab.input_vars,
+        param_names=ab.param_names,
+        kwargs_groups=tuple(ab.kwargs_groups),
+        kwargs_targets=ab.kwargs_targets,
+        extra_imports=extra_imports,
         doc=doc,
         mne_doc_urls=mne_doc_urls or {},
         prerequisites=prerequisites,
         param_widget_factories=param_widget_factories,
-        input_type=input_type,
-        output_type=output_type,
+        input_type=ab.input_type,
+        output_type=ab.output_type,
+        interactive_runner=interactive_runner,
     )

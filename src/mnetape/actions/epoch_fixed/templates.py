@@ -2,29 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Annotated, TYPE_CHECKING
+from typing import Annotated
 
-from mnetape.actions.base import ParamMeta, builder, fragment
-
-PRIMARY_PARAMS = {"mne.make_fixed_length_epochs": ["duration", "overlap"]}
-
-if TYPE_CHECKING:
-    import mne
-
-
-@fragment
-def _do_epoch_fixed(raw, duration: float = 2.0, overlap: float = 0.0) -> None:
-    epochs = mne.make_fixed_length_epochs(raw, duration=duration, overlap=overlap, preload=True)
-
-
-@fragment
-def _do_epoch_fixed_baseline(raw, duration, overlap, baseline_tmin, baseline_tmax) -> None:
-    epochs = mne.make_fixed_length_epochs(raw, duration=duration, overlap=overlap, preload=True)
-    epochs.apply_baseline(baseline=(baseline_tmin, baseline_tmax))
-
+import mne
+from mnetape.actions.base import ParamMeta, builder
 
 @builder
 def template_builder(
+    raw: mne.io.Raw,
     duration: Annotated[
         float,
         ParamMeta(
@@ -52,7 +37,7 @@ def template_builder(
         ParamMeta(
             type="float",
             label="Baseline start (s)",
-            description="Start of the baseline window. None = beginning of epoch. Leave both baseline fields as None to skip baseline correction.",
+            description="Start of the baseline window. Leave both as None to skip baseline correction.",
             default=None,
             decimals=3,
             nullable=True,
@@ -63,18 +48,15 @@ def template_builder(
         ParamMeta(
             type="float",
             label="Baseline end (s)",
-            description="End of the baseline window. Set to apply baseline correction; leave as None to skip.",
+            description="End of the baseline window. Set to apply baseline correction.",
             default=None,
             decimals=3,
             nullable=True,
         ),
     ] = None,
-) -> str:
+    **kwargs,
+) -> mne.BaseEpochs:
+    epochs = mne.make_fixed_length_epochs(raw, duration=duration, overlap=overlap, preload=True, **kwargs)
     if baseline_tmax is not None:
-        return _do_epoch_fixed_baseline.inline(
-            duration=duration,
-            overlap=overlap,
-            baseline_tmin=baseline_tmin,
-            baseline_tmax=baseline_tmax,
-        )
-    return _do_epoch_fixed.inline(duration=duration, overlap=overlap)
+        epochs.apply_baseline(baseline=(baseline_tmin, baseline_tmax))
+    return epochs

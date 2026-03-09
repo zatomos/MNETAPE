@@ -19,6 +19,7 @@ from mnetape.core.models import ActionConfig
 logger = logging.getLogger(__name__)
 
 ACTION_REGISTRY: dict[str, ActionDefinition] | None = None
+TITLE_REGISTRY: dict[str, ActionDefinition] | None = None
 
 
 def load_actions() -> dict[str, ActionDefinition]:
@@ -55,9 +56,10 @@ def get_action_registry() -> dict[str, ActionDefinition]:
     Returns:
         Dict mapping action_id to ActionDefinition for all registered actions.
     """
-    global ACTION_REGISTRY
+    global ACTION_REGISTRY, TITLE_REGISTRY
     if ACTION_REGISTRY is None:
         ACTION_REGISTRY = load_actions()
+        TITLE_REGISTRY = {a.title: a for a in ACTION_REGISTRY.values()}
     return ACTION_REGISTRY
 
 
@@ -83,9 +85,7 @@ def get_action_by_id(action_id: str) -> ActionDefinition | None:
 
 
 def get_action_by_title(title: str) -> ActionDefinition | None:
-    """Look up an action by its display title.
-
-    Performs an exact string match. Returns the first match found.
+    """Look up an action by its display title (O(1) via reverse index).
 
     Args:
         title: The action title string.
@@ -93,10 +93,8 @@ def get_action_by_title(title: str) -> ActionDefinition | None:
     Returns:
         The ActionDefinition, or None if no action has that title.
     """
-    for action_def in get_action_registry().values():
-        if action_def.title == title:
-            return action_def
-    return None
+    get_action_registry()  # ensure TITLE_REGISTRY is populated
+    return TITLE_REGISTRY.get(title) if TITLE_REGISTRY else None
 
 
 def get_action_title(action: ActionConfig) -> str:

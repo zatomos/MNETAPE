@@ -14,21 +14,17 @@ if TYPE_CHECKING:
     import mne
 
 
+CUSTOM_ACTION_ID = "custom"
+"""Sentinel action_id for user-written inline code blocks."""
+
+# -------- Action status --------
+
 class ActionStatus(Enum):
     """Execution status of a pipeline action."""
 
     PENDING = auto()
     COMPLETE = auto()
     ERROR = auto()
-
-
-class DataType(Enum):
-    """Data type flowing through the pipeline at a given point."""
-
-    RAW = "raw"
-    EPOCHS = "epochs"
-    EVOKED = "evoked"
-    ICA = "ica_solution"
 
 
 STATUS_ICONS = {
@@ -46,6 +42,41 @@ STATUS_COLORS = {
 """CSS color strings keyed by ActionStatus, used in action list widgets."""
 
 
+#-------- Data types --------
+
+class DataType(Enum):
+    """Data type flowing through the pipeline at a given point."""
+
+    RAW = "raw"
+    EPOCHS = "epochs"
+    EVOKED = "evoked"
+    ICA = "ica_solution"
+
+    @property
+    def label(self) -> str:
+        """Display name for use in UI headers and messages."""
+        return {"RAW": "Raw", "EPOCHS": "Epochs", "EVOKED": "Evoked", "ICA": "ICA"}[self.name]
+
+
+ANNOTATION_TO_DATATYPE: dict[str, DataType] = {
+    "mne.io.Raw": DataType.RAW,
+    "mne.BaseEpochs": DataType.EPOCHS,
+    "mne.Epochs": DataType.EPOCHS,
+    "mne.Evoked": DataType.EVOKED,
+    "mne.preprocessing.ICA": DataType.ICA,
+}
+"""Maps supported builder annotation names to pipeline DataType values."""
+
+
+RETURN_VARS: dict[DataType, str] = {
+    DataType.RAW: "raw",
+    DataType.EPOCHS: "epochs",
+    DataType.EVOKED: "evoked",
+    DataType.ICA: "ica, raw, ic_labels",
+}
+"""Assignment targets used when generating action call sites."""
+
+
 @dataclass
 class ICASolution:
     """Bundle pairing a fitted ICA object with the raw data it was fitted on.
@@ -56,14 +87,21 @@ class ICASolution:
         ica: The fitted MNE ICA object.
         raw: The raw data the ICA was fitted on; used by ica_apply for source
             plotting and applying the decomposition.
-        ic_labels: Optional ICLabel output dict.
-        detected_artifacts: Optional sorted list of component indices flagged as artifacts.
+        ic_labels: Optional dict produced by ica_classify. Contains keys such as
+            "labels", "y_pred_proba", and "detected_artifacts" (a sorted list of
+            component indices flagged as artifacts).
     """
 
     ica: mne.preprocessing.ICA
     raw: mne.io.Raw
     ic_labels: dict | None = None
-    detected_artifacts: list[int] | None = None
+
+    @property
+    def detected_artifacts(self) -> list[int] | None:
+        """Sorted list of artifact component indices."""
+        if isinstance(self.ic_labels, dict):
+            return self.ic_labels.get("detected_artifacts")
+        return None
 
     def copy(self) -> ICASolution:
         """Return a copy with independent ica and raw objects."""
@@ -71,44 +109,10 @@ class ICASolution:
             ica=copy.copy(self.ica),
             raw=self.raw.copy(),
             ic_labels=self.ic_labels,
-            detected_artifacts=self.detected_artifacts,
-        )
-
-    def scope_vars(self) -> dict:
-        """Variables to inject into the executor scope for this data type."""
-        return {"ica": self.ica, "raw": self.raw}
-
-    @classmethod
-    def from_scope(cls, scope: dict, original: "ICASolution") -> "ICASolution":
-        """Bundle a new ICASolution from exec scope variables."""
-        if "ica" in scope:
-            ica = scope["ica"]
-        else:
-            ica = getattr(original, "ica", None)
-        if ica is None:
-            raise RuntimeError("ICA action did not produce an 'ica' object in execution scope.")
-
-        if "raw" in scope:
-            raw = scope["raw"]
-        else:
-            raw = getattr(original, "raw", None)
-        if raw is None:
-            raise RuntimeError("ICA action did not provide a 'raw' object in execution scope.")
-
-        return cls(
-            ica=ica,
-            raw=raw,
-            ic_labels=scope.get("ic_labels"),
-            detected_artifacts=scope.get("detected_component_artifacts"),
         )
 
 
-# Registry mapping DataType to a bundler class.
-# Used to reconstruct typed data objects after code execution without containing any type-specific logic itself.
-DATA_BUNDLERS: dict[DataType, type] = {
-    DataType.ICA: ICASolution,
-}
-
+# ------- Action configuration --------
 
 @dataclass
 class ActionConfig:

@@ -2,17 +2,11 @@
 
 from __future__ import annotations
 
-from mnetape.actions.base import builder, fragment
-
-PRIMARY_PARAMS = {"raw.interpolate_bads": ["reset_bads"]}
-
-
-@fragment
-def _do_interpolate(raw) -> None:
-    raw.interpolate_bads(reset_bads=True)
+import mne
+from mnetape.actions.base import builder
 
 
 @builder
-def template_builder() -> str:
-    """Generate code to interpolate channels marked as bad."""
-    return _do_interpolate.inline()
+def template_builder(raw: mne.io.Raw, **kwargs) -> mne.io.Raw:
+    raw.interpolate_bads(reset_bads=True, **kwargs)
+    return raw

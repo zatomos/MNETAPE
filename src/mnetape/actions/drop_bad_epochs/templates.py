@@ -7,34 +7,21 @@ Two methods:
 
 from __future__ import annotations
 
-from typing import Annotated, TYPE_CHECKING
+from typing import Annotated
 
-from mnetape.actions.base import ParamMeta, builder, fragment
-
-if TYPE_CHECKING:
-    import mne
-
-
-@fragment
-def _do_drop_bad_manual(epochs, reject, flat) -> None:
-    epochs.drop_bad(reject=reject, flat=flat)
-
-
-@fragment
-def _do_autoreject(epochs) -> None:
-    from autoreject import AutoReject as AutoReject
-    ar = AutoReject(verbose=False)
-    epochs = ar.fit_transform(epochs)
+import mne
+from mnetape.actions.base import ParamMeta, builder
 
 
 @builder
 def template_builder(
+    epochs: mne.BaseEpochs,
     method: Annotated[
         str,
         ParamMeta(
             type="choice",
             label="Method",
-            description="Manual: set amplitude thresholds per channel type. AutoReject: automatically learn thresholds using cross-validation.",
+            description="Manual: set amplitude thresholds. AutoReject: auto-learn thresholds.",
             choices=["manual", "autoreject"],
             default="manual",
         ),
@@ -54,12 +41,17 @@ def template_builder(
         ParamMeta(
             type="flat_thresholds",
             label="Flat",
-            description="Drop epochs where peak-to-peak amplitude is below this threshold (flat signal). None = disabled.",
+            description="Drop epochs where peak-to-peak amplitude is below this threshold. None = disabled.",
             default=None,
             visible_when={"method": ["manual"]},
         ),
     ] = None,
-) -> str:
+    **kwargs,
+) -> mne.BaseEpochs:
     if method == "autoreject":
-        return _do_autoreject.inline()
-    return _do_drop_bad_manual.inline(reject=reject, flat=flat)
+        from autoreject import AutoReject
+        ar = AutoReject(verbose=False)
+        epochs = ar.fit_transform(epochs)
+    else:
+        epochs.drop_bad(reject=reject, flat=flat, **kwargs)
+    return epochs

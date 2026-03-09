@@ -1,68 +1,26 @@
 """ICA classify action templates.
 
 Runs automatic component classification using any combination of ICLabel, EOG, ECG, and muscle detection.
-Produces ic_labels and detected_component_artifacts in scope for the executor to bundle into the ICASolution.
+Stores all results in the ic_labels dict, including a "detected_artifacts" key with the combined flagged indices.
 """
 
 from __future__ import annotations
 
-from typing import Annotated, TYPE_CHECKING
+from typing import Annotated
 
-from mnetape.actions.base import ParamMeta, fragment, builder
-
-if TYPE_CHECKING:
-    import numpy as np
-
-
-@fragment
-def _classify(
-    raw,
-    ica,
-    enable_iclabel: bool = True,
-    iclabel_threshold: float = 0.5,
-    enable_eog: bool = True,
-    eog_threshold: float = 3.0,
-    enable_ecg: bool = True,
-    ecg_threshold: float = 0.25,
-    enable_muscle: bool = True,
-    muscle_threshold: float = 0.9,
-) -> None:
-    detected_component_artifacts = []
-    if enable_iclabel:
-        from mne_icalabel import label_components
-
-        raw_lbl = raw.copy()
-        raw_lbl.filter(l_freq=1.0, h_freq=100.0, verbose=False)
-        raw_lbl.resample(100, verbose=False)
-        ic_labels = label_components(raw_lbl, ica, method='iclabel')
-        detected_component_artifacts.extend(
-            i for i, (lbl, prob) in enumerate(zip(ic_labels['labels'], ic_labels['y_pred_proba']))
-            if lbl != 'brain' and np.max(prob) >= iclabel_threshold
-        )
-
-    if enable_eog:
-        eog_indices, _ = ica.find_bads_eog(raw, threshold=eog_threshold, verbose=False)
-        detected_component_artifacts.extend(list(eog_indices))
-
-    if enable_ecg:
-        ecg_indices, _ = ica.find_bads_ecg(raw, method='correlation', threshold=ecg_threshold, verbose=False)
-        detected_component_artifacts.extend(list(ecg_indices))
-
-    if enable_muscle:
-        muscle_indices, _ = ica.find_bads_muscle(raw, threshold=muscle_threshold, verbose=False)
-        detected_component_artifacts.extend(list(muscle_indices))
-
-    detected_component_artifacts = sorted(set(detected_component_artifacts))
+import mne
+from mnetape.actions.base import ParamMeta, builder
 
 
 @builder
-def classify_builder(
+def template_builder(
+    ica: mne.preprocessing.ICA, raw: mne.io.Raw, ic_labels: dict | None,
     enable_iclabel: Annotated[
         bool,
         ParamMeta(
             type="bool",
             label="Enable ICLabel",
-            description="Use ICLabel neural network to label components (brain, eye, heart, muscle, etc.).",
+            description="Use ICLabel neural network to label components.",
             default=True,
         ),
     ] = True,
@@ -71,7 +29,7 @@ def classify_builder(
         ParamMeta(
             type="float",
             label="ICLabel threshold",
-            description="Probability threshold above which a non-brain component is flagged as an artifact.",
+            description="Probability threshold above which a non-brain component is flagged.",
             default=0.5,
             min=0.0,
             max=1.0,
@@ -111,7 +69,7 @@ def classify_builder(
         ParamMeta(
             type="float",
             label="ECG threshold",
-            description="Correlation threshold for ECG detection (method='correlation').",
+            description="Correlation threshold for ECG detection.",
             default=0.25,
             min=0.01,
             max=1.0,
@@ -137,14 +95,29 @@ def classify_builder(
             max=5.0,
         ),
     ] = 0.9,
-) -> str:
-    return _classify.inline(
-        enable_iclabel=enable_iclabel,
-        iclabel_threshold=iclabel_threshold,
-        enable_eog=enable_eog,
-        eog_threshold=eog_threshold,
-        enable_ecg=enable_ecg,
-        ecg_threshold=ecg_threshold,
-        enable_muscle=enable_muscle,
-        muscle_threshold=muscle_threshold,
-    )
+) -> tuple[mne.preprocessing.ICA, mne.io.Raw, dict | None]:
+    ic_labels = {}
+    detected = []
+    if enable_iclabel:
+        import numpy as np
+        from mne_icalabel import label_components
+        raw_lbl = raw.copy()
+        raw_lbl.filter(l_freq=1.0, h_freq=100.0, verbose=False)
+        raw_lbl.resample(100, verbose=False)
+        label_result = label_components(raw_lbl, ica, method='iclabel')
+        ic_labels.update(label_result)
+        detected.extend(
+            i for i, (lbl, prob) in enumerate(zip(label_result['labels'], label_result['y_pred_proba']))
+            if lbl != 'brain' and np.max(prob) >= iclabel_threshold
+        )
+    if enable_eog:
+        eog_indices, _ = ica.find_bads_eog(raw, threshold=eog_threshold, verbose=False)
+        detected.extend(list(eog_indices))
+    if enable_ecg:
+        ecg_indices, _ = ica.find_bads_ecg(raw, method='correlation', threshold=ecg_threshold, verbose=False)
+        detected.extend(list(ecg_indices))
+    if enable_muscle:
+        muscle_indices, _ = ica.find_bads_muscle(raw, threshold=muscle_threshold, verbose=False)
+        detected.extend(list(muscle_indices))
+    ic_labels["detected_artifacts"] = sorted(set(detected))
+    return ica, raw, ic_labels
