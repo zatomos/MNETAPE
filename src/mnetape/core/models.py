@@ -29,19 +29,19 @@ class ActionStatus(Enum):
     ERROR = auto()
 
 
+# Unicode icon characters keyed by ActionStatus, used in action list widgets.
 STATUS_ICONS = {
     ActionStatus.PENDING: "\u25cb",   # ○
     ActionStatus.COMPLETE: "\u2713",  # ✓
     ActionStatus.ERROR: "\u2717",     # ✗
 }
-"""Unicode icon characters keyed by ActionStatus, used in action list widgets."""
 
+# CSS color strings keyed by ActionStatus, used in action list widgets.
 STATUS_COLORS = {
     ActionStatus.PENDING: "#DAA520",
     ActionStatus.COMPLETE: "green",
     ActionStatus.ERROR: "red",
 }
-"""CSS color strings keyed by ActionStatus, used in action list widgets."""
 
 
 #-------- Data types --------
@@ -52,12 +52,13 @@ class DataType(Enum):
     RAW = "raw"
     EPOCHS = "epochs"
     EVOKED = "evoked"
+    ANY = "any"
     ICA = "ica_solution"
 
     @property
     def label(self) -> str:
         """Display name for use in UI headers and messages."""
-        return {"RAW": "Raw", "EPOCHS": "Epochs", "EVOKED": "Evoked", "ICA": "ICA"}[self.name]
+        return {"RAW": "Raw", "EPOCHS": "Epochs", "EVOKED": "Evoked", "ANY": "Any", "ICA": "ICA"}[self.name]
 
 
 ANNOTATION_TO_DATATYPE: dict[str, DataType] = {
@@ -77,6 +78,14 @@ RETURN_VARS: dict[DataType, str] = {
     DataType.ICA: "ica, raw, ic_labels",
 }
 """Assignment targets used when generating action call sites."""
+
+
+TYPE_TO_SCOPE_VAR: dict[DataType, str] = {
+    DataType.RAW: "raw",
+    DataType.EPOCHS: "epochs",
+    DataType.EVOKED: "evoked",
+}
+"""Maps concrete DataType values to their pipeline scope variable names."""
 
 
 @dataclass

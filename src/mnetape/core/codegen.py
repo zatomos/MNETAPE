@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 
 from mnetape.actions.registry import get_action_by_id, get_action_title
-from mnetape.core.models import CUSTOM_ACTION_ID, ActionConfig, ActionStatus
+from mnetape.core.models import CUSTOM_ACTION_ID, ActionConfig, ActionStatus, DataType
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,22 @@ def get_canonical_body(action_def) -> str:
     return action_def.body_source
 
 
-def assign_func_names(actions: list[ActionConfig]) -> list[str]:
+def get_types_for_actions(actions: list[ActionConfig]) -> list[DataType]:
+    """Return the input DataType for each action in the pipeline.
+
+    ANY actions are pass-through and do not change the current type.
+    """
+    types: list[DataType] = []
+    current_type = DataType.RAW
+    for action in actions:
+        types.append(current_type)
+        action_def = get_action_by_id(action.action_id)
+        if action_def and action_def.output_type != DataType.ANY:
+            current_type = action_def.output_type
+    return types
+
+
+def assign_func_names(actions: list[ActionConfig], types: list[DataType] | None = None) -> list[str]:
     """Assign unique function names to actions, deduplicating shared bodies.
 
     Actions with identical bodies share one function definition.
@@ -56,9 +71,9 @@ def assign_func_names(actions: list[ActionConfig]) -> list[str]:
     """
     func_names: list[str] = []
     # Maps action_id to a list of (body_key, func_name) tuples for each unique body seen so far
-    seen: dict[str, list[tuple[str, str]]] = {}
+    seen: dict[str, list[tuple[tuple, str]]] = {}
 
-    for action in actions:
+    for idx, action in enumerate(actions):
         if action.action_id == CUSTOM_ACTION_ID:
             func_names.append(CUSTOM_ACTION_ID)
             continue
@@ -68,12 +83,15 @@ def assign_func_names(actions: list[ActionConfig]) -> list[str]:
             func_names.append(action.action_id)
             continue
 
+        context_type = types[idx] if types else DataType.RAW
+
         if action.is_custom and action.custom_code:
             body = action.custom_code
         else:
             body = get_canonical_body(action_def)
 
-        body_key = normalize_body(body)
+        is_any = action_def and action_def.input_type == DataType.ANY and not (action.is_custom and action.custom_code)
+        body_key = (normalize_body(body), context_type if is_any else None)
 
         if action.action_id not in seen:
             seen[action.action_id] = []
@@ -93,11 +111,15 @@ def assign_func_names(actions: list[ActionConfig]) -> list[str]:
 
 # -------- Script generation --------
 
-def generate_action_code(action: ActionConfig) -> str:
+def generate_action_code(action: ActionConfig, context_type: DataType | None = None) -> str:
     """Generate a function-definition preview for a single action.
 
     Used by the action editor's code preview pane. Returns the full function definition for standard actions,
     or the custom code verbatim.
+
+    Args:
+        context_type: The DataType of data flowing into this action. Required for ANY actions
+            to generate the correct variant body.
     """
 
     if action.custom_code:
@@ -107,13 +129,13 @@ def generate_action_code(action: ActionConfig) -> str:
     if not action_def:
         return ""
 
-    return action_def.build_function_def(action.action_id)
+    return action_def.build_function_def(action.action_id, context_type)
 
 
-def collect_func_defs(actions: list[ActionConfig], func_names: list[str]) -> dict[str, str]:
+def collect_func_defs(actions: list[ActionConfig], func_names: list[str], types: list[DataType]) -> dict[str, str]:
     """Collect unique function definitions for a list of actions, preserving first occurrence order."""
     emitted: dict[str, str] = {}
-    for action, func_name in zip(actions, func_names):
+    for action, func_name, context_type in zip(actions, func_names, types):
         if action.action_id == CUSTOM_ACTION_ID or func_name == CUSTOM_ACTION_ID:
             continue
         if func_name in emitted:
@@ -122,9 +144,9 @@ def collect_func_defs(actions: list[ActionConfig], func_names: list[str]) -> dic
         if not action_def:
             continue
         if action.is_custom and action.custom_code:
-            emitted[func_name] = action_def.build_function_def_with_body(func_name, action.custom_code)
+            emitted[func_name] = action_def.build_function_def_with_body(func_name, action.custom_code, context_type)
         else:
-            emitted[func_name] = action_def.build_function_def(func_name)
+            emitted[func_name] = action_def.build_function_def(func_name, context_type)
     return emitted
 
 
@@ -145,10 +167,11 @@ def generate_full_script(filepath: Path | None, actions: list[ActionConfig]) -> 
     """
     logger.debug("Generating full script for %d actions", len(actions))
 
-    func_names = assign_func_names(actions)
+    types = get_types_for_actions(actions)
+    func_names = assign_func_names(actions, types)
 
     # Collect unique function defs, preserving order of first occurrence
-    emitted_funcs = collect_func_defs(actions, func_names)
+    emitted_funcs = collect_func_defs(actions, func_names, types)
 
     # Collect imports: base set + any extra imports declared by the actions in this pipeline
     all_imports: list[str] = list(BASE_IMPORTS)
@@ -170,7 +193,7 @@ def generate_full_script(filepath: Path | None, actions: list[ActionConfig]) -> 
 
     # Build pipeline section
     pipeline_lines: list[str] = []
-    for i, (action, func_name) in enumerate(zip(actions, func_names), 1):
+    for i, (action, func_name, context_type) in enumerate(zip(actions, func_names, types), 1):
         title = get_action_title(action)
         pipeline_lines.append(f"# [{i}] {title}")
 
@@ -182,7 +205,7 @@ def generate_full_script(filepath: Path | None, actions: list[ActionConfig]) -> 
             action_def = get_action_by_id(action.action_id)
             if action_def:
                 params = {**action_def.default_params(), **action.params}
-                pipeline_lines.append(action_def.build_call_site(func_name, params, action.advanced_params or None))
+                pipeline_lines.append(action_def.build_call_site(func_name, params, action.advanced_params or None, context_type))
             else:
                 pipeline_lines.append(f"# (unknown action: {action.action_id})")
 
@@ -348,11 +371,16 @@ def parse_script_to_actions(script: str) -> list[ActionConfig]:
         if advanced_params:
             action.advanced_params = advanced_params
 
-        # Check if the function body in the script matches the canonical body
+        # Check if the function body in the script matches the canonical body.
+        # For ANY actions, check all variant bodies.
         if func_name and func_name in func_defs:
             actual_body = func_defs[func_name]
-            canonical_body = get_canonical_body(action_def)
-            if not bodies_match(actual_body, canonical_body):
+            canonical_bodies = [get_canonical_body(action_def)]
+            if action_def.variants:
+                canonical_bodies.extend(
+                    get_canonical_body(v) for v in action_def.variants.values()
+                )
+            if not any(bodies_match(actual_body, cb) for cb in canonical_bodies):
                 action.custom_code = actual_body
                 action.is_custom = True
 
@@ -448,5 +476,6 @@ def build_func_defs_for_execution(actions: list[ActionConfig]) -> str:
     Used by the executor when running individual actions. All defs are made available in the exec scope so
     functions can reference each other if needed.
     """
-    func_names = assign_func_names(actions)
-    return "\n\n".join(collect_func_defs(actions, func_names).values())
+    types = get_types_for_actions(actions)
+    func_names = assign_func_names(actions, types)
+    return "\n\n".join(collect_func_defs(actions, func_names, types).values())

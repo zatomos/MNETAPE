@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtWidgets import QDialog, QMenu, QMessageBox
+from PyQt6.QtWidgets import QDialog, QMenu
 
 from typing import TYPE_CHECKING
 
@@ -236,7 +236,8 @@ class ActionController:
         else:
             current_raw = self.state.raw_original
 
-        dialog = ActionEditor(action, current_raw, self.w)
+        context_type = self.w.runner.get_data_type_at(row)
+        dialog = ActionEditor(action, current_raw, self.w, context_type=context_type)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             action.params = dialog.get_params()
             action.advanced_params = dialog.get_advanced_params()

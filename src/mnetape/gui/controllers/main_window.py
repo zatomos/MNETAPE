@@ -334,7 +334,7 @@ class MainWindow(QMainWindow):
             action_def = get_action_by_id(action.action_id)
             input_type = action_def.input_type if action_def else DataType.RAW
             output_type = action_def.output_type if action_def else DataType.RAW
-            is_mismatch = input_type != pipeline_type
+            is_mismatch = input_type != DataType.ANY and input_type != pipeline_type
 
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, i)
@@ -347,7 +347,7 @@ class MainWindow(QMainWindow):
 
             if not is_mismatch:
                 new_type = output_type
-                if new_type != pipeline_type:
+                if new_type != DataType.ANY and new_type != pipeline_type:
                     pipeline_type = new_type
                     self.action_list.addItem(make_type_header(pipeline_type))
 
@@ -452,19 +452,21 @@ class MainWindow(QMainWindow):
         if not action_def:
             return action.custom_code or "", ""
 
+        context_type = self.runner.get_data_type_at(index)
+
         if action.is_custom and action.custom_code:
             # Custom-edited body: wrap in canonical signature so call site still works
-            func_defs = action_def.build_function_def_with_body(action.action_id, action.custom_code)
+            func_defs = action_def.build_function_def_with_body(action.action_id, action.custom_code, context_type)
             params = {**action_def.default_params(), **action.params}
             adv = action.advanced_params or None
-            call_site = action_def.build_call_site(action.action_id, params, adv)
+            call_site = action_def.build_call_site(action.action_id, params, adv, context_type)
             return call_site, func_defs
 
         # Standard action: generate function def + call site using action_id as func name
         params = {**action_def.default_params(), **action.params}
         adv = action.advanced_params or None
-        func_defs = action_def.build_function_def(action.action_id)
-        call_site = action_def.build_call_site(action.action_id, params, adv)
+        func_defs = action_def.build_function_def(action.action_id, context_type)
+        call_site = action_def.build_call_site(action.action_id, params, adv, context_type)
         return call_site, func_defs
 
     def open_preferences(self):

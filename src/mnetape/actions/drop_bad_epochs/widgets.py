@@ -185,10 +185,10 @@ def build_defaults_dict(raw, defaults: dict[str, float]) -> dict:
     }
 
 
-def thresholds_factory(defaults: dict[str, float]):
+def thresholds_factory(defaults: dict[str, float], title: str = "Thresholds"):
     """Return a param widget factory for a threshold dict param."""
 
-    def factory(param_def, current_value, raw, parent):
+    def factory(current_value, raw, parent):
         value_widget = ThresholdsValueWidget(current_value)
 
         toggle = QCheckBox()
@@ -219,7 +219,7 @@ def thresholds_factory(defaults: dict[str, float]):
                 raw=raw,
                 current_value=value_widget.get_value(),
                 defaults=defaults,
-                title=param_def.get("label", "Thresholds"),
+                title=title,
                 parent=parent,
             )
             if dlg.exec() == QDialog.DialogCode.Accepted:
@@ -243,8 +243,8 @@ def thresholds_factory(defaults: dict[str, float]):
     return factory
 
 
-reject_thresholds_factory = thresholds_factory(REJECT_DEFAULTS)
-flat_thresholds_factory = thresholds_factory(FLAT_DEFAULTS)
+reject_thresholds_factory = thresholds_factory(REJECT_DEFAULTS, title="Reject thresholds")
+flat_thresholds_factory = thresholds_factory(FLAT_DEFAULTS, title="Flat thresholds")
 
 
 # -------- Widget bindings --------

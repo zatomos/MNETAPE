@@ -27,7 +27,7 @@ def channel_factory(preferred_type: str):
     is pre-selected automatically.
     """
 
-    def factory(param_def, current_value, raw, parent):
+    def factory(current_value, raw, parent):
         combo = ChannelCombo()
 
         combo.addItem(AUTO_DETECT)

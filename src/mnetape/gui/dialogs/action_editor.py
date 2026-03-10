@@ -31,7 +31,7 @@ import mne
 
 from mnetape.actions.registry import get_action_by_id, get_action_title
 from mnetape.core.codegen import generate_action_code
-from mnetape.core.models import CUSTOM_ACTION_ID, ActionConfig, ActionStatus
+from mnetape.core.models import CUSTOM_ACTION_ID, ActionConfig, ActionStatus, DataType
 
 
 logger = logging.getLogger(__name__)
@@ -216,10 +216,12 @@ class ActionEditor(QDialog):
         action: ActionConfig,
         raw: mne.io.Raw | None = None,
         parent=None,
+        context_type: DataType | None = None,
     ):
         super().__init__(parent)
         self.action = action
         self.raw = raw
+        self.context_type = context_type
         self.action_def = get_action_by_id(action.action_id)
 
         self.setWindowTitle(f"Edit: {get_action_title(action)}")
@@ -461,7 +463,7 @@ class ActionEditor(QDialog):
                 self.get_current_params(),
                 advanced_params=self.get_advanced_params(),
             )
-            code = generate_action_code(temp_action)
+            code = generate_action_code(temp_action, self.context_type)
         self.code_preview.setPlainText(code)
 
     def get_params(self) -> dict:
