@@ -1,7 +1,6 @@
 """Set annotations action."""
 
 from mnetape.actions.base import action_from_templates
-from mnetape.actions.set_annotations.widgets import annotations_factory
 
 ACTION = action_from_templates(
     action_id="set_annotations",
@@ -11,5 +10,4 @@ ACTION = action_from_templates(
     mne_doc_urls={
         "set_annotations": "https://mne.tools/stable/generated/mne.io.Raw.html#mne.io.Raw.set_annotations",
     },
-    param_widget_factories={"annotations": annotations_factory},
 )

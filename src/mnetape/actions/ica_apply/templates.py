@@ -18,7 +18,6 @@ def template_builder(
     exclude: Annotated[
         list | None,
         ParamMeta(
-            type="exclude_components",
             label="Excluded components",
             description="ICA component indices to remove. Use 'Browse Components' to inspect and select.",
             default=None,

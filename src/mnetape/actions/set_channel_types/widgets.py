@@ -26,6 +26,8 @@ from PyQt6.QtWidgets import (
 )
 import mne
 
+from mnetape.actions.base import ParamWidgetBinding
+
 logger = logging.getLogger(__name__)
 
 # Accepted channel types, fetched from MNE at import.
@@ -295,3 +297,10 @@ def channel_types_widget_factory(param_def, current_value, raw, parent):
     layout.addWidget(btn_edit)
 
     return container, line_edit
+
+
+# -------- Widget bindings --------
+
+WIDGET_BINDINGS = [
+    ParamWidgetBinding("channel_mapping", channel_types_widget_factory),
+]

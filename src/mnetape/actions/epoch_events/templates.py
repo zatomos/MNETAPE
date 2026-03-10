@@ -24,7 +24,6 @@ def template_builder(
     events_file: Annotated[
         str,
         ParamMeta(
-            type="events_file",
             label="Events file",
             description="Path to a BIDS .tsv, .fif, or .eve events file.",
             default="",
@@ -34,7 +33,6 @@ def template_builder(
     event_ids: Annotated[
         dict | None,
         ParamMeta(
-            type="event_ids",
             label="Events",
             description="Event IDs to include. Leave empty to include all events.",
             default=None,
@@ -43,7 +41,6 @@ def template_builder(
     stim_channel: Annotated[
         str,
         ParamMeta(
-            type="stim_channel",
             label="Stim channel",
             description="Stimulus channel to read events from.",
             default="",

@@ -186,20 +186,14 @@ def infer_input_from_ast(func_def: ast.FunctionDef) -> DataType:
         dt = ANNOTATION_TO_DATATYPE.get(dotted or "")
         if dt is not None:
             return dt
-    raise TypeError(
-        f"Builder '{func_def.name}' must annotate its first scope argument with a recognized MNE type "
-        f"(e.g. raw: mne.io.Raw, epochs: mne.BaseEpochs, ica: mne.preprocessing.ICA)."
-    )
+    raise TypeError(f"Builder '{func_def.name}' must annotate its first scope argument with a recognized MNE type.")
 
 
 def infer_output_from_ast(func_def: ast.FunctionDef) -> DataType:
     """Infer output DataType from the function return annotation."""
     ret = func_def.returns
     if ret is None:
-        raise TypeError(
-            f"Builder '{func_def.name}' must declare a return annotation "
-            f"(e.g. -> mne.io.Raw, -> mne.BaseEpochs, -> tuple[mne.preprocessing.ICA, ...])."
-        )
+        raise TypeError(f"Builder '{func_def.name}' must declare a return annotation.")
 
     # Simple return type
     dotted = get_dotted_name(ret)
@@ -234,7 +228,7 @@ class ActionBuilder:
     param_names: list = field(default_factory=list)
     input_type: DataType = field(default_factory=lambda: DataType.RAW)
     output_type: DataType = field(default_factory=lambda: DataType.RAW)
-    kwargs_groups: list = field(default_factory=list)   # e.g. ["kwargs"] or ["ica_kwargs", "fit_kwargs"]
+    kwargs_groups: list = field(default_factory=list)
     kwargs_targets: dict = field(default_factory=dict)  # group_name -> dotted call name
 
 
@@ -311,6 +305,14 @@ class Prerequisite:
 
 
 @dataclass(frozen=True)
+class ParamWidgetBinding:
+    """Binds a custom widget factory to a specific parameter by name."""
+
+    param_name: str
+    factory: Callable  # (param_def, current_value, object, parent) -> (container, value_widget)
+
+
+@dataclass(frozen=True)
 class ActionDefinition:
     """Immutable descriptor for a pipeline action type.
 
@@ -325,11 +327,9 @@ class ActionDefinition:
         kwargs_targets: Dict mapping group_name to the dotted call name that unpacks it.
         mne_doc_urls: Optional dict mapping label strings to MNE documentation URLs.
         prerequisites: Tuple of Prerequisite objects checked before running.
-        param_widget_factories: Optional dict mapping custom param-type strings to factory
-            callables that produce (container, value_widget) pairs.
+        widget_bindings: Tuple of ParamWidgetBinding objects mapping param names to factory callables.
         input_type: Expected input data type for this action.
         output_type: Output data type produced by this action.
-        interactive_runner: Optional callable for interactive execution (receives action, data, parent).
     """
 
     action_id: str
@@ -344,10 +344,9 @@ class ActionDefinition:
     extra_imports: tuple = ()
     mne_doc_urls: dict = field(default_factory=dict)
     prerequisites: tuple = ()
-    param_widget_factories: dict | None = None
+    widget_bindings: tuple = ()
     input_type: DataType = field(default_factory=lambda: DataType.RAW)
     output_type: DataType = field(default_factory=lambda: DataType.RAW)
-    interactive_runner: Callable | None = None
 
     def default_params(self) -> dict:
         """Return a dict of parameter defaults taken from params_schema."""
@@ -444,14 +443,15 @@ def action_from_templates(
     extra_imports: tuple[str, ...] = (),
     mne_doc_urls: dict[str, str] | None = None,
     prerequisites: tuple = (),
-    param_widget_factories: dict[str, Callable] | None = None,
-    interactive_runner: Callable | None = None,
 ) -> ActionDefinition:
     """Build an ActionDefinition by loading and introspecting a templates.py module.
 
     Discovers the single builder function in the template module.
     input_type and output_type are inferred automatically from the function signature (scope vars as first params)
     and the return statement.
+
+    If a widgets.py file exists, it is autoloaded and its WIDGET_BINDINGS list is used to bind custom widget factories
+    to parameters by name.
 
     Args:
         action_id: Unique identifier string for the action.
@@ -461,8 +461,6 @@ def action_from_templates(
         extra_imports: Tuple of additional import statements to include in the generated function.
         mne_doc_urls: Optional dict mapping label strings to MNE documentation URLs.
         prerequisites: Tuple of Prerequisite objects checked before running.
-        param_widget_factories: Optional dict mapping custom param-type strings to factory callables.
-        interactive_runner: Optional callable for interactive execution.
 
     Returns:
         A fully wired ActionDefinition ready for registration.
@@ -493,6 +491,25 @@ def action_from_templates(
     ab = action_builders[0]
     params_schema: dict[str, dict] = extract_schema_from_signature(ab.fn)
 
+    # Autoload widgets bindings
+    widget_bindings: tuple[ParamWidgetBinding, ...] = ()
+    widgets_path = here / "widgets.py"
+    if widgets_path.exists():
+        w_module_name = f"mnetape.actions.{action_id}._widgets"
+        w_module = sys.modules.get(w_module_name)
+        if w_module is None:
+            w_spec = importlib.util.spec_from_file_location(w_module_name, widgets_path)
+            if w_spec is None or w_spec.loader is None:
+                logger.warning("Cannot load widgets from %s", widgets_path)
+            else:
+                w_module = importlib.util.module_from_spec(w_spec)
+                sys.modules[w_module_name] = w_module
+                w_spec.loader.exec_module(w_module)
+        if w_module is not None:
+            bindings = getattr(w_module, "WIDGET_BINDINGS", None)
+            if bindings:
+                widget_bindings = tuple(bindings)
+
     return ActionDefinition(
         action_id=action_id,
         title=title,
@@ -506,8 +523,7 @@ def action_from_templates(
         doc=doc,
         mne_doc_urls=mne_doc_urls or {},
         prerequisites=prerequisites,
-        param_widget_factories=param_widget_factories,
+        widget_bindings=widget_bindings,
         input_type=ab.input_type,
         output_type=ab.output_type,
-        interactive_runner=interactive_runner,
     )

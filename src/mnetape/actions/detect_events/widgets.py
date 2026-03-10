@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from PyQt6.QtWidgets import QComboBox
 
+from mnetape.actions.base import ParamWidgetBinding
+
 AUTO_DETECT = "Auto-detect"
 
 
@@ -58,3 +60,11 @@ def channel_factory(preferred_type: str):
 
 ecg_channel_factory = channel_factory("ecg")
 eog_channel_factory = channel_factory("eog")
+
+
+# -------- Widget bindings --------
+
+WIDGET_BINDINGS = [
+    ParamWidgetBinding("ecg_channel", ecg_channel_factory),
+    ParamWidgetBinding("eog_channel", eog_channel_factory),
+]

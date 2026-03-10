@@ -1,11 +1,6 @@
 """Event-based epochs action."""
 
 from mnetape.actions.base import action_from_templates
-from mnetape.actions.epoch_events.widgets import (
-    event_ids_factory,
-    events_file_factory,
-    stim_channel_factory,
-)
 
 ACTION = action_from_templates(
     action_id="epoch_events",
@@ -17,10 +12,5 @@ ACTION = action_from_templates(
         "mne.events_from_annotations": "https://mne.tools/stable/generated/mne.events_from_annotations.html",
         "mne.find_events": "https://mne.tools/stable/generated/mne.find_events.html",
         "mne.read_events": "https://mne.tools/stable/generated/mne.read_events.html",
-    },
-    param_widget_factories={
-        "event_ids": event_ids_factory,
-        "stim_channel": stim_channel_factory,
-        "events_file": events_file_factory,
     },
 )

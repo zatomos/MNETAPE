@@ -1,7 +1,6 @@
 """Crop action."""
 
 from mnetape.actions.base import action_from_templates
-from mnetape.actions.crop.widgets import crop_factory
 
 ACTION = action_from_templates(
     action_id="crop",
@@ -11,5 +10,4 @@ ACTION = action_from_templates(
     mne_doc_urls={
         "Crop": "https://mne.tools/stable/generated/mne.io.Raw.html#mne.io.Raw.crop",
     },
-    param_widget_factories={"crop_tmax": crop_factory},
 )

@@ -25,7 +25,6 @@ def template_builder(
     tmax: Annotated[
         float,
         ParamMeta(
-            type="crop_tmax",
             label="End (s)",
             description="End time in seconds.",
             default=0.0,

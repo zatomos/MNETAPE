@@ -1,10 +1,6 @@
 """Drop bad epochs action."""
 
 from mnetape.actions.base import action_from_templates
-from mnetape.actions.drop_bad_epochs.widgets import (
-    flat_thresholds_factory,
-    reject_thresholds_factory,
-)
 
 ACTION = action_from_templates(
     action_id="drop_bad_epochs",
@@ -14,9 +10,5 @@ ACTION = action_from_templates(
     mne_doc_urls={
         "mne.Epochs.drop_bad": "https://mne.tools/stable/generated/mne.Epochs.html#mne.Epochs.drop_bad",
         "autoreject": "https://autoreject.github.io/stable/index.html"
-    },
-    param_widget_factories={
-        "reject_thresholds": reject_thresholds_factory,
-        "flat_thresholds": flat_thresholds_factory,
     },
 )

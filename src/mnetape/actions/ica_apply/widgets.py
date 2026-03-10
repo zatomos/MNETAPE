@@ -10,7 +10,7 @@ import logging
 
 import matplotlib.pyplot as plt
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFont
 
+from mnetape.actions.base import ParamWidgetBinding
 from mnetape.gui.widgets import PlotCanvas
 
 logger = logging.getLogger(__name__)
@@ -551,8 +552,21 @@ def format_exclude_label(exclude: list) -> str:
     return f"{len(exclude)} excluded: {exclude}"
 
 
+class ExcludeWidget(QWidget):
+    """Container widget for the ICA component exclusion param.
+
+    Exposes get_value() and value_changed so the action editor can read and react to changes
+    without a direct reference to the parent dialog.
+    """
+
+    value_changed = pyqtSignal()
+
+    def get_value(self) -> list | None:
+        return self._state["exclude"] or None
+
+
 def exclude_components_factory(param_def, current_value, raw, parent=None):
-    """Widget factory for the exclude_components param type.
+    """Widget factory for the exclude components param.
 
     Builds a row with an exclusion-list label, an optional 'Use auto' checkbox
     (shown only when ica_classify has been run), and a 'Browse Components' button.
@@ -564,33 +578,29 @@ def exclude_components_factory(param_def, current_value, raw, parent=None):
         parent: Optional parent QWidget.
 
     Returns:
-        A (container, container) tuple; container exposes get_value() for the editor.
+        A (container, container) tuple; container exposes get_value() and value_changed.
     """
     from mnetape.core.models import ICASolution
 
     ica_solution = raw if isinstance(raw, ICASolution) else None
     exclude = list(current_value) if current_value is not None else []
-    state = {"exclude": exclude}
+
+    container = ExcludeWidget(parent)
+    container._state = {"exclude": exclude}
+    layout = QHBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(6)
 
     has_classify = ica_solution is not None and ica_solution.ic_labels is not None
     ic_labels_dict = ica_solution.ic_labels if has_classify else None
     auto_exclude = list(ic_labels_dict.get("detected_artifacts", [])) if ic_labels_dict else []
 
-    container = QWidget(parent)
-    layout = QHBoxLayout(container)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(6)
-
-    label = QLabel(format_exclude_label(state["exclude"]))
+    label = QLabel(format_exclude_label(container._state["exclude"]))
     label.setAlignment(Qt.AlignmentFlag.AlignVCenter)
     layout.addWidget(label, 1)
 
-    def notify_change() -> None:
-        if parent is not None and hasattr(parent, "update_code_preview"):
-            parent.update_code_preview()
-
     def update_label():
-        label.setText(format_exclude_label(state["exclude"]))
+        label.setText(format_exclude_label(container._state["exclude"]))
 
     if ica_solution is not None:
         btn = QPushButton("Browse Components...")
@@ -601,10 +611,10 @@ def exclude_components_factory(param_def, current_value, raw, parent=None):
             layout.addWidget(use_auto_cb)
 
             def on_use_auto_toggled(checked: bool):
-                state["exclude"] = auto_exclude if checked else []
+                container._state["exclude"] = auto_exclude if checked else []
                 update_label()
                 btn.setEnabled(not checked)
-                notify_change()
+                container.value_changed.emit()
 
             use_auto_cb.toggled.connect(on_use_auto_toggled)
 
@@ -612,14 +622,14 @@ def exclude_components_factory(param_def, current_value, raw, parent=None):
             dialog = ICAInspectionDialog(
                 ica=ica_solution.ica,
                 raw=ica_solution.raw,
-                auto_exclude=list(state["exclude"]),
+                auto_exclude=list(container._state["exclude"]),
                 ic_labels=ica_solution.ic_labels,
                 parent=parent,
             )
             if dialog.exec() == QDialog.DialogCode.Accepted:
-                state["exclude"] = sorted(dialog.ica.exclude)
+                container._state["exclude"] = sorted(dialog.ica.exclude)
                 update_label()
-                notify_change()
+                container.value_changed.emit()
             if dialog.poll_timer is not None:
                 dialog.poll_timer.stop()
             dialog.cleanup_figures()
@@ -631,5 +641,11 @@ def exclude_components_factory(param_def, current_value, raw, parent=None):
         note.setStyleSheet("color: gray; font-style: italic;")
         layout.addWidget(note)
 
-    container.get_value = lambda: state["exclude"] or None
-    return container, container
+    return container, container     # container is both the widget and the value provider
+
+
+# -------- Widget bindings --------
+
+WIDGET_BINDINGS = [
+    ParamWidgetBinding("exclude", exclude_components_factory),
+]

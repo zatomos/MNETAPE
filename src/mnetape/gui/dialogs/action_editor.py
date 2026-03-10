@@ -258,15 +258,10 @@ class ActionEditor(QDialog):
 
         for param_name, param_def in visible_params.items():
             current_value = action.params.get(param_name, param_def.get("default"))
-            if (
-                param_name == "ch_names"
-                and param_def.get("type") == "channels"
-                and (current_value is None or current_value == "")
-            ):
-                current_value = action.params.get("channels", current_value)
 
-            # Allow action definitions to specify custom widget factories for specific param types
-            factory = (self.action_def.param_widget_factories or {}).get(param_def.get("type"))
+            # Look up a custom widget factory by param name
+            binding = next((b for b in self.action_def.widget_bindings if b.param_name == param_name), None)
+            factory = binding.factory if binding else None
             custom = factory(param_def, current_value, self.raw, self) if factory else None
             if custom is not None:
                 container, value_widget = custom

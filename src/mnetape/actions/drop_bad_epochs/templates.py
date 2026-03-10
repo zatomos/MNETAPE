@@ -29,7 +29,6 @@ def template_builder(
     reject: Annotated[
         dict | None,
         ParamMeta(
-            type="reject_thresholds",
             label="Reject",
             description="Drop epochs where peak-to-peak amplitude exceeds this threshold. None = disabled.",
             default=None,
@@ -39,7 +38,6 @@ def template_builder(
     flat: Annotated[
         dict | None,
         ParamMeta(
-            type="flat_thresholds",
             label="Flat",
             description="Drop epochs where peak-to-peak amplitude is below this threshold. None = disabled.",
             default=None,

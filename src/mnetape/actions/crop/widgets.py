@@ -7,9 +7,11 @@ on the dropped parts of the recording.
 from __future__ import annotations
 
 import matplotlib.pyplot as plt
-import numpy as np
+
+from mnetape.actions.base import ParamWidgetBinding
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.widgets import SpanSelector
+import numpy as np
 from PyQt6.QtCore import QEvent, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import (
@@ -438,3 +440,10 @@ def crop_factory(_param_def, current_value, raw, parent):
     btn.clicked.connect(crop)
 
     return container, spinbox
+
+
+# -------- Widget bindings --------
+
+WIDGET_BINDINGS = [
+    ParamWidgetBinding("tmax", crop_factory),
+]

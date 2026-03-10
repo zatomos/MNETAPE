@@ -1,6 +1,5 @@
 """Average epochs action."""
 
-from mnetape.actions.average_epochs.widgets import event_key_factory
 from mnetape.actions.base import action_from_templates
 
 ACTION = action_from_templates(
@@ -10,8 +9,5 @@ ACTION = action_from_templates(
     action_file=__file__,
     mne_doc_urls={
         "mne.Epochs.average": "https://mne.tools/stable/generated/mne.Epochs.html#mne.Epochs.average",
-    },
-    param_widget_factories={
-        "event_key": event_key_factory,
     },
 )

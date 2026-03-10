@@ -49,7 +49,6 @@ def template_builder(
     ecg_channel: Annotated[
         str,
         ParamMeta(
-            type="ecg_channel",
             label="Channel",
             description="ECG channel for R-wave detection. Auto-selected if an ECG-type channel is present.",
             default="",
@@ -59,7 +58,6 @@ def template_builder(
     eog_channel: Annotated[
         str,
         ParamMeta(
-            type="eog_channel",
             label="Channel",
             description="EOG channel for blink detection. Auto-selected if an EOG-type channel is present.",
             default="",

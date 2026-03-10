@@ -14,7 +14,6 @@ def template_builder(
     annotations: Annotated[
         list,
         ParamMeta(
-            type="annotations",
             label="Annotations",
             description="Time annotations to apply to the recording.",
             default=[],

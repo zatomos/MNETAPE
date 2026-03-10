@@ -1,7 +1,6 @@
 """ICA apply action: sets the component exclusion list and applies ICA to produce clean raw data."""
 
 from mnetape.actions.base import Prerequisite, action_from_templates
-from mnetape.actions.ica_apply.widgets import exclude_components_factory
 
 ACTION = action_from_templates(
     action_id="ica_apply",
@@ -16,5 +15,4 @@ ACTION = action_from_templates(
     prerequisites=(
         Prerequisite("ica_fit", "ICA must be fitted before it can be applied."),
     ),
-    param_widget_factories={"exclude_components": exclude_components_factory},
 )

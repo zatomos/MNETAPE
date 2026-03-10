@@ -6,6 +6,8 @@ import logging
 
 import mne
 import pandas as _pd
+
+from mnetape.actions.base import ParamWidgetBinding
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -304,3 +306,12 @@ def events_file_factory(param_def, current_value, raw, parent):
     layout.addWidget(btn)
 
     return container, line
+
+
+# -------- Widget bindings --------
+
+WIDGET_BINDINGS = [
+    ParamWidgetBinding("event_ids", event_ids_factory),
+    ParamWidgetBinding("stim_channel", stim_channel_factory),
+    ParamWidgetBinding("events_file", events_file_factory),
+]

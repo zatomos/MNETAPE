@@ -31,6 +31,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.path import Path as MplPath
 import mne
 
+from mnetape.actions.base import ParamWidgetBinding
 from mnetape.gui.widgets.common import sanitize_mne_browser_toolbar
 
 logger = logging.getLogger(__name__)
@@ -600,3 +601,10 @@ def channels_widget_factory(param_def, current_value, raw, parent):
     layout.addWidget(btn_detect)
 
     return container, line_edit
+
+
+# -------- Widget bindings --------
+
+WIDGET_BINDINGS = [
+    ParamWidgetBinding("channels", channels_widget_factory),
+]

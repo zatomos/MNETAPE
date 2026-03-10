@@ -14,7 +14,6 @@ def template_builder(
     event_key: Annotated[
         str | None,
         ParamMeta(
-            type="event_key",
             label="Condition",
             description="Event condition to average. Leave empty to average all epochs.",
             default=None,

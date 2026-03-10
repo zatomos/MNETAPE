@@ -14,7 +14,6 @@ def template_builder(
     channels: Annotated[
         list | None,
         ParamMeta(
-            type="channels",
             label="Channels",
             description="Channels to drop or mark as bad.",
             default=None,

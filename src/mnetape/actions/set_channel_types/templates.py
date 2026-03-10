@@ -14,7 +14,6 @@ def template_builder(
     channel_mapping: Annotated[
         dict | None,
         ParamMeta(
-            type="channel_types",
             label="Channel type mapping",
             description="Channel-to-type mapping (JSON dict or comma-separated ch:type pairs).",
             default=None,
