@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtWidgets import QDialog, QMenu, QMessageBox
+from PyQt6.QtWidgets import QDialog, QMenu
 
 from typing import TYPE_CHECKING
 
@@ -36,8 +36,7 @@ class ActionController:
 
     def add_action(self):
         """Open the Add Action dialog and append the selected action to the pipeline."""
-        current_type = self.w.runner.get_data_type_at(len(self.state.actions))
-        dialog = AddActionDialog(current_type, self.w)
+        dialog = AddActionDialog(self.w)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             action_id = dialog.get_action_id()
             if action_id:
