@@ -57,7 +57,7 @@ class ActionController:
         row = self.w.get_selected_action_row()
         if row >= 0:
             self.state.actions.pop(row)
-            self.state.data_states = self.state.data_states[:row]
+            self.state.data_states.truncate(row)
             for action in self.state.actions[row:]:
                 if not action.is_custom:
                     action.reset()
@@ -73,7 +73,7 @@ class ActionController:
         new_row = row + direction
         if 0 <= new_row < len(self.state.actions):
             self.state.actions[row], self.state.actions[new_row] = self.state.actions[new_row], self.state.actions[row]
-            self.state.data_states = self.state.data_states[: min(row, new_row)]
+            self.state.data_states.truncate(min(row, new_row))
             for action in self.state.actions[min(row, new_row) :]:
                 if not action.is_custom:
                     action.reset()
@@ -202,7 +202,7 @@ class ActionController:
         if changed:
             if first_changed_idx is None:
                 first_changed_idx = 0
-            self.state.data_states = self.state.data_states[:first_changed_idx]
+            self.state.data_states.truncate(first_changed_idx)
             for action in self.state.actions[first_changed_idx:]:
                 action.reset()
 
@@ -247,7 +247,7 @@ class ActionController:
 
             if not action.is_custom:
                 action.reset()
-            self.state.data_states = self.state.data_states[:row]
+            self.state.data_states.truncate(row)
             for a in self.state.actions[row:]:
                 if not a.is_custom:
                     a.reset()

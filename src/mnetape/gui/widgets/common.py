@@ -110,20 +110,27 @@ class PlotCanvas(QWidget):
         """Replace the current matplotlib figure with a new one.
 
         Removes and schedules deletion of the old canvas and toolbar before
-        creating new ones. The toolbar's set_message is neutered first to
-        prevent a RuntimeError if matplotlib tries to update it during teardown.
+        creating new ones. The old matplotlib figure is explicitly closed to
+        remove it from matplotlib's internal figure registry and free its data.
 
         Args:
             fig: The new matplotlib Figure to display.
         """
+        import matplotlib.pyplot as plt
+
         layout = self.layout()
         layout.removeWidget(self.toolbar)
         layout.removeWidget(self.canvas)
+
+        old_fig = self.canvas.figure
 
         # Detach callbacks and schedule destruction
         self.toolbar.set_message = lambda s: None
         self.toolbar.deleteLater()
         self.canvas.deleteLater()
+
+        # Release the old figure from the registry
+        plt.close(old_fig)
 
         # Create new canvas and toolbar
         self.canvas = FigureCanvasQTAgg(fig)
