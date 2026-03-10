@@ -8,7 +8,6 @@ ACTION = action_from_templates(
     doc=(
         "Set the ICA component exclusion list and apply it to produce clean raw data. "
     ),
-    action_file=__file__,
     mne_doc_urls={
         "ICA.apply": "https://mne.tools/stable/generated/mne.preprocessing.ICA.html#mne.preprocessing.ICA.apply",
     },

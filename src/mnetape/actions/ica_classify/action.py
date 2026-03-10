@@ -10,7 +10,6 @@ ACTION = action_from_templates(
         "and muscle artifact detection. Produces a list of artifact component indices "
         "available for review and exclusion in the Apply step."
     ),
-    action_file=__file__,
     mne_doc_urls={
         "ICLabel": "https://mne.tools/mne-icalabel/dev/index.html",
         "find_bads_eog": "https://mne.tools/stable/generated/mne.preprocessing.ICA.html#mne.preprocessing.ICA.find_bads_eog",

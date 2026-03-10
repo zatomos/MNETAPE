@@ -6,7 +6,6 @@ ACTION = action_from_templates(
     action_id="epoch_events",
     title="Event-Based Epochs",
     doc="Create epochs locked to event onsets.",
-    action_file=__file__,
     mne_doc_urls={
         "mne.Epochs": "https://mne.tools/stable/generated/mne.Epochs.html",
         "mne.events_from_annotations": "https://mne.tools/stable/generated/mne.events_from_annotations.html",

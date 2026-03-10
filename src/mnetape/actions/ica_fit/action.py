@@ -9,7 +9,6 @@ ACTION = action_from_templates(
         "Fit an ICA decomposition on the raw data. "
         "Produces a fitted ICA object for downstream classification and application."
     ),
-    action_file=__file__,
     mne_doc_urls={
         "mne.preprocessing.ICA": "https://mne.tools/stable/generated/mne.preprocessing.ICA.html",
     },

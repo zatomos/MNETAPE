@@ -422,7 +422,6 @@ def action_from_templates(
     *,
     action_id: str,
     title: str,
-    action_file: str,
     doc: str,
     extra_imports: tuple[str, ...] = (),
     mne_doc_urls: dict[str, str] | None = None,
@@ -440,7 +439,6 @@ def action_from_templates(
     Args:
         action_id: Unique identifier string for the action.
         title: Human-readable display name shown in the UI.
-        action_file: Path to the action's action.py; templates.py is looked up in the same directory.
         doc: Short description shown in the action editor dialog.
         extra_imports: Tuple of additional import statements to include in the generated function.
         mne_doc_urls: Optional dict mapping label strings to MNE documentation URLs.
@@ -449,7 +447,7 @@ def action_from_templates(
     Returns:
         A fully wired ActionDefinition ready for registration.
     """
-    here = Path(action_file).parent
+    here = Path(inspect.stack()[1].filename).parent
 
     templates_path = here / "templates.py"
     module_name = f"mnetape.actions.{action_id}._templates"
