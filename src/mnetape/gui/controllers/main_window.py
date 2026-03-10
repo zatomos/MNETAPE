@@ -25,7 +25,6 @@ from PyQt6.QtWidgets import (
 from mnetape.actions.registry import get_action_by_id
 from mnetape.core.codegen import (
     generate_full_script,
-    parse_script_to_actions,
 )
 from mnetape.core.models import CUSTOM_ACTION_ID, DataType
 from mnetape.gui.controllers.action_controller import ActionController
@@ -87,12 +86,16 @@ class MainWindow(QMainWindow):
 
         # State
         self.state = AppState.create()
+        self.state.data_states.close()
 
         # Helpers
         self.files = FileHandler(self)
         self.runner = PipelineRunner(self)
         self.action_ctrl = ActionController(self)
         self.nav = NavController(self)
+
+        # DataStore shows a progress dialog when reading a file
+        self.state.data_states.thread_runner = self.runner.run_in_thread
 
         # UI
         self.setup_menu()
@@ -135,6 +138,12 @@ class MainWindow(QMainWindow):
         export_action = QAction("Export Processed...", self)
         export_action.triggered.connect(lambda checked: self.files.export_file())
         file_menu.addAction(export_action)
+
+        file_menu.addSeparator()
+
+        prefs_action = QAction("Preferences...", self)
+        prefs_action.triggered.connect(self.open_preferences)
+        file_menu.addAction(prefs_action)
 
         file_menu.addSeparator()
 
@@ -457,3 +466,12 @@ class MainWindow(QMainWindow):
         func_defs = action_def.build_function_def(action.action_id)
         call_site = action_def.build_call_site(action.action_id, params, adv)
         return call_site, func_defs
+
+    def open_preferences(self):
+        from mnetape.gui.dialogs.preferences_dialog import PreferencesDialog
+        dlg = PreferencesDialog(self.state, parent=self)
+        dlg.exec()
+
+    def closeEvent(self, event):
+        self.state.data_states.close()
+        super().closeEvent(event)

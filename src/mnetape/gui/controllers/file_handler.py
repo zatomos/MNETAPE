@@ -39,7 +39,7 @@ class FileHandler:
         """Close the loaded EEG file and reset state and UI to their initial conditions."""
 
         self.state.raw_original = None
-        self.state.data_states = []
+        self.state.data_states.clear()
         self.state.data_filepath = None
 
         for action in self.state.actions:
@@ -109,7 +109,7 @@ class FileHandler:
 
         self.state.raw_original = raw
         self.state.data_filepath = Path(path)
-        self.state.data_states = []
+        self.state.data_states.clear()
 
         for action in self.state.actions:
             action.reset()
@@ -193,7 +193,7 @@ class FileHandler:
     def new_pipeline(self):
         """Clear all actions and computed states to start a fresh pipeline."""
         self.state.actions = []
-        self.state.data_states = []
+        self.state.data_states.clear()
         self.w.update_action_list()
         self.w.update_visualization()
         self.w.status.showMessage("New pipeline")
@@ -230,7 +230,7 @@ class FileHandler:
             self.state.actions = parse_script_to_actions(code)
             self.state.pipeline_filepath = Path(path)
             self.w.code_panel.set_file(self.state.pipeline_filepath)
-            self.state.data_states = []
+            self.state.data_states.clear()
 
             self.w.update_action_list()
             self.w.update_visualization()
@@ -264,7 +264,7 @@ class FileHandler:
             )
             return
         self.state.actions = actions
-        self.state.data_states = []
+        self.state.data_states.clear()
         self.w.update_action_list(sync_code=False)
         self.w.code_panel.set_code(code)
         self.w.status.showMessage("Reloaded from file")

@@ -12,7 +12,8 @@ from pathlib import Path
 import mne
 from PyQt6.QtCore import QSettings
 
-from mnetape.core.models import ActionConfig, ICASolution
+from mnetape.core.data_store import DataStore
+from mnetape.core.models import ActionConfig
 
 
 @dataclass(slots=True)
@@ -22,8 +23,9 @@ class AppState:
     Attributes:
         raw_original: The raw MNE object loaded from disk. Never modified in-place;
             processing results are stored in data_states.
-        data_states: One entry per completed action, each a processed copy of raw.
-            data_states[i] is the result after actions[i].
+        data_states: Disk-backed store of one entry per completed action.
+            data_states[i] is the result after actions[i]. Checkpoints are serialized
+            to FIF files in a temp directory; an LRU cache keeps recent states in RAM.
         actions: Ordered list of pipeline actions configured by the user.
         data_filepath: Absolute path of the currently loaded EEG file, or None.
         pipeline_filepath: Absolute path of the currently open pipeline script, or None.
@@ -32,7 +34,7 @@ class AppState:
     """
 
     raw_original: mne.io.Raw | None = None
-    data_states: list[mne.io.Raw | mne.Epochs | ICASolution | None] = field(default_factory=list)
+    data_states: DataStore = field(default_factory=DataStore)
     actions: list[ActionConfig] = field(default_factory=list)
     data_filepath: Path | None = None
     pipeline_filepath: Path | None = None
@@ -50,4 +52,7 @@ class AppState:
         recent_fif = settings.value("recent_fif", [], list)
         if not isinstance(recent_fif, list):
             recent_fif = []
-        return cls(settings=settings, recent_fif=recent_fif)
+        state = cls(settings=settings, recent_fif=recent_fif)
+        state.data_states.cache_size = int(settings.value("data_store/cache_size", 2))
+        state.data_states.max_disk_states = int(settings.value("data_store/max_disk_states", 0))
+        return state

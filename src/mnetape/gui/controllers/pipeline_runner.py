@@ -290,8 +290,14 @@ class PipelineRunner:
         if start_idx > 0 and self.state.data_states:
             stored = self.state.data_states[start_idx - 1]
             data = stored.copy() if stored is not None else self.state.raw_original.copy()
+            del stored  # release the DataStore reference, only copy is needed
+            # Pop from LRU cache
+            self.state.data_states.cache.pop(start_idx - 1, None)
         else:
             data = self.state.raw_original.copy()
+
+        # Drop the viz panel's reference to the previous checkpoint so it can be freed
+        self.w.viz_panel.current_data = None
 
         for i in range(start_idx, min(end_idx, len(self.state.actions))):
             action = self.state.actions[i]
