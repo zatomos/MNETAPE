@@ -1,16 +1,19 @@
-"""ICA action widgets and interactive component inspection dialog.
+"""ICA apply action widgets.
 
-Provides Full-screen dialog that shows component topographies, an embedded MNE sources plot,
-ICLabel + EOG/ECG/muscle detection scores per component, and overlay comparison.
+Contains the ICAInspectionDialog for interactive component review and the exclude_components param widget factory
+used by the action editor.
 """
 
 from __future__ import annotations
 
 import logging
 
-from PyQt6.QtCore import Qt, QTimer
+import matplotlib.pyplot as plt
+from mnetape.gui.utils import refresh_mne_browser_bads
+import numpy as np
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
-    QApplication,
+    QCheckBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -21,86 +24,58 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from PyQt6.QtGui import QFont
-import matplotlib.pyplot as plt
-import numpy as np
 
-from mnetape.core.models import ActionStatus
+from mnetape.actions.base import ParamWidgetBinding
 from mnetape.gui.widgets import PlotCanvas
 
 logger = logging.getLogger(__name__)
 
 
+# -------- Utility helpers --------
+
 def format_component_labels(
     ic_labels: dict | None,
-    detection_details: dict | None,
+    detected_artifacts: list[int] | None,
     n_components: int,
 ) -> list[str]:
-    """Build multi-line labels for each ICA component for display in topography plot titles.
+    """Build per-component label strings for topography plot titles.
 
     Each label contains up to two lines:
         - Line 1: ICLabel prediction abbreviated to 3 chars + probability
-        - Line 2: Detection flags with scores for methods that flagged this component
+        - Line 2: "ARTIFACT" when the component is in detected_artifacts
 
     Args:
-        ic_labels: Dict returned by ICLabel containing "labels" and "y_pred_proba" keys, or None if ICLabel was skipped.
-        detection_details: Dict produced by the classify step containing eog_indices, ecg_indices, muscle_indices,
-            and corresponding score arrays.
+        ic_labels: Dict returned by ICLabel containing "labels" and "y_pred_proba", or None.
+        detected_artifacts: Sorted list of artifact component indices from ica_classify, or None.
         n_components: Total number of ICA components.
 
     Returns:
-        List of label strings, one per component (empty string when no info is available).
+        List of label strings, one per component.
     """
+    artifact_set = set(detected_artifacts or [])
 
-    result = [""] * n_components
-    details = detection_details or {}
-
-    # ICLabel prediction
     iclabel_lines = [""] * n_components
     if ic_labels and ic_labels.get("labels"):
         probs = ic_labels.get("y_pred_proba")
-        if probs is None:
-            probs = ic_labels.get("probabilities")
         if probs is not None:
             iclabel_lines = [
                 f"{label[:3].upper()} {np.max(prob):.0%}"
                 for label, prob in zip(ic_labels["labels"], probs)
             ]
 
-    # Collect per-component detection flags
-    eog_indices = set(details.get("eog_indices", []))
-    ecg_indices = set(details.get("ecg_indices", []))
-    muscle_indices = set(details.get("muscle_indices", []))
-    eog_scores = details.get("eog_scores")
-    ecg_scores = details.get("ecg_scores")
-    muscle_scores = details.get("muscle_scores")
-
-    # Build label lines
+    result = [""] * n_components
     for i in range(n_components):
         parts = []
         if iclabel_lines[i]:
             parts.append(f"ICL: {iclabel_lines[i]}")
-
-        flags = []
-        if i in eog_indices and eog_scores is not None:
-            score = np.max(np.abs(eog_scores[i])) if np.ndim(eog_scores) > 1 else abs(eog_scores[i])
-            flags.append(f"EOG:{score:.2f}")
-        if i in ecg_indices and ecg_scores is not None:
-            flags.append(f"ECG:{abs(ecg_scores[i]):.2f}")
-        if i in muscle_indices and muscle_scores is not None:
-            flags.append(f"MUS:{abs(muscle_scores[i]):.2f}")
-
-        if flags:
-            parts.append(" ".join(flags))
+        if i in artifact_set:
+            parts.append("ARTIFACT")
         result[i] = "\n".join(parts)
-
     return result
 
 
 def safe_patch_toolbar(fig):
-    """Wrap toolbar.set_message to swallow RuntimeError when the Qt widget is deleted during teardown.
-    Without this, closing the dialog can trigger a RuntimeError if matplotlib tries to update the toolbar message
-    after the widget is gone.
-    """
+    """Wrap toolbar.set_message to swallow RuntimeError when the Qt widget is deleted during teardown."""
     try:
         manager = fig.canvas.manager
         if manager and hasattr(manager, "toolbar") and manager.toolbar:
@@ -119,11 +94,7 @@ def safe_patch_toolbar(fig):
 
 
 def close_figure_safely(fig):
-    """Close a matplotlib figure, silently ignoring RuntimeError and KeyError.
-
-    Args:
-        fig: The matplotlib Figure to close.
-    """
+    """Close a matplotlib figure, silently ignoring RuntimeError and KeyError."""
     try:
         plt.close(fig)
     except (RuntimeError, KeyError):
@@ -131,6 +102,8 @@ def close_figure_safely(fig):
     except Exception as e:
         logger.debug("Failed to close matplotlib figure cleanly: %s", e, exc_info=True)
 
+
+# -------- ICA inspection dialog --------
 
 class ICAInspectionDialog(QDialog):
     """Interactive dialog for reviewing and selecting ICA components for removal.
@@ -143,15 +116,14 @@ class ICAInspectionDialog(QDialog):
         CHUNK_SIZE: Number of component topographies shown per page.
         ica: The fitted MNE ICA object (ica.exclude is modified in-place).
         raw: The MNE Raw object used for source plotting.
-        labels: Per-component label strings (ICLabel + detection flags).
+        labels: Per-component label strings (ICLabel + artifact flag).
         page_idx: Current page of component topographies.
         poll_timer: Timer used to poll the sources widget for exclusion changes.
-        closed_unexpectedly: True if the dialog was closed via window close rather than one of the action buttons.
     """
 
     CHUNK_SIZE = 15
 
-    def __init__(self, ica, raw, auto_exclude, ic_labels=None, detection_details=None, parent=None):
+    def __init__(self, ica, raw, auto_exclude, ic_labels=None, parent=None):
         super().__init__(parent)
         self.btn_overlay = None
         self.exclude_display = None
@@ -162,8 +134,10 @@ class ICAInspectionDialog(QDialog):
         self.plots_layout = None
         self.ica = ica
         self.raw = raw
-        self.details = detection_details or {}
-        self.labels = format_component_labels(ic_labels, self.details, ica.n_components_)
+        self.ic_labels = ic_labels
+        # Derive detected_artifacts from ic_labels["detected_artifacts"] if available
+        self.detected_artifacts = list(ic_labels.get("detected_artifacts", [])) if ic_labels else []
+        self.labels = format_component_labels(ic_labels, self.detected_artifacts, ica.n_components_)
         self.ica.exclude = list(auto_exclude)
         self.ica_names = list(
             getattr(ica, "ica_names", None)
@@ -171,7 +145,6 @@ class ICAInspectionDialog(QDialog):
             or [f"ICA{i:03d}" for i in range(ica.n_components_)]
         )
 
-        # Pagination
         pick_list = list(range(ica.n_components_))
         self.pick_chunks = [
             pick_list[i:i + self.CHUNK_SIZE]
@@ -179,16 +152,14 @@ class ICAInspectionDialog(QDialog):
         ]
         self.max_page = len(self.pick_chunks)
 
-        # State
-        self.page_idx: int = 0                      # Current page index for component topographies
-        self.current_fig = None                     # Currently displayed component topographies figure
-        self.source_fig = None                      # Figure for ICA sources plot
-        self.source_view = None                     # The actual widget or figure used to display ICA sources
-        self.prop_dialog: QDialog | None = None     # Dialog for component properties
-        self.current_prop_figs: list = []           # Figures for currently open component properties
-        self.extra_figs: list = []                  # Any additional figures that need cleanup
-        self.prev_exclude: list[int] = []           # Track previous exclude state for syncing with sources widget
-        self.closed_unexpectedly = True             # True if dialog is closed without applying
+        self.page_idx: int = 0
+        self.current_fig = None
+        self.source_fig = None
+        self.source_view = None
+        self.prop_dialog: QDialog | None = None
+        self.current_prop_figs: list = []
+        self.extra_figs: list = []
+        self.prev_exclude: list[int] = []
         self.poll_timer: QTimer | None = None
 
         self.setup_ui()
@@ -209,7 +180,6 @@ class ICAInspectionDialog(QDialog):
 
         self.plots_layout = QHBoxLayout()
 
-        # Left: component topographies with pagination
         components_container = QWidget(self)
         cc_layout = QVBoxLayout(components_container)
         cc_layout.setContentsMargins(0, 0, 0, 0)
@@ -234,7 +204,6 @@ class ICAInspectionDialog(QDialog):
         self.plots_layout.addWidget(components_container, 1)
         layout.addLayout(self.plots_layout)
 
-        # Exclusion summary
         self.exclude_display = QTextEdit()
         self.exclude_display.setReadOnly(True)
         self.exclude_display.setMaximumHeight(100)
@@ -244,44 +213,18 @@ class ICAInspectionDialog(QDialog):
         layout.addLayout(self.build_button_row())
 
     def build_info_row(self) -> QHBoxLayout:
-        """Build the info row showing which detection methods were active/disabled/failed."""
-        d = self.details
-        has_eog = d.get("has_eog_channel", False)
-        has_ecg = d.get("has_ecg_channel", False)
-        eog_ch = d.get("eog_channel_names", [])
-        ecg_ch = d.get("ecg_channel_names", [])
-
-        methods, failed, disabled = [], [], []
-        if d.get("enable_iclabel", True):
+        """Build the info row showing which classification methods ran."""
+        methods = []
+        if self.ic_labels is not None:
             methods.append("ICLabel")
-        else:
-            disabled.append("ICLabel")
-        if d.get("enable_eog", True):
-            methods.append(f"EOG ({', '.join(eog_ch)})") if has_eog else failed.append("EOG (no channels)")
-        else:
-            disabled.append("EOG")
-        if d.get("enable_ecg", True):
-            methods.append(f"ECG ({', '.join(ecg_ch)})") if has_ecg else failed.append("ECG (no channels)")
-        else:
-            disabled.append("ECG")
-        if d.get("enable_muscle", True):
-            methods.append("Muscle")
-        else:
-            disabled.append("Muscle")
-
-        info_parts = []
-        if methods:
-            info_parts.append(f"Active: {', '.join(methods)}")
-        if disabled:
-            info_parts.append(f"Disabled: {', '.join(disabled)}")
-        if failed:
-            info_parts.append(f"Failed: {', '.join(failed)}")
+        if self.detected_artifacts:
+            methods.append("Artifact detection")
 
         info_row = QHBoxLayout()
         info_row.setContentsMargins(0, 6, 0, 6)
         info_row.setSpacing(64)
 
-        status_label = QLabel("\n".join(info_parts))
+        status_label = QLabel(f"Active: {', '.join(methods)}" if methods else "")
         status_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         info_row.addWidget(status_label)
 
@@ -297,7 +240,7 @@ class ICAInspectionDialog(QDialog):
         return info_row
 
     def build_button_row(self) -> QHBoxLayout:
-        """Build the bottom button row: Show Overlay, Apply Exclusion, Keep auto."""
+        """Build the bottom button row: Show Overlay, Cancel, Apply Exclusion."""
         btn_layout = QHBoxLayout()
 
         self.btn_overlay = QPushButton("Show Overlay")
@@ -307,6 +250,10 @@ class ICAInspectionDialog(QDialog):
         btn_layout.addWidget(self.btn_overlay)
         btn_layout.addStretch()
 
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(btn_cancel)
+
         btn_done = QPushButton("Apply Exclusion")
         btn_done.setStyleSheet(
             "QPushButton { background-color: #2E7D32; color: white; "
@@ -315,10 +262,6 @@ class ICAInspectionDialog(QDialog):
         )
         btn_done.clicked.connect(self.accept)
         btn_layout.addWidget(btn_done)
-
-        btn_cancel = QPushButton("Keep auto (NOT RECOMMENDED)")
-        btn_cancel.clicked.connect(self.on_cancel)
-        btn_layout.addWidget(btn_cancel)
 
         return btn_layout
 
@@ -372,14 +315,7 @@ class ICAInspectionDialog(QDialog):
     # -------- Page management --------
 
     def set_page(self, idx: int):
-        """Switch the component topography display to the given page index.
-
-        Closes the previous figure, renders the new component topographies,
-        installs the click handler, and updates pagination controls.
-
-        Args:
-            idx:  page index.
-        """
+        """Switch the component topography display to the given page index."""
         if idx < 0 or idx >= self.max_page:
             return
         self.page_idx = idx
@@ -391,7 +327,6 @@ class ICAInspectionDialog(QDialog):
         safe_patch_toolbar(fig)
         self.plot_components.update_figure(fig)
         self.current_fig = fig
-        # Remove MNE's click handlers (they parse titles assuming "ICAxxxx" format)
         fig.canvas.callbacks.callbacks.pop("button_press_event", None)
         fig.canvas.mpl_connect("button_press_event", self.on_click)
         self.update_colors()
@@ -416,11 +351,7 @@ class ICAInspectionDialog(QDialog):
             logger.debug("Ignored RuntimeError updating exclusion info text", exc_info=True)
 
     def toggle_exclude(self, idx: int):
-        """Add or remove a component index from ica.exclude and refresh the UI.
-
-        Args:
-            idx:  component index to toggle.
-        """
+        """Add or remove a component index from ica.exclude and refresh the UI."""
         if idx in self.ica.exclude:
             self.ica.exclude.remove(idx)
         else:
@@ -455,15 +386,7 @@ class ICAInspectionDialog(QDialog):
     # -------- Click handling --------
 
     def title_clicked(self, event, ax) -> bool:
-        """Return True if a mouse event's screen position falls within ax's title text.
-
-        Args:
-            event: A matplotlib MouseEvent.
-            ax: The axes whose title bounding box is tested.
-
-        Returns:
-            True if the event position is inside the title bounding box.
-        """
+        """Return True if a mouse event's screen position falls within ax's title text."""
         if event.x is None or event.y is None:
             return False
         renderer = self.plot_components.canvas.figure.canvas.get_renderer()
@@ -471,11 +394,7 @@ class ICAInspectionDialog(QDialog):
         return bbox.contains(event.x, event.y)
 
     def on_click(self, event):
-        """Handle left-click (toggle exclusion) and right-click (show properties) on topographies.
-
-        Args:
-            event: A matplotlib MouseEvent on the component figure canvas.
-        """
+        """Handle left-click (toggle exclusion) and right-click (show properties) on topographies."""
         if event.x is None or event.y is None:
             return
         fig = self.plot_components.canvas.figure
@@ -497,7 +416,6 @@ class ICAInspectionDialog(QDialog):
             self.toggle_exclude(idx)
             return
 
-        # Right-click: show properties
         try:
             self.close_prop_figs()
             prop_figs = self.ica.plot_properties(
@@ -528,27 +446,10 @@ class ICAInspectionDialog(QDialog):
         try:
             ica_names_set = set(self.ica_names)
             new_bads = [self.ica_names[i] for i in self.ica.exclude if 0 <= i < len(self.ica_names)]
-            # Preserve non-ICA bads (e.g. EOG reference channels)
             existing_bads = self.source_view.mne.info.get("bads", [])
             non_ica_bads = [b for b in existing_bads if b not in ica_names_set]
             self.source_view.mne.info["bads"] = new_bads + non_ica_bads
-            bads_set = set(new_bads)
-
-            traces = getattr(self.source_view.mne, "traces", [])
-            if traces:
-                for trace in traces:
-                    if trace.ch_name not in ica_names_set:
-                        continue
-                    trace.isbad = trace.ch_name in bads_set
-                    if hasattr(trace, "update_color"):
-                        trace.update_color()
-                if hasattr(self.source_view, "update_yaxis_labels"):
-                    self.source_view.update_yaxis_labels()
-            elif hasattr(self.source_view, "_redraw"):
-                self.source_view._redraw(update_data=False)
-
-            if hasattr(self.source_view, "update"):
-                self.source_view.update()
+            refresh_mne_browser_bads(self.source_view, set(new_bads), filter_names=ica_names_set)
         except Exception as e:
             logger.debug("Failed to push exclusions to sources widget: %s", e, exc_info=True)
 
@@ -621,73 +522,115 @@ class ICAInspectionDialog(QDialog):
             close_figure_safely(fig)
         self.extra_figs.clear()
 
-
-    # -------- Button handlers --------
-
-    def on_cancel(self):
-        """Handle the 'Keep auto' button: mark as not unexpectedly closed and reject."""
-        self.closed_unexpectedly = False
-        self.reject()
-
-
-    # -------- Result --------
-
-    def run(self) -> tuple:
-        """Execute the dialog and return (raw, closed_unexpectedly)."""
-        result = self.exec()
+    def closeEvent(self, event):
         if self.poll_timer is not None:
             self.poll_timer.stop()
         self.cleanup_figures()
-
-        if result == QDialog.DialogCode.Accepted:
-            self.ica.exclude = sorted(self.ica.exclude)
-            return self.ica.apply(self.raw.copy(), verbose=False), False
-        return None, self.closed_unexpectedly
+        super().closeEvent(event)
 
 
-def run_ica_inspection(ica, raw, auto_exclude, ic_labels=None, detection_details=None, parent=None):
-    """Create and run an ICAInspectionDialog, returning the processed raw object.
+# -------- Param widget factory --------
+
+def format_exclude_label(exclude: list) -> str:
+    if not exclude:
+        return "No components excluded"
+    return f"{len(exclude)} excluded: {exclude}"
+
+
+class ExcludeWidget(QWidget):
+    """Container widget for the ICA component exclusion param.
+
+    Exposes get_value() and value_changed so the action editor can read and react to changes
+    without a direct reference to the parent dialog.
+    """
+
+    value_changed = pyqtSignal()
+
+    def get_value(self) -> list | None:
+        return self._state["exclude"] or None
+
+
+def exclude_components_factory(current_value, raw, parent=None):
+    """Widget factory for the exclude components param.
+
+    Builds a row with an exclusion-list label, an optional 'Use auto' checkbox
+    (shown only when ica_classify has been run), and a 'Browse Components' button.
 
     Args:
-        ica: The fitted MNE ICA object.
-        raw: The MNE Raw object to inspect and apply ICA to.
-        auto_exclude: Initial list of component indices to mark as excluded.
-        ic_labels: Optional ICLabel output dict for label display.
-        detection_details: Optional detection details dict (scores, channel info, flags).
+        param_def: The param schema dict for this parameter.
+        current_value: The currently stored exclusion list, or None.
+        raw: The data context: an ICASolution when ica_fit has been run, else None.
         parent: Optional parent QWidget.
 
     Returns:
-        A tuple (new_raw | None, closed_unexpectedly: bool). new_raw is None when the user canceled or closed
-        without applying.
+        A (container, container) tuple; container exposes get_value() and value_changed.
     """
-    if parent is None:
-        parent = QApplication.activeWindow()
-    dialog = ICAInspectionDialog(ica, raw, auto_exclude, ic_labels, detection_details, parent)
-    return dialog.run()
+    from mnetape.core.models import ICASolution
+
+    ica_solution = raw if isinstance(raw, ICASolution) else None
+    exclude = list(current_value) if current_value is not None else []
+
+    container = ExcludeWidget(parent)
+    container._state = {"exclude": exclude}
+    layout = QHBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(6)
+
+    has_classify = ica_solution is not None and ica_solution.ic_labels is not None
+    ic_labels_dict = ica_solution.ic_labels if has_classify else None
+    auto_exclude = list(ic_labels_dict.get("detected_artifacts", [])) if ic_labels_dict else []
+
+    label = QLabel(format_exclude_label(container._state["exclude"]))
+    label.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+    layout.addWidget(label, 1)
+
+    def update_label():
+        label.setText(format_exclude_label(container._state["exclude"]))
+
+    if ica_solution is not None:
+        btn = QPushButton("Browse Components...")
+
+        if has_classify:
+            use_auto_cb = QCheckBox("Use auto")
+            use_auto_cb.setToolTip("Use the exclusion list computed by the Classify ICA Components step.")
+            layout.addWidget(use_auto_cb)
+
+            def on_use_auto_toggled(checked: bool):
+                container._state["exclude"] = auto_exclude if checked else []
+                update_label()
+                btn.setEnabled(not checked)
+                container.value_changed.emit()
+
+            use_auto_cb.toggled.connect(on_use_auto_toggled)
+
+        def on_browse():
+            dialog = ICAInspectionDialog(
+                ica=ica_solution.ica,
+                raw=ica_solution.raw,
+                auto_exclude=list(container._state["exclude"]),
+                ic_labels=ica_solution.ic_labels,
+                parent=parent,
+            )
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                container._state["exclude"] = sorted(dialog.ica.exclude)
+                update_label()
+                container.value_changed.emit()
+            if dialog.poll_timer is not None:
+                dialog.poll_timer.stop()
+            dialog.cleanup_figures()
+
+        btn.clicked.connect(on_browse)
+        layout.addWidget(btn)
+    else:
+        note = QLabel("(run Fit ICA first to browse)")
+        note.setStyleSheet("color: gray; font-style: italic;")
+        layout.addWidget(note)
+
+    return container, container     # container is both the widget and the value provider
 
 
-def run_interactive_step(action, raw, parent=None):
-    """Run the ICA manual-selection step as an interactive_runner callable.
+# -------- Widget bindings --------
 
-    Extracts the fitted ICA object and classification results from action.step_state.
-
-    Args:
-        action: The ActionConfig for the ICA action; step_state must contain "scope" with an "ica" key populated
-            by the classify step.
-        raw: The MNE Raw object to pass to the inspection dialog.
-        parent: Optional parent QWidget for dialogs.
-
-    Returns:
-        The processed MNE Raw object (ICA applied), or None if canceled.
-    """
-    scope = action.step_state.get("scope", {})
-    ica = scope.get("ica")
-    auto_exclude = scope.get("auto_exclude", [])
-    ic_labels = scope.get("ic_labels")
-    detection_details = scope.get("detection_details")
-    result, closed = run_ica_inspection(ica, raw, auto_exclude, ic_labels, detection_details, parent=parent)
-    if closed:
-        action.status = ActionStatus.ERROR
-        action.error_msg = "Manual selection closed."
-        logger.warning("Manual ICA selection window closed before apply")
-    return result
+WIDGET_BINDINGS = [
+    ParamWidgetBinding("exclude", exclude_components_factory),
+]

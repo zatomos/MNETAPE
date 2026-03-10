@@ -1,82 +1,100 @@
 """Code execution for the EEG pipeline.
 
-Provides a single entry point for executing generated action code inside a controlled Python scope that exposes
-mne, numpy, and the current raw object.
-The scope is persisted on the action's step_state so that multistep actions can share variables (e.g. an ICA object
-created in step 1 and used in step 2).
+Provides exec_action as the primary entry point: runs a call-site string in a scope that
+has function definitions preloaded, then extracts the output data object.
 """
 
 import logging
 import mne
 import numpy
-from autoreject import AutoReject
 
-from mnetape.core.models import ActionConfig, DataType
+from mnetape.core.models import ActionConfig, DataType, ICASolution
 
 logger = logging.getLogger(__name__)
 
-# Maps DataType to the variable name used in the exec scope
-SCOPE_VAR: dict[DataType, str] = {
+# Maps DataType to the scope variable name used for non-ICA types
+SCOPE_VAR: dict[DataType, str | None] = {
     DataType.RAW: "raw",
     DataType.EPOCHS: "epochs",
     DataType.EVOKED: "evoked",
+    DataType.ICA: None,  # ICA is handled via structured unpacking
 }
 
 
-def exec_action_code(
-    code: str,
-    data: mne.io.Raw | mne.Epochs | mne.Evoked,
+def exec_action(
+    call_site: str,
+    func_defs: str,
+    data,
     action: ActionConfig,
-    reuse_scope: bool = False,
     input_type: DataType = DataType.RAW,
     output_type: DataType = DataType.RAW,
-) -> mne.io.Raw | mne.Epochs | mne.Evoked:
-    """Execute action code in a managed scope and return the resulting data object.
+):
+    """Execute an action by running func_defs then call_site in a managed scope.
 
-    The scope always exposes mne, np, numpy, and the input data under its type-appropriate variable name.
-    When reuse_scope is True and a prior scope exists on the action, that scope is reused so variables assigned in
-    earlier steps remain accessible.
+    The input data is injected by variable name (or unpacked for ICA).
+    After execution, the output is extracted from scope and returned as the appropriate type.
 
-    After execution the scope is stored so subsequent steps can access intermediate results.
+    For custom actions (empty func_defs, arbitrary call_site), this degrades gracefully to
+    direct exec of the call_site code.
 
     Args:
-        code: Python source code to execute.
-        data: The current data object. Injected into the scope.
-        action: The action whose step_state will hold the scope after execution.
-        reuse_scope: When True, reuse the existing scope from a previous step
-            rather than creating a fresh one.
-        input_type: DataType of the incoming data; determines the scope variable name on entry.
-        output_type: DataType of the expected result; determines which scope variable to return.
+        call_site: Python statement to execute (e.g. assignment from a function call, or raw code).
+        func_defs: Python source defining all needed functions (may be empty for custom code).
+        data: The current data object.
+        action: The ActionConfig being executed.
+        input_type: DataType of the incoming data.
+        output_type: DataType of the expected result.
 
     Returns:
-        The data object found in scope after execution under SCOPE_VAR[output_type].
-        Falls back to the input data when the output variable is absent.
+        The data object extracted from scope after execution.
 
     Raises:
         Exception: Re-raises any exception thrown by the executed code.
     """
+    logger.debug("Executing action_id=%s", action.action_id)
 
-    in_var = SCOPE_VAR[input_type]
-    out_var = SCOPE_VAR[output_type]
+    scope: dict = {
+        "mne": mne,
+        "np": numpy,
+        "numpy": numpy,
+    }
 
-    logger.debug("Executing action code (reuse_scope=%s) for action_id=%s", reuse_scope, action.action_id)
-
-    if reuse_scope and action.step_state.get("scope"):
-        scope = action.step_state["scope"]
-        scope[in_var] = data
+    # Inject input data
+    if input_type == DataType.ICA:
+        if isinstance(data, ICASolution):
+            scope["ica"] = data.ica
+            scope["raw"] = data.raw
+            scope["ic_labels"] = data.ic_labels
+        else:
+            scope["ica"] = data
+            scope["raw"] = data
+            scope["ic_labels"] = None
     else:
-        scope = {
-            in_var: data,
-            "mne": mne,
-            "np": numpy,
-            "numpy": numpy,
-            # Backward compatibility for older action snippets using AutoReject directly.
-            "AutoReject": AutoReject,
-        }
+        var = SCOPE_VAR.get(input_type, "raw")
+        scope[var] = data
+
+    # Define functions
+    if func_defs:
+        try:
+            exec(func_defs, scope, scope)
+        except Exception:
+            logger.exception("Failed to define functions for action_id=%s", action.action_id)
+            raise
+
+    # Run the call site / action code
     try:
-        exec(code, scope, scope)
+        exec(call_site, scope, scope)
     except Exception:
-        logger.exception("Action code execution failed for action_id=%s", action.action_id)
+        logger.exception("Action execution failed for action_id=%s", action.action_id)
         raise
-    action.step_state["scope"] = scope
+
+    # Extract output
+    if output_type == DataType.ICA:
+        return ICASolution(
+            ica=scope["ica"],
+            raw=scope["raw"],
+            ic_labels=scope.get("ic_labels"),
+        )
+
+    out_var = SCOPE_VAR.get(output_type, "raw")
     return scope.get(out_var, data)

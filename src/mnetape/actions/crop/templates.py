@@ -4,18 +4,13 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from mnetape.actions.base import ParamMeta, fragment, step
-
-PRIMARY_PARAMS = {"raw.crop": ["tmin", "tmax"]}
-
-
-@fragment
-def _do_crop(raw, tmin: float = 0.0, tmax: float = 0.0) -> None:
-    raw.crop(tmin=tmin, tmax=tmax)
+import mne
+from mnetape.actions.base import ParamMeta, builder
 
 
-@step("crop")
+@builder
 def template_builder(
+    raw: mne.io.Raw,
     tmin: Annotated[
         float,
         ParamMeta(
@@ -30,11 +25,12 @@ def template_builder(
     tmax: Annotated[
         float,
         ParamMeta(
-            type="crop_tmax",
             label="End (s)",
             description="End time in seconds.",
             default=0.0,
         ),
     ] = 0.0,
-) -> str:
-    return _do_crop.inline(tmin=tmin, tmax=tmax)
+    **kwargs,
+) -> mne.io.Raw:
+    raw.crop(tmin=tmin, tmax=tmax, **kwargs)
+    return raw

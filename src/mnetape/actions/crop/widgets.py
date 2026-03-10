@@ -7,9 +7,11 @@ on the dropped parts of the recording.
 from __future__ import annotations
 
 import matplotlib.pyplot as plt
-import numpy as np
+
+from mnetape.actions.base import ParamWidgetBinding
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.widgets import SpanSelector
+import numpy as np
 from PyQt6.QtCore import QEvent, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import (
@@ -404,7 +406,7 @@ def make_spinbox(min_val: float, max_val: float, value: float) -> QDoubleSpinBox
 
 # -------- Param widget factory --------
 
-def crop_factory(_param_def, current_value, raw, parent):
+def crop_factory(current_value, raw, parent):
     max_t = float(raw.times[-1]) if raw is not None else 999999.0
     spinbox = make_spinbox(0.0, max_t, float(current_value) if current_value else max_t)
 
@@ -438,3 +440,10 @@ def crop_factory(_param_def, current_value, raw, parent):
     btn.clicked.connect(crop)
 
     return container, spinbox
+
+
+# -------- Widget bindings --------
+
+WIDGET_BINDINGS = [
+    ParamWidgetBinding("tmax", crop_factory),
+]

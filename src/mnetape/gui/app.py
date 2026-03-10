@@ -69,7 +69,7 @@ def main():
         os.system("clear")
 
     setup_logging()
-    logger.info("Starting EEG GUI application.")
+    logger.info("Starting MNETAPE.")
 
     # Create the Qt application
     app = QApplication(sys.argv)

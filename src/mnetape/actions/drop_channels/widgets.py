@@ -11,6 +11,8 @@ Provides:
 import logging
 import numpy as np
 
+from mnetape.gui.utils import refresh_mne_browser_bads
+
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
 from PyQt6.QtWidgets import (
     QApplication,
@@ -31,6 +33,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.path import Path as MplPath
 import mne
 
+from mnetape.actions.base import ParamWidgetBinding
 from mnetape.gui.widgets.common import sanitize_mne_browser_toolbar
 
 logger = logging.getLogger(__name__)
@@ -469,19 +472,9 @@ class ChannelPickerDialog(QDialog):
         try:
             self.sync_guard = True
             managed = set(self.selected)
-            self.raw_preview.mne.info["bads"] = sorted(self.base_preview_bads | managed)
-            traces = getattr(self.raw_preview.mne, "traces", [])
-            if traces:
-                bads = set(self.raw_preview.mne.info["bads"])
-                for trace in traces:
-                    trace.isbad = trace.ch_name in bads
-                    if hasattr(trace, "update_color"):
-                        trace.update_color()
-                if hasattr(self.raw_preview, "update_yaxis_labels"):
-                    self.raw_preview.update_yaxis_labels()
-            elif hasattr(self.raw_preview, "_redraw"):
-                self.raw_preview._redraw(update_data=False)
-            self.raw_preview.update()
+            bads = sorted(self.base_preview_bads | managed)
+            self.raw_preview.mne.info["bads"] = bads
+            refresh_mne_browser_bads(self.raw_preview, set(bads))
         except Exception as e:
             logger.debug("Failed to push channel selection to raw preview: %s", e, exc_info=True)
         finally:
@@ -543,7 +536,7 @@ class ChannelPickerDialog(QDialog):
 
 # -------- Param widget factory --------
 
-def channels_widget_factory(param_def, current_value, raw, parent):
+def channels_widget_factory(current_value, raw, parent):
     """Build a widget for the 'channels' param type.
 
     Returns a (container, value_widget) pair:
@@ -600,3 +593,10 @@ def channels_widget_factory(param_def, current_value, raw, parent):
     layout.addWidget(btn_detect)
 
     return container, line_edit
+
+
+# -------- Widget bindings --------
+
+WIDGET_BINDINGS = [
+    ParamWidgetBinding("channels", channels_widget_factory),
+]

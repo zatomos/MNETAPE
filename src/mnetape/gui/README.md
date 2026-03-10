@@ -79,7 +79,7 @@ Manages the action sidebar and the code→action sync.
 | Remove action | Delete key / context menu                     |
 | Edit action   | Double-click / context menu -> `ActionEditor` |
 | Reorder       | Up/Down buttons                               |
-| Run next step | Right-click context menu (multi-step actions) |
+| Run next step | Right-click context menu                      |
 | Reset steps   | Right-click context menu                      |
 
 When an action is removed or moved, all downstream actions are reset to `PENDING` because their input `raw` may

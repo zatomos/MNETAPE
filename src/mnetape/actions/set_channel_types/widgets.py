@@ -26,6 +26,8 @@ from PyQt6.QtWidgets import (
 )
 import mne
 
+from mnetape.actions.base import ParamWidgetBinding
+
 logger = logging.getLogger(__name__)
 
 # Accepted channel types, fetched from MNE at import.
@@ -243,7 +245,7 @@ class ChannelTypeDialog(QDialog):
 
 # -------- Param widget factory --------
 
-def channel_types_widget_factory(param_def, current_value, raw, parent):
+def channel_types_widget_factory(current_value, raw, parent):
     """Build a compound widget for the 'channel_types' param type.
 
     Returns a (container, value_widget) pair:
@@ -295,3 +297,10 @@ def channel_types_widget_factory(param_def, current_value, raw, parent):
     layout.addWidget(btn_edit)
 
     return container, line_edit
+
+
+# -------- Widget bindings --------
+
+WIDGET_BINDINGS = [
+    ParamWidgetBinding("channel_mapping", channel_types_widget_factory),
+]

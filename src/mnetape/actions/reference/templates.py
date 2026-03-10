@@ -4,18 +4,13 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from mnetape.actions.base import ParamMeta, fragment, step
-
-PRIMARY_PARAMS = {"raw.set_eeg_reference": ["ref_channels", "projection"]}
-
-
-@fragment
-def _do_reference(raw, ref_channels: str = "average", projection: bool = False) -> None:
-    raw.set_eeg_reference(ref_channels=ref_channels, projection=projection)
+import mne
+from mnetape.actions.base import ParamMeta, builder
 
 
-@step("apply")
+@builder
 def template_builder(
+    raw: mne.io.Raw,
     ref_channels: Annotated[
         str,
         ParamMeta(
@@ -35,6 +30,7 @@ def template_builder(
             default=False,
         ),
     ] = False,
-) -> str:
-    """Generate code to re-reference the raw data."""
-    return _do_reference.inline(ref_channels=ref_channels, projection=projection)
+    **kwargs,
+) -> mne.io.Raw:
+    raw.set_eeg_reference(ref_channels=ref_channels, projection=projection, **kwargs)
+    return raw

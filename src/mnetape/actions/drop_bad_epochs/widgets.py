@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+from mnetape.actions.base import ParamWidgetBinding
+
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -243,3 +245,11 @@ def thresholds_factory(defaults: dict[str, float]):
 
 reject_thresholds_factory = thresholds_factory(REJECT_DEFAULTS)
 flat_thresholds_factory = thresholds_factory(FLAT_DEFAULTS)
+
+
+# -------- Widget bindings --------
+
+WIDGET_BINDINGS = [
+    ParamWidgetBinding("reject", reject_thresholds_factory),
+    ParamWidgetBinding("flat", flat_thresholds_factory),
+]

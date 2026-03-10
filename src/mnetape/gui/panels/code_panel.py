@@ -177,8 +177,9 @@ class CodePanel(QWidget):
     def highlight_action_blocks(self):
         """Scan the editor text and apply per-action background markers.
 
-        Clears all existing markers, then walks the editor lines looking for "# In[N] Title" / "# End[N]" pairs.
-        Lines inside each pair are highlighted with the color assigned to that action's title.
+        Clears all existing markers, then walks the pipeline section looking for
+        "# [N] Title" comments. Lines from the comment through the following call-site
+        (or inline block) are highlighted with the color assigned to that action's title.
         """
         for marker_id in range(MAX_ACTION_MARKERS):
             self.editor.markerDeleteAll(marker_id)
@@ -186,31 +187,43 @@ class CodePanel(QWidget):
         text = self.editor.text()
         lines = text.split("\n")
 
-        header_re = re.compile(r"^#\s*In\[\d+]\s*(.*?)\s*$")
-        footer_re = re.compile(r"^#\s*End\[\d+]\s*$")
+        header_re = re.compile(r"^#\s*\[(\d+)]\s*(.*?)\s*$")
+        inline_end_re = re.compile(r"^#\s*--end--\s*$")
 
         i = 0
+        in_pipeline = False
         while i < len(lines):
-            match = header_re.match(lines[i].strip())
+            stripped = lines[i].strip()
+            if stripped == "# --- Pipeline ---":
+                in_pipeline = True
+                i += 1
+                continue
+            if not in_pipeline:
+                i += 1
+                continue
+
+            match = header_re.match(stripped)
             if match:
-                action_name = match.group(1).strip()
+                action_name = match.group(2).strip()
                 marker_id = self.get_marker_for_action(action_name)
                 start_line = i
-
-                end_line = i
                 i += 1
-                while i < len(lines):
-                    if footer_re.match(lines[i].strip()):
-                        end_line = i
-                        i += 1
-                        break
-                    if header_re.match(lines[i].strip()):
-                        end_line = i - 1
-                        break
-                    end_line = i
-                    i += 1
 
-                for line_num in range(start_line, end_line + 1):
+                # Mark inline block or single call-site line
+                if i < len(lines) and lines[i].strip() == "# --inline--":
+                    # Highlight through # --end--
+                    while i < len(lines) and not inline_end_re.match(lines[i].strip()):
+                        i += 1
+                    if i < len(lines):
+                        i += 1  # include # --end--
+                else:
+                    # Skip blank lines then mark up to (and including) the call-site line
+                    while i < len(lines) and not lines[i].strip():
+                        i += 1
+                    if i < len(lines) and not header_re.match(lines[i].strip()):
+                        i += 1  # include the call-site line
+
+                for line_num in range(start_line, i):
                     self.editor.markerAdd(line_num, marker_id)
             else:
                 i += 1

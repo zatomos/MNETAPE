@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from mnetape.actions.base import ParamWidgetBinding
 from mnetape.gui.widgets.common import disable_mne_browser_channel_clicks, sanitize_mne_browser_toolbar
 
 logger = logging.getLogger(__name__)
@@ -242,7 +243,7 @@ class AnnotationEditorDialog(QDialog):
 
 # -------- Param widget factory --------
 
-def annotations_factory(param_def, current_value, raw, parent):
+def annotations_factory(current_value, raw, parent):
     """Param widget factory for the annotations param type."""
     annotations = list(current_value) if current_value else []
     value_widget = AnnotationsValueWidget(annotations)
@@ -273,3 +274,10 @@ def annotations_factory(param_def, current_value, raw, parent):
     layout.addWidget(btn)
 
     return container, value_widget
+
+
+# -------- Widget bindings --------
+
+WIDGET_BINDINGS = [
+    ParamWidgetBinding("annotations", annotations_factory),
+]

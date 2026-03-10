@@ -1,8 +1,6 @@
 """Detect events action."""
 
 from mnetape.actions.base import action_from_templates
-from mnetape.actions.detect_events.widgets import ecg_channel_factory, eog_channel_factory
-from mnetape.core.models import DataType
 
 ACTION = action_from_templates(
     action_id="detect_events",
@@ -12,11 +10,5 @@ ACTION = action_from_templates(
     mne_doc_urls={
         "mne.preprocessing.find_ecg_events": "https://mne.tools/stable/generated/mne.preprocessing.find_ecg_events.html",
         "mne.preprocessing.find_eog_events": "https://mne.tools/stable/generated/mne.preprocessing.find_eog_events.html",
-    },
-    input_type=DataType.RAW,
-    output_type=DataType.RAW,
-    param_widget_factories={
-        "ecg_channel": ecg_channel_factory,
-        "eog_channel": eog_channel_factory,
     },
 )

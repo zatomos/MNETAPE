@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import mne
 from PyQt6.QtCore import pyqtSignal
+
+from mnetape.actions.base import ParamWidgetBinding
 from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QWidget
 
 
@@ -37,7 +39,7 @@ class EventKeyWidget(QWidget):
         return str(value) if value else None
 
 
-def event_key_factory(param_def, current_value, raw, parent):
+def event_key_factory(current_value, raw, parent):
     """Param widget factory for selecting a single event key."""
 
     event_keys: list[str] = []
@@ -63,3 +65,10 @@ def event_key_factory(param_def, current_value, raw, parent):
         layout.addWidget(hint)
 
     return container, value_widget
+
+
+# -------- Widget bindings --------
+
+WIDGET_BINDINGS = [
+    ParamWidgetBinding("event_key", event_key_factory),
+]

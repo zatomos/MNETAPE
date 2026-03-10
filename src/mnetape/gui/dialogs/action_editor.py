@@ -30,9 +30,9 @@ from PyQt6.QtWidgets import (
 import mne
 
 from mnetape.actions.registry import get_action_by_id, get_action_title
-from mnetape.actions.introspect import get_advanced_params
 from mnetape.core.codegen import generate_action_code
-from mnetape.core.models import ActionConfig, ActionStatus
+from mnetape.core.models import CUSTOM_ACTION_ID, ActionConfig, ActionStatus
+
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ class NullableWidget(QWidget):
         inner.setGraphicsEffect(self.opacity)
         inner.setEnabled(has_value)
 
-        self.checkbox.toggled.connect(self._on_toggle)
+        self.checkbox.toggled.connect(self.on_toggle)
         self.checkbox.toggled.connect(lambda _: self.value_changed.emit())
 
         if isinstance(inner, (QSpinBox, QDoubleSpinBox)):
@@ -79,7 +79,7 @@ class NullableWidget(QWidget):
         layout.addWidget(self.checkbox)
         layout.addWidget(inner, 1)
 
-    def _on_toggle(self, checked: bool):
+    def on_toggle(self, checked: bool):
         self.inner.setEnabled(checked)
         self.opacity.setOpacity(1.0 if checked else 0.35)
 
@@ -209,7 +209,6 @@ class ActionEditor(QDialog):
         raw: The current MNE Raw object, used by param widget factories that need channel information.
             May be None if no file is loaded.
         parent: Optional parent widget.
-        step_idx: When set, restricts editing to the params of this step.
     """
 
     def __init__(
@@ -217,31 +216,14 @@ class ActionEditor(QDialog):
         action: ActionConfig,
         raw: mne.io.Raw | None = None,
         parent=None,
-        step_idx: int | None = None,
     ):
         super().__init__(parent)
         self.action = action
         self.raw = raw
         self.action_def = get_action_by_id(action.action_id)
-        self.step_idx = step_idx
-        self.step_def = None
 
-        # Determine title and which params to show
-        if step_idx is not None and self.action_def and self.action_def.steps:
-            self.step_def = self.action_def.steps[step_idx]
-            self.setWindowTitle(f"Edit: {self.step_def.title}")
-
-            # Filter params_schema to only this step's params
-            step_params = (
-                self.step_def.template_schema.all_primary_params()
-                if self.step_def.template_schema
-                else {}
-            )
-
-            visible_params = step_params
-        else:
-            self.setWindowTitle(f"Edit: {get_action_title(action)}")
-            visible_params = self.action_def.params_schema if self.action_def else {}
+        self.setWindowTitle(f"Edit: {get_action_title(action)}")
+        visible_params = self.action_def.params_schema if self.action_def else {}
 
         self.setMinimumWidth(400)
 
@@ -251,7 +233,7 @@ class ActionEditor(QDialog):
         self.custom_warning = None
         self.btn_reset_custom = None
         self.custom_was_reset = False
-        if action.is_custom and action.action_id != "custom":
+        if action.is_custom and action.action_id != CUSTOM_ACTION_ID:
             self.custom_warning = QLabel("⚠ This action has custom code. Editing parameters will reset it.")
             self.custom_warning.setStyleSheet("color: orange; margin-bottom: 10px;")
             layout.addWidget(self.custom_warning)
@@ -275,16 +257,11 @@ class ActionEditor(QDialog):
 
         for param_name, param_def in visible_params.items():
             current_value = action.params.get(param_name, param_def.get("default"))
-            if (
-                param_name == "ch_names"
-                and param_def.get("type") == "channels"
-                and (current_value is None or current_value == "")
-            ):
-                current_value = action.params.get("channels", current_value)
 
-            # Allow action definitions to specify custom widget factories for specific param types
-            factory = (self.action_def.param_widget_factories or {}).get(param_def.get("type"))
-            custom = factory(param_def, current_value, self.raw, self) if factory else None
+            # Look up a custom widget factory by param name
+            binding = next((b for b in self.action_def.widget_bindings if b.param_name == param_name), None)
+            factory = binding.factory if binding else None
+            custom = factory(current_value, self.raw, self) if factory else None
             if custom is not None:
                 container, value_widget = custom
                 self.param_widgets[param_name] = value_widget
@@ -364,29 +341,10 @@ class ActionEditor(QDialog):
     def build_advanced_section(self, parent_layout: QVBoxLayout):
         """Build the collapsible advanced params section."""
 
-        # Use step-specific schema when editing a single step
-        if self.step_def is not None:
-            schema = self.step_def.template_schema
-        elif self.action_def:
-            schema = self.action_def.template_schema
-        else:
-            schema = None
-
-        if not schema:
+        if not self.action_def or not self.action_def.advanced_schema:
             return
 
-        primary_names = frozenset(self.action_def.params_schema.keys())
-
-        # Collect advanced params from all function groups
-        all_advanced: dict[str, dict[str, dict]] = {}  # func -> {param: spec}
-        for group in schema.function_groups:
-            group_primary = frozenset(group.params.keys())
-            adv = get_advanced_params(group.dotted_name, primary_names | group_primary)
-            if adv:
-                all_advanced[group.dotted_name] = adv
-
-        if not all_advanced:
-            return
+        all_advanced = self.action_def.advanced_schema
 
         self.advanced_toggle_btn = QPushButton("Show Advanced")
         self.advanced_toggle_btn.setCheckable(True)
@@ -396,22 +354,22 @@ class ActionEditor(QDialog):
         self.advanced_group_box = group_box
         adv_layout = QVBoxLayout(group_box)
 
-        for func_name, adv_params in all_advanced.items():
+        for group_name, adv_params in all_advanced.items():
             if len(all_advanced) > 1:
-                func_label = QLabel(f"<b>{func_name}</b>")
+                func_label = QLabel(f"<b>{group_name}</b>")
                 adv_layout.addWidget(func_label)
 
             func_form = QFormLayout()
-            self.advanced_widgets[func_name] = {}
-            self.advanced_specs[func_name] = {}
+            self.advanced_widgets[group_name] = {}
+            self.advanced_specs[group_name] = {}
 
-            existing_advanced = self.action.advanced_params.get(func_name, {})
+            existing_advanced = self.action.advanced_params.get(group_name, {})
 
             for pname, pdef in adv_params.items():
                 current = existing_advanced.get(pname, pdef.get("default"))
                 widget = create_widget_for_param(pdef, current)
-                self.advanced_widgets[func_name][pname] = widget
-                self.advanced_specs[func_name][pname] = pdef
+                self.advanced_widgets[group_name][pname] = widget
+                self.advanced_specs[group_name][pname] = pdef
                 func_form.addRow(pdef.get("label", pname) + ":", widget)
                 connect_widget_signal(widget, self.update_code_preview)
 
@@ -441,7 +399,7 @@ class ActionEditor(QDialog):
 
     def reset_custom(self):
         """Clear the action's custom code and restore generated-code mode."""
-        if self.action.action_id == "custom":
+        if self.action.action_id == CUSTOM_ACTION_ID:
             return
         self.custom_was_reset = True
         self.action.custom_code = ""
@@ -465,25 +423,19 @@ class ActionEditor(QDialog):
         return params
 
     def get_advanced_params(self) -> dict:
-        """Return advanced params grouped by function name, only non-default values."""
+        """Return advanced params grouped by group name, only non-default values."""
 
-        # When editing a specific step, the schema lives on the step, not the action.
-        if self.step_def is not None:
-            schema = self.step_def.template_schema
-        elif self.action_def:
-            schema = self.action_def.template_schema
-        else:
-            schema = None
-        if not schema:
+        kwargs_targets = self.action_def.kwargs_targets if self.action_def else {}
+        if not kwargs_targets:
             return {}
 
         result: dict[str, dict] = {}
-        for func_name, widgets in self.advanced_widgets.items():
-            func_params: dict = {}
+        for group_name, widgets in self.advanced_widgets.items():
+            group_params: dict = {}
             for pname, widget in widgets.items():
                 value = get_widget_value(widget)
 
-                pdef = self.advanced_specs.get(func_name, {}).get(pname, {})
+                pdef = self.advanced_specs.get(group_name, {}).get(pname, {})
                 default = pdef.get("default")
 
                 # For nullable text params, keep empty input as None so that untouched fields won't get emitted as kwargs
@@ -492,10 +444,10 @@ class ActionEditor(QDialog):
                         value = None
 
                 if value != default:
-                    func_params[pname] = value
+                    group_params[pname] = value
 
-            if func_params:
-                result[func_name] = func_params
+            if group_params:
+                result[group_name] = group_params
 
         return result
 
@@ -503,10 +455,6 @@ class ActionEditor(QDialog):
         """Regenerate the code preview from current widget values."""
         if self.action.is_custom and self.action.custom_code:
             code = self.action.custom_code
-        elif self.step_def is not None and self.step_def.code_builder:
-            # Show only this step's generated code
-            all_params = {**self.action.params, **self.get_current_params()}
-            code = self.step_def.code_builder(all_params)
         else:
             temp_action = ActionConfig(
                 self.action.action_id,

@@ -4,18 +4,13 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from mnetape.actions.base import ParamMeta, fragment, step
-
-PRIMARY_PARAMS = {"raw.resample": ["sfreq"]}
-
-
-@fragment
-def _do_resample(raw, sfreq: float = 250.0) -> None:
-    raw.resample(sfreq=sfreq)
+import mne
+from mnetape.actions.base import ParamMeta, builder
 
 
-@step("apply")
+@builder
 def template_builder(
+    raw: mne.io.Raw,
     sfreq: Annotated[
         float,
         ParamMeta(
@@ -27,6 +22,7 @@ def template_builder(
             max=10000,
         ),
     ] = 250.0,
-) -> str:
-    """Generate code to resample the raw data."""
-    return _do_resample.inline(sfreq=sfreq)
+    **kwargs,
+) -> mne.io.Raw:
+    raw.resample(sfreq=sfreq, **kwargs)
+    return raw
