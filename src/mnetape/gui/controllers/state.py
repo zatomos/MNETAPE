@@ -53,5 +53,6 @@ class AppState:
         if not isinstance(recent_fif, list):
             recent_fif = []
         state = cls(settings=settings, recent_fif=recent_fif)
+        state.data_states.cache_size = int(settings.value("data_store/cache_size", 2))
         state.data_states.max_disk_states = int(settings.value("data_store/max_disk_states", 0))
         return state
