@@ -61,7 +61,7 @@ class PipelineRunner:
         current_type = DataType.RAW
         for action in self.state.actions[:row]:
             action_def = get_action_by_id(action.action_id)
-            if action_def:
+            if action_def and action_def.output_type != DataType.ANY:
                 current_type = action_def.output_type
         return current_type
 
@@ -314,6 +314,11 @@ class PipelineRunner:
             in_type = action_def.input_type if action_def else DataType.RAW
             out_type = action_def.output_type if action_def else DataType.RAW
             pipeline_type = self.infer_data_type(data)
+            # For ANY actions, use the actual pipeline type for execution
+            if in_type == DataType.ANY:
+                in_type = pipeline_type
+            if out_type == DataType.ANY:
+                out_type = pipeline_type
 
             if in_type != pipeline_type:
                 action.status = ActionStatus.ERROR

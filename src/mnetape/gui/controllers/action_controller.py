@@ -36,7 +36,8 @@ class ActionController:
 
     def add_action(self):
         """Open the Add Action dialog and append the selected action to the pipeline."""
-        dialog = AddActionDialog(self.w)
+        current_type = self.w.runner.get_data_type_at(len(self.state.actions))
+        dialog = AddActionDialog(current_type, self.w)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             action_id = dialog.get_action_id()
             if action_id:
@@ -236,7 +237,8 @@ class ActionController:
         else:
             current_raw = self.state.raw_original
 
-        dialog = ActionEditor(action, current_raw, self.w)
+        context_type = self.w.runner.get_data_type_at(row)
+        dialog = ActionEditor(action, current_raw, self.w, context_type=context_type)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             action.params = dialog.get_params()
             action.advanced_params = dialog.get_advanced_params()

@@ -314,6 +314,7 @@ class ActionDefinition:
     prerequisites: tuple = ()
     widget_bindings: tuple = ()
     advanced_schema: dict = field(default_factory=dict)
+    variants: dict = field(default_factory=dict)
     input_type: DataType = field(default_factory=lambda: DataType.RAW)
     output_type: DataType = field(default_factory=lambda: DataType.RAW)
 
@@ -333,46 +334,67 @@ class ActionDefinition:
             sig += f"{sep}**kwargs"
         return sig + "):"
 
-    def build_function_def(self, func_name: str) -> str:
+    def build_function_def(self, func_name: str, context_type: DataType | None = None) -> str:
         """Generate a Python function definition for this action.
 
         The signature starts with the data input args, followed by primary param names, then any named _kwargs groups
         (with {} defaults), then **kwargs if present.
 
+        When this action has variants, delegates to the matching variant for the given context_type.
+
         Args:
             func_name: Name to give the generated function.
+            context_type: The DataType flowing through the pipeline at this point.
 
         Returns:
             Complete Python function definition as a string.
         """
+        if self.variants and context_type is not None:
+            variant = self.variants.get(context_type)
+            if variant is not None:
+                return variant.build_function_def(func_name)
         return f"{self.build_signature(func_name)}\n{textwrap.indent(self.body_source, '    ')}"
 
-    def build_function_def_with_body(self, func_name: str, body: str) -> str:
+    def build_function_def_with_body(self, func_name: str, body: str, context_type: DataType | None = None) -> str:
         """Generate a function definition using the canonical signature but a custom body.
 
         Used when the user has edited a function body in the code panel. The signature stays canonical so the call site
         remains valid.
 
+        When this action has variants, delegates to the matching variant for the given context_type.
+
         Args:
             func_name: Name to give the generated function.
             body: Replacement function body source string.
+            context_type: The DataType flowing through the pipeline at this point.
 
         Returns:
             Complete Python function definition as a string.
         """
+        if self.variants and context_type is not None:
+            variant = self.variants.get(context_type)
+            if variant is not None:
+                return variant.build_function_def_with_body(func_name, body)
         return f"{self.build_signature(func_name)}\n{textwrap.indent(body, '    ')}"
 
-    def build_call_site(self, func_name: str, params: dict, advanced_params: dict | None = None) -> str:
+    def build_call_site(self, func_name: str, params: dict, advanced_params: dict | None = None, context_type: DataType | None = None) -> str:
         """Generate a call-site assignment statement for this action.
+
+        When this action has variants, delegates to the matching variant for the given context_type.
 
         Args:
             func_name: Name of the function to call.
             params: Primary parameter values.
             advanced_params: Optional kwargs grouped by group name.
+            context_type: The concrete DataType flowing through the pipeline at this point (used for variant lookup).
 
         Returns:
             Python assignment statement string.
         """
+        if self.variants and context_type is not None:
+            variant = self.variants.get(context_type)
+            if variant is not None:
+                return variant.build_call_site(func_name, params, advanced_params)
         return_var = RETURN_VARS.get(self.output_type, "raw")
         adv = advanced_params or {}
 
@@ -447,17 +469,15 @@ def action_from_templates(
     ]
     if not action_builders:
         raise AttributeError(f"{templates_path} must define at least one @builder function.")
-    if len(action_builders) > 1:
-        raise AttributeError(f"{templates_path} must define exactly one @builder function.")
 
-    ab = action_builders[0]
-    params_schema: dict[str, dict] = extract_schema_from_signature(ab.fn)
+    primary_ab = action_builders[0]
+    params_schema: dict[str, dict] = extract_schema_from_signature(primary_ab.fn)
 
     # Populate advanced_schema by introspecting MNE function signatures
     advanced_schema: dict[str, dict[str, dict]] = {}
-    if ab.kwargs_targets:
+    if primary_ab.kwargs_targets:
         primary_names = frozenset(params_schema.keys())
-        for group_name, dotted_name in ab.kwargs_targets.items():
+        for group_name, dotted_name in primary_ab.kwargs_targets.items():
             adv = get_advanced_params(dotted_name, primary_names)
             if adv:
                 advanced_schema[group_name] = adv
@@ -481,21 +501,69 @@ def action_from_templates(
             if bindings:
                 widget_bindings = tuple(bindings)
 
-    return ActionDefinition(
-        action_id=action_id,
-        title=title,
-        params_schema=params_schema,
-        body_source=ab.body_source,
-        input_vars=ab.input_vars,
-        param_names=ab.param_names,
-        kwargs_groups=tuple(ab.kwargs_groups),
-        kwargs_targets=ab.kwargs_targets,
-        extra_imports=extra_imports,
-        doc=doc,
-        mne_doc_urls=mne_doc_urls or {},
-        prerequisites=prerequisites,
-        widget_bindings=widget_bindings,
-        advanced_schema=advanced_schema,
-        input_type=ab.input_type,
-        output_type=ab.output_type,
-    )
+    if len(action_builders) == 1:
+        # Single-type action
+        ab = action_builders[0]
+        return ActionDefinition(
+            action_id=action_id,
+            title=title,
+            params_schema=params_schema,
+            body_source=ab.body_source,
+            input_vars=ab.input_vars,
+            param_names=ab.param_names,
+            kwargs_groups=tuple(ab.kwargs_groups),
+            kwargs_targets=ab.kwargs_targets,
+            extra_imports=extra_imports,
+            doc=doc,
+            mne_doc_urls=mne_doc_urls or {},
+            prerequisites=prerequisites,
+            widget_bindings=widget_bindings,
+            advanced_schema=advanced_schema,
+            variants={},
+            input_type=ab.input_type,
+            output_type=ab.output_type,
+        )
+    else:
+        # Multi-type action. Build a variant ActionDefinition for each builder
+        variants: dict = {}
+        for ab in action_builders:
+            variant = ActionDefinition(
+                action_id=action_id,
+                title=title,
+                params_schema=params_schema,
+                doc=doc,
+                body_source=ab.body_source,
+                input_vars=ab.input_vars,
+                param_names=ab.param_names,
+                kwargs_groups=tuple(ab.kwargs_groups),
+                kwargs_targets=ab.kwargs_targets,
+                extra_imports=extra_imports,
+                mne_doc_urls=mne_doc_urls or {},
+                prerequisites=prerequisites,
+                widget_bindings=widget_bindings,
+                advanced_schema=advanced_schema,
+                variants={},
+                input_type=ab.input_type,
+                output_type=ab.output_type,
+            )
+            variants[ab.input_type] = variant
+
+        return ActionDefinition(
+            action_id=action_id,
+            title=title,
+            params_schema=params_schema,
+            doc=doc,
+            body_source=primary_ab.body_source,
+            input_vars=primary_ab.input_vars,
+            param_names=primary_ab.param_names,
+            kwargs_groups=tuple(primary_ab.kwargs_groups),
+            kwargs_targets=primary_ab.kwargs_targets,
+            extra_imports=extra_imports,
+            mne_doc_urls=mne_doc_urls or {},
+            prerequisites=prerequisites,
+            widget_bindings=widget_bindings,
+            advanced_schema=advanced_schema,
+            variants=variants,
+            input_type=DataType.ANY,
+            output_type=DataType.ANY,
+        )
