@@ -30,7 +30,6 @@ from PyQt6.QtWidgets import (
 import mne
 
 from mnetape.actions.registry import get_action_by_id, get_action_title
-from mnetape.actions.introspect import get_advanced_params
 from mnetape.core.codegen import generate_action_code
 from mnetape.core.models import CUSTOM_ACTION_ID, ActionConfig, ActionStatus
 
@@ -342,22 +341,10 @@ class ActionEditor(QDialog):
     def build_advanced_section(self, parent_layout: QVBoxLayout):
         """Build the collapsible advanced params section."""
 
-        kwargs_targets = self.action_def.kwargs_targets if self.action_def else {}
-
-        if not kwargs_targets:
+        if not self.action_def or not self.action_def.advanced_schema:
             return
 
-        primary_names = frozenset(self.action_def.params_schema.keys())
-
-        # Collect advanced params from all kwargs_targets groups
-        all_advanced: dict[str, dict[str, dict]] = {}  # group_name -> {param: spec}
-        for group_name, dotted_name in kwargs_targets.items():
-            adv = get_advanced_params(dotted_name, primary_names)
-            if adv:
-                all_advanced[group_name] = adv
-
-        if not all_advanced:
-            return
+        all_advanced = self.action_def.advanced_schema
 
         self.advanced_toggle_btn = QPushButton("Show Advanced")
         self.advanced_toggle_btn.setCheckable(True)

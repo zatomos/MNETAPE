@@ -11,7 +11,7 @@ import inspect
 import logging
 from typing import Any, Callable
 
-from mnetape.actions.base import SCOPE_VARS
+from mnetape.core.models import SCOPE_VARS
 
 logger = logging.getLogger(__name__)
 

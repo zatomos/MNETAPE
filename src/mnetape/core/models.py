@@ -15,7 +15,9 @@ if TYPE_CHECKING:
 
 
 CUSTOM_ACTION_ID = "custom"
-"""Sentinel action_id for user-written inline code blocks."""
+
+# Variables always available in the exec scope, excluded from action param schemas.
+SCOPE_VARS: frozenset[str] = frozenset({"raw", "epochs", "evoked", "ica", "ic_labels"})
 
 # -------- Action status --------
 

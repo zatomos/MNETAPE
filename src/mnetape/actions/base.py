@@ -15,45 +15,13 @@ import sys
 import textwrap
 from typing import Annotated, Any, Callable, get_args, get_origin, get_type_hints
 
-from mnetape.core.models import ANNOTATION_TO_DATATYPE, RETURN_VARS, DataType
+from mnetape.actions.introspect import get_advanced_params
+from mnetape.core.ast_utils import get_dotted_name, value_to_ast
+from mnetape.core.models import ANNOTATION_TO_DATATYPE, RETURN_VARS, DataType, SCOPE_VARS
 
 logger = logging.getLogger(__name__)
 
 ParamsSchema = dict[str, dict]
-
-# Variables always available in the exec scope. Excluded from function param schemas
-SCOPE_VARS: frozenset[str] = frozenset({"raw", "epochs", "evoked", "ica", "ic_labels"})
-
-# -------- Value to AST conversion --------
-
-def value_to_ast(value: object) -> ast.expr:
-    """Convert a Python value to an AST expression node."""
-    if value is None:
-        return ast.Constant(value=None)
-    if isinstance(value, bool):
-        return ast.Constant(value=value)
-    if isinstance(value, (int, float, str)):
-        return ast.Constant(value=value)
-    if isinstance(value, list):
-        return ast.List(elts=[value_to_ast(v) for v in value], ctx=ast.Load())
-    if isinstance(value, dict):
-        return ast.Dict(
-            keys=[ast.Constant(value=k) for k in value.keys()],
-            values=[value_to_ast(v) for v in value.values()],
-        )
-    return ast.Constant(value=str(value))
-
-
-# -------- AST utilities --------
-
-def get_dotted_name(node: ast.expr) -> str | None:
-    """Return 'a.b.c' string for an AST Name or Attribute chain, or None."""
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        base = get_dotted_name(node.value)
-        return f"{base}.{node.attr}" if base else None
-    return None
 
 
 # -------- Parameter metadata type --------
@@ -345,6 +313,7 @@ class ActionDefinition:
     mne_doc_urls: dict = field(default_factory=dict)
     prerequisites: tuple = ()
     widget_bindings: tuple = ()
+    advanced_schema: dict = field(default_factory=dict)
     input_type: DataType = field(default_factory=lambda: DataType.RAW)
     output_type: DataType = field(default_factory=lambda: DataType.RAW)
 
@@ -491,7 +460,16 @@ def action_from_templates(
     ab = action_builders[0]
     params_schema: dict[str, dict] = extract_schema_from_signature(ab.fn)
 
-    # Autoload widgets bindings
+    # Populate advanced_schema by introspecting MNE function signatures
+    advanced_schema: dict[str, dict[str, dict]] = {}
+    if ab.kwargs_targets:
+        primary_names = frozenset(params_schema.keys())
+        for group_name, dotted_name in ab.kwargs_targets.items():
+            adv = get_advanced_params(dotted_name, primary_names)
+            if adv:
+                advanced_schema[group_name] = adv
+
+    # Autoload widgets.py for widget bindings
     widget_bindings: tuple[ParamWidgetBinding, ...] = ()
     widgets_path = here / "widgets.py"
     if widgets_path.exists():
@@ -524,6 +502,7 @@ def action_from_templates(
         mne_doc_urls=mne_doc_urls or {},
         prerequisites=prerequisites,
         widget_bindings=widget_bindings,
+        advanced_schema=advanced_schema,
         input_type=ab.input_type,
         output_type=ab.output_type,
     )
