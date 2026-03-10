@@ -39,7 +39,7 @@ class EventKeyWidget(QWidget):
         return str(value) if value else None
 
 
-def event_key_factory(param_def, current_value, raw, parent):
+def event_key_factory(current_value, raw, parent):
     """Param widget factory for selecting a single event key."""
 
     event_keys: list[str] = []

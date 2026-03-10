@@ -31,15 +31,15 @@ def sanitize_mne_browser_toolbar(browser: QWidget, *, allow_annotation_mode: boo
     if browser is None or not hasattr(browser, "findChildren"):
         return
 
-    HIDE_KEYWORDS = {"settings", "setting", "config", "options", "projector", "proj", "ssp"}
+    hide_keywords = {"settings", "setting", "config", "options", "projector", "proj", "ssp"}
     if not allow_annotation_mode:
-        HIDE_KEYWORDS.add("annotation")
+        hide_keywords.add("annotation")
 
     def _should_hide(action) -> bool:
         label = " ".join(
             filter(None, (action.text(), action.toolTip(), action.whatsThis(), action.objectName()))
         ).lower()
-        return any(k in label for k in HIDE_KEYWORDS)
+        return any(k in label for k in hide_keywords)
 
     for toolbar in browser.findChildren(QToolBar):
         for action in toolbar.actions():

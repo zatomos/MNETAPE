@@ -1,7 +1,7 @@
 """QScintilla code editor factory with a dark IDE theme and Python syntax highlighting.
 
 Exports a single factory function, create_code_editor(), that returns a fully
-configured QsciScintilla instance matching the application's dark colour scheme.
+configured QsciScintilla instance matching the application's dark color scheme.
 """
 
 from PyQt6.QtGui import QColor, QFont
@@ -11,8 +11,8 @@ from PyQt6.Qsci import QsciScintilla, QsciLexerPython
 def create_code_editor(parent=None) -> QsciScintilla:
     """Create a QsciScintilla editor with a dark theme and Python syntax highlighting.
 
-    Configures font, indentation, line-number margins, caret, selection colours,
-    and a QsciLexerPython with token-level colour assignments.
+    Configures font, indentation, line-number margins, caret, selection colors,
+    and a QsciLexerPython with token-level color assignments.
 
     Args:
         parent: Optional parent QWidget.

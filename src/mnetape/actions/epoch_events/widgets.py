@@ -191,7 +191,7 @@ def read_param_widget(widget) -> object:
     return None
 
 
-def event_ids_factory(param_def, current_value, raw, parent):
+def event_ids_factory(current_value, raw, parent):
     """Param widget factory for the 'event_ids' param type.
 
     Returns a (container, EventIdsValueWidget) pair where:
@@ -252,7 +252,7 @@ def event_ids_factory(param_def, current_value, raw, parent):
     return container, value_widget
 
 
-def stim_channel_factory(param_def, current_value, raw, parent):
+def stim_channel_factory(current_value, raw, parent):
     """Param widget factory for the 'stim_channel' param type.
 
     Returns a QComboBox populated with channels from raw, STI-prefixed channels
@@ -280,7 +280,7 @@ def stim_channel_factory(param_def, current_value, raw, parent):
     return combo, combo
 
 
-def events_file_factory(param_def, current_value, raw, parent):
+def events_file_factory(current_value, raw, parent):
     """Param widget factory for the 'events_file' param type.
 
     Returns a (container, QLineEdit) pair where the container has a text field

@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 
 import matplotlib.pyplot as plt
+from mnetape.gui.utils import refresh_mne_browser_bads
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -448,23 +449,7 @@ class ICAInspectionDialog(QDialog):
             existing_bads = self.source_view.mne.info.get("bads", [])
             non_ica_bads = [b for b in existing_bads if b not in ica_names_set]
             self.source_view.mne.info["bads"] = new_bads + non_ica_bads
-            bads_set = set(new_bads)
-
-            traces = getattr(self.source_view.mne, "traces", [])
-            if traces:
-                for trace in traces:
-                    if trace.ch_name not in ica_names_set:
-                        continue
-                    trace.isbad = trace.ch_name in bads_set
-                    if hasattr(trace, "update_color"):
-                        trace.update_color()
-                if hasattr(self.source_view, "update_yaxis_labels"):
-                    self.source_view.update_yaxis_labels()
-            elif hasattr(self.source_view, "_redraw"):
-                self.source_view._redraw(update_data=False)
-
-            if hasattr(self.source_view, "update"):
-                self.source_view.update()
+            refresh_mne_browser_bads(self.source_view, set(new_bads), filter_names=ica_names_set)
         except Exception as e:
             logger.debug("Failed to push exclusions to sources widget: %s", e, exc_info=True)
 
@@ -565,7 +550,7 @@ class ExcludeWidget(QWidget):
         return self._state["exclude"] or None
 
 
-def exclude_components_factory(param_def, current_value, raw, parent=None):
+def exclude_components_factory(current_value, raw, parent=None):
     """Widget factory for the exclude components param.
 
     Builds a row with an exclusion-list label, an optional 'Use auto' checkbox

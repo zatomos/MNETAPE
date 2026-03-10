@@ -406,7 +406,7 @@ def make_spinbox(min_val: float, max_val: float, value: float) -> QDoubleSpinBox
 
 # -------- Param widget factory --------
 
-def crop_factory(_param_def, current_value, raw, parent):
+def crop_factory(current_value, raw, parent):
     max_t = float(raw.times[-1]) if raw is not None else 999999.0
     spinbox = make_spinbox(0.0, max_t, float(current_value) if current_value else max_t)
 

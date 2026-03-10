@@ -277,7 +277,7 @@ class ParamWidgetBinding:
     """Binds a custom widget factory to a specific parameter by name."""
 
     param_name: str
-    factory: Callable  # (param_def, current_value, object, parent) -> (container, value_widget)
+    factory: Callable  # (current_value, raw, parent) -> (container, value_widget)
 
 
 @dataclass(frozen=True)
@@ -321,6 +321,18 @@ class ActionDefinition:
         """Return a dict of parameter defaults taken from params_schema."""
         return {name: spec["default"] for name, spec in self.params_schema.items()}
 
+    def build_signature(self, func_name: str) -> str:
+        """Return the canonical `def func_name(...):` line for this action."""
+        sig_parts = list(self.input_vars) + list(self.param_names)
+        for group in self.kwargs_groups:
+            if group != "kwargs":
+                sig_parts.append(f"{group}={{}}")
+        sig = f"def {func_name}({', '.join(sig_parts)}"
+        if "kwargs" in self.kwargs_groups:
+            sep = ", " if sig_parts else ""
+            sig += f"{sep}**kwargs"
+        return sig + "):"
+
     def build_function_def(self, func_name: str) -> str:
         """Generate a Python function definition for this action.
 
@@ -333,17 +345,7 @@ class ActionDefinition:
         Returns:
             Complete Python function definition as a string.
         """
-        sig_parts = list(self.input_vars) + list(self.param_names)
-        for group in self.kwargs_groups:
-            if group != "kwargs":
-                sig_parts.append(f"{group}={{}}")
-        sig = f"def {func_name}({', '.join(sig_parts)}"
-        if "kwargs" in self.kwargs_groups:
-            sep = ", " if sig_parts else ""
-            sig += f"{sep}**kwargs"
-        sig += "):"
-        indented_body = textwrap.indent(self.body_source, "    ")
-        return f"{sig}\n{indented_body}"
+        return f"{self.build_signature(func_name)}\n{textwrap.indent(self.body_source, '    ')}"
 
     def build_function_def_with_body(self, func_name: str, body: str) -> str:
         """Generate a function definition using the canonical signature but a custom body.
@@ -358,16 +360,7 @@ class ActionDefinition:
         Returns:
             Complete Python function definition as a string.
         """
-        sig_parts = list(self.input_vars) + list(self.param_names)
-        for group in self.kwargs_groups:
-            if group != "kwargs":
-                sig_parts.append(f"{group}={{}}")
-        sig = f"def {func_name}({', '.join(sig_parts)}"
-        if "kwargs" in self.kwargs_groups:
-            sep = ", " if sig_parts else ""
-            sig += f"{sep}**kwargs"
-        sig += "):"
-        return f"{sig}\n{textwrap.indent(body, '    ')}"
+        return f"{self.build_signature(func_name)}\n{textwrap.indent(body, '    ')}"
 
     def build_call_site(self, func_name: str, params: dict, advanced_params: dict | None = None) -> str:
         """Generate a call-site assignment statement for this action.

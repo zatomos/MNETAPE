@@ -261,7 +261,7 @@ class ActionEditor(QDialog):
             # Look up a custom widget factory by param name
             binding = next((b for b in self.action_def.widget_bindings if b.param_name == param_name), None)
             factory = binding.factory if binding else None
-            custom = factory(param_def, current_value, self.raw, self) if factory else None
+            custom = factory(current_value, self.raw, self) if factory else None
             if custom is not None:
                 container, value_widget = custom
                 self.param_widgets[param_name] = value_widget

@@ -243,7 +243,7 @@ class AnnotationEditorDialog(QDialog):
 
 # -------- Param widget factory --------
 
-def annotations_factory(param_def, current_value, raw, parent):
+def annotations_factory(current_value, raw, parent):
     """Param widget factory for the annotations param type."""
     annotations = list(current_value) if current_value else []
     value_widget = AnnotationsValueWidget(annotations)

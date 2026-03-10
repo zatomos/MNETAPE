@@ -110,6 +110,24 @@ def generate_action_code(action: ActionConfig) -> str:
     return action_def.build_function_def(action.action_id)
 
 
+def collect_func_defs(actions: list[ActionConfig], func_names: list[str]) -> dict[str, str]:
+    """Collect unique function definitions for a list of actions, preserving first occurrence order."""
+    emitted: dict[str, str] = {}
+    for action, func_name in zip(actions, func_names):
+        if action.action_id == CUSTOM_ACTION_ID or func_name == CUSTOM_ACTION_ID:
+            continue
+        if func_name in emitted:
+            continue
+        action_def = get_action_by_id(action.action_id)
+        if not action_def:
+            continue
+        if action.is_custom and action.custom_code:
+            emitted[func_name] = action_def.build_function_def_with_body(func_name, action.custom_code)
+        else:
+            emitted[func_name] = action_def.build_function_def(func_name)
+    return emitted
+
+
 def generate_full_script(filepath: Path | None, actions: list[ActionConfig]) -> str:
     """Generate a complete Python pipeline script from an action list.
 
@@ -130,23 +148,7 @@ def generate_full_script(filepath: Path | None, actions: list[ActionConfig]) -> 
     func_names = assign_func_names(actions)
 
     # Collect unique function defs, preserving order of first occurrence
-    emitted_funcs: dict[str, str] = {}  # func_name -> func_def_str
-
-    for action, func_name in zip(actions, func_names):
-        if action.action_id == CUSTOM_ACTION_ID or func_name == CUSTOM_ACTION_ID:
-            continue
-        if func_name in emitted_funcs:
-            continue
-
-        action_def = get_action_by_id(action.action_id)
-        if not action_def:
-            continue
-
-        if action.is_custom and action.custom_code:
-            # Custom-edited body: keep canonical signature, replace only the body
-            emitted_funcs[func_name] = action_def.build_function_def_with_body(func_name, action.custom_code)
-        else:
-            emitted_funcs[func_name] = action_def.build_function_def(func_name)
+    emitted_funcs = collect_func_defs(actions, func_names)
 
     # Collect imports: base set + any extra imports declared by the actions in this pipeline
     all_imports: list[str] = list(BASE_IMPORTS)
@@ -446,23 +448,5 @@ def build_func_defs_for_execution(actions: list[ActionConfig]) -> str:
     Used by the executor when running individual actions. All defs are made available in the exec scope so
     functions can reference each other if needed.
     """
-
     func_names = assign_func_names(actions)
-    emitted: dict[str, str] = {}
-
-    for action, func_name in zip(actions, func_names):
-        if action.action_id == CUSTOM_ACTION_ID or func_name == CUSTOM_ACTION_ID:
-            continue
-        if func_name in emitted:
-            continue
-
-        action_def = get_action_by_id(action.action_id)
-        if not action_def:
-            continue
-
-        if action.is_custom and action.custom_code:
-            emitted[func_name] = action_def.build_function_def_with_body(func_name, action.custom_code)
-        else:
-            emitted[func_name] = action_def.build_function_def(func_name)
-
-    return "\n\n".join(emitted.values())
+    return "\n\n".join(collect_func_defs(actions, func_names).values())

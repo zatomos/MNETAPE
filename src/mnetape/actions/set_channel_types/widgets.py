@@ -245,7 +245,7 @@ class ChannelTypeDialog(QDialog):
 
 # -------- Param widget factory --------
 
-def channel_types_widget_factory(param_def, current_value, raw, parent):
+def channel_types_widget_factory(current_value, raw, parent):
     """Build a compound widget for the 'channel_types' param type.
 
     Returns a (container, value_widget) pair:

@@ -1,7 +1,7 @@
 """Code execution for the EEG pipeline.
 
 Provides exec_action as the primary entry point: runs a call-site string in a scope that
-has function definitions pre-loaded, then extracts the output data object.
+has function definitions preloaded, then extracts the output data object.
 """
 
 import logging
