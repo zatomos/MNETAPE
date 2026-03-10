@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 
 from mnetape.actions.registry import get_action_by_id, get_action_title
+from mnetape.core.data_io import detect_extension
 from mnetape.core.models import CUSTOM_ACTION_ID, ActionConfig, ActionStatus, DataType
 
 logger = logging.getLogger(__name__)
@@ -23,8 +24,20 @@ logger = logging.getLogger(__name__)
 BASE_IMPORTS = [
     "import mne",
     "import numpy as np",
-    "from mnetape.core.data_io import load_raw_data",
 ]
+
+# Maps file extensions to the standalone MNE reader function
+EXT_TO_READER: dict[str, str] = {
+    ".fif":    "mne.io.read_raw_fif",
+    ".fif.gz": "mne.io.read_raw_fif",
+    ".edf":    "mne.io.read_raw_edf",
+    ".bdf":    "mne.io.read_raw_bdf",
+    ".gdf":    "mne.io.read_raw_gdf",
+    ".vhdr":   "mne.io.read_raw_brainvision",
+    ".set":    "mne.io.read_raw_eeglab",
+    ".cnt":    "mne.io.read_raw_cnt",
+    ".mff":    "mne.io.read_raw_egi",
+}
 
 
 # -------- Function name deduplication --------
@@ -185,11 +198,12 @@ def generate_full_script(filepath: Path | None, actions: list[ActionConfig]) -> 
                     seen_imports.add(imp)
     merged_imports = "\n".join(all_imports)
 
-    load_line = (
-        f'raw = load_raw_data("{filepath}", preload=True)'
-        if filepath
-        else "# raw = load_raw_data('your_file.fif', preload=True)"
-    )
+    if filepath:
+        ext = detect_extension(filepath)
+        reader = EXT_TO_READER.get(ext, "mne.io.read_raw_fif")
+        load_line = f'raw = {reader}("{filepath}", preload=True)'
+    else:
+        load_line = "# raw = mne.io.read_raw_fif('your_file.fif', preload=True)"
 
     # Build pipeline section
     pipeline_lines: list[str] = []
