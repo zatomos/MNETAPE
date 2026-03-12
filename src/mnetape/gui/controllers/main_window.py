@@ -32,6 +32,7 @@ from mnetape.gui.controllers.file_handler import FileHandler
 from mnetape.gui.controllers.nav_controller import NavController
 from mnetape.gui.controllers.pipeline_runner import PipelineRunner
 from mnetape.gui.controllers.state import AppState
+from mnetape.gui.dialogs.action_result_dialog import ActionResultDialog
 from mnetape.gui.panels import CodePanel, VisualizationPanel
 from mnetape.gui.widgets import ActionListItem
 
@@ -87,6 +88,7 @@ class MainWindow(QMainWindow):
         # State
         self.state = AppState.create()
         self.state.data_states.close()
+        self.open_dialogs: list = []
 
         # Helpers
         self.files = FileHandler(self)
@@ -468,6 +470,25 @@ class MainWindow(QMainWindow):
         func_defs = action_def.build_function_def(action.action_id, context_type)
         call_site = action_def.build_call_site(action.action_id, params, adv, context_type)
         return call_site, func_defs
+
+    def open_action_results(self, row: int):
+        """Open the ActionResultDialog for the action at row."""
+        if row < 0 or row >= len(self.state.actions):
+            return
+        action = self.state.actions[row]
+        if action.result is None:
+            return
+        from mnetape.actions.registry import get_action_title
+        self.show_action_result(action.result, get_action_title(action))
+
+    def show_action_result(self, result, title: str):
+        """Open the ActionResultDialog for a given result and title."""
+
+        dlg = ActionResultDialog(result, title, parent=self)
+        self.open_dialogs.append(dlg)
+        dlg.destroyed.connect(lambda: self.open_dialogs.remove(dlg) if dlg in self.open_dialogs else None)
+        dlg.show()
+        dlg.raise_()
 
     def open_preferences(self):
         from mnetape.gui.dialogs.preferences_dialog import PreferencesDialog

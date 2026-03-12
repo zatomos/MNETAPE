@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Annotated
 
 import mne
-from mnetape.actions.base import ParamMeta, builder
+from mnetape.actions.base import ParamMeta, builder, result_builder
 
 
 @builder
@@ -81,3 +81,17 @@ def template_builder(
         )
     raw.set_annotations(raw.annotations + new_annotations)
     return raw
+
+
+@result_builder
+def build_result(data):
+    from collections import Counter
+    from mnetape.core.models import ActionResult
+
+    counts = Counter(data.annotations.description)
+    total = sum(counts.values())
+    if not counts:
+        return ActionResult(summary="No events detected.")
+
+    summary = f"{total} event{'s' if total != 1 else ''} detected"
+    return ActionResult(summary=summary, details=dict(counts.most_common()))

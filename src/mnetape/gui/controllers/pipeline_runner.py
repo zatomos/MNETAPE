@@ -37,8 +37,29 @@ class PipelineRunner:
     def __init__(self, window: MainWindow) -> None:
         self.w = window
         self.state = window.state
+        self.current_toast = None
 
     # -------- Helpers --------
+
+    def show_toast(self, action, title: str) -> None:
+        """Show a toast notification for a completed action, replacing any existing one."""
+        from mnetape.gui.widgets.toast_notification import ToastNotification
+        from mnetape.core.models import ActionResult
+        if self.current_toast is not None:
+            self.current_toast.close()
+        on_results = None
+        if isinstance(action.result, ActionResult):
+            on_results = lambda res=action.result, t=title: self.w.show_action_result(res, t)
+        elif action.result is not None:
+            logger.warning("Unexpected action.result type: %s (value=%r)", type(action.result).__name__, action.result)
+        toast = ToastNotification(
+            f'"{title}" complete',
+            parent=self.w,
+            on_view_results=on_results,
+        )
+        toast.destroyed.connect(lambda: setattr(self, "current_toast", None))
+        self.current_toast = toast
+        toast.show()
 
     def require_data(self) -> bool:
         """Show a warning and return False when no EEG file is loaded."""
@@ -337,6 +358,12 @@ class PipelineRunner:
                                            input_type=in_type, output_type=out_type)
                 self.store_action_result(i, data)
                 action.status = ActionStatus.COMPLETE
+                if action_def.result_builder_fn:
+                    try:
+                        action.result = action_def.result_builder_fn(data)
+                    except Exception as e:
+                        logger.warning("Result builder failed for %s: %s", title, e, exc_info=True)
+                self.show_toast(action, title)
                 logger.info("Completed action %d: %s", i + 1, title)
             except OperationCancelled:
                 action.status = ActionStatus.PENDING

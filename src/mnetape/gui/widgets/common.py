@@ -83,6 +83,12 @@ class Toolbar(NavigationToolbar2QT):
         ('Save', 'Save the figure', 'filesave', 'save_figure'),     # Save
     ]
 
+    def set_message(self, s):
+        try:
+            super().set_message(s)
+        except RuntimeError:
+            pass
+
 
 class PlotCanvas(QWidget):
     """QWidget that embeds a matplotlib figure together with a navigation toolbar.

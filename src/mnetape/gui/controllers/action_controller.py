@@ -117,6 +117,12 @@ class ActionController:
         run_to_action = menu.addAction("Run This and Above")
         run_to_action.triggered.connect(self.w.runner.run_to_selected)
 
+        action = self.state.actions[row]
+        if action.result is not None:
+            menu.addSeparator()
+            view_results_action = menu.addAction("View Results")
+            view_results_action.triggered.connect(lambda: self.w.open_action_results(row))
+
         menu.addSeparator()
 
         export_action = menu.addAction("Export data at this step...")
