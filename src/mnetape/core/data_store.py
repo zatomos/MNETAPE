@@ -15,6 +15,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable
 
+import numpy as np
 import mne
 from mnetape.core.models import ICASolution
 from PyQt6.QtCore import QCoreApplication, QThread
@@ -27,6 +28,13 @@ RAW = "raw"
 EPOCHS = "epochs"
 EVOKED = "evoked"
 ICA = "ica"
+
+
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
 
 
 def p(base: Path, suffix: str) -> Path:
@@ -46,7 +54,7 @@ def write_to_disk(data: Any, base: Path) -> str:
         data.ica.save(p(base, "_ica.fif"), overwrite=True)
         data.raw.save(p(base, "_ica_raw.fif"), overwrite=True)
         if data.ic_labels is not None:
-            p(base, "_labels.json").write_text(json.dumps(data.ic_labels))
+            p(base, "_labels.json").write_text(json.dumps(data.ic_labels, cls=NumpyEncoder))
         return ICA
 
     if isinstance(data, mne.io.BaseRaw):

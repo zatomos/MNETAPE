@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import mne
+    from matplotlib.figure import Figure
 
 
 CUSTOM_ACTION_ID = "custom"
@@ -123,6 +124,23 @@ class ICASolution:
         )
 
 
+# ------- Action result --------
+
+@dataclass
+class ActionResult:
+    """Feedback data produced by an action after execution.
+
+    Attributes:
+        summary: Description of the results.
+        fig: Matplotlib Figure to display, or None if no plot was produced.
+        details: Optional key/value pairs shown below the summary.
+    """
+
+    summary: str
+    fig: Figure | None = None
+    details: dict = field(default_factory=dict)
+
+
 # ------- Action configuration --------
 
 @dataclass
@@ -151,8 +169,10 @@ class ActionConfig:
     is_custom: bool = False
     title_override: str = ""
     advanced_params: dict = field(default_factory=dict)
+    result: ActionResult | None = None
 
     def reset(self):
         """Reset action to pending state."""
         self.status = ActionStatus.PENDING
         self.error_msg = ""
+        self.result = None

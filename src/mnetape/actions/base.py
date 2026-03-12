@@ -184,6 +184,22 @@ def infer_output_from_ast(func_def: ast.FunctionDef) -> DataType:
     )
 
 
+# -------- Result builder --------
+
+@dataclass
+class ResultBuilder:
+    """Holds a result-builder callable registered via @result_builder."""
+    fn: Callable
+
+
+def result_builder(fn: Callable) -> ResultBuilder:
+    """Mark a function as the result builder for an action.
+
+    The function receives the output data object after execution and returns an ActionResult.
+    """
+    return ResultBuilder(fn=fn)
+
+
 # -------- Builder --------
 
 @dataclass
@@ -317,6 +333,7 @@ class ActionDefinition:
     variants: dict = field(default_factory=dict)
     input_type: DataType = field(default_factory=lambda: DataType.RAW)
     output_type: DataType = field(default_factory=lambda: DataType.RAW)
+    result_builder_fn: Callable | None = None
 
     def default_params(self) -> dict:
         """Return a dict of parameter defaults taken from params_schema."""
@@ -468,6 +485,12 @@ def action_from_templates(
     if not action_builders:
         raise AttributeError(f"{templates_path} must define at least one @builder function.")
 
+    # Pick up @result_builder function
+    result_builder_instance = next(
+        (obj for obj in vars(module).values() if isinstance(obj, ResultBuilder)), None
+    )
+    rb_fn = result_builder_instance.fn if result_builder_instance else None
+
     primary_ab = action_builders[0]
     params_schema: dict[str, dict] = extract_schema_from_signature(primary_ab.fn)
 
@@ -520,6 +543,7 @@ def action_from_templates(
             variants={},
             input_type=ab.input_type,
             output_type=ab.output_type,
+            result_builder_fn=rb_fn,
         )
     else:
         # Multi-type action. Build a variant ActionDefinition for each builder
@@ -564,4 +588,5 @@ def action_from_templates(
             variants=variants,
             input_type=DataType.ANY,
             output_type=DataType.ANY,
+            result_builder_fn=rb_fn,
         )
