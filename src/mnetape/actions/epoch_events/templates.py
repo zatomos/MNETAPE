@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated
 
 import mne
-from mnetape.actions.base import ParamMeta, builder
+from mnetape.actions.base import ParamMeta, builder, result_builder
 
 
 @builder
@@ -173,3 +173,28 @@ def template_builder(
         **kwargs,
     )
     return epochs
+
+
+@result_builder
+def build_result(data):
+    import numpy as np
+    from matplotlib.figure import Figure
+    from mnetape.core.models import ActionResult
+
+    event_id = data.event_id or {}
+    counts = {cond: int(np.sum(data.events[:, 2] == eid)) for cond, eid in event_id.items()}
+    n_total = len(data)
+    n_conditions = len(counts)
+
+    fig = None
+    if len(counts) > 1:
+        fig = Figure(figsize=(max(4, n_conditions * 0.8), 3.8))
+        ax = fig.add_subplot(111)
+        ax.bar(counts.keys(), counts.values(), color="steelblue", alpha=0.85)
+        ax.set_ylabel("Epochs")
+        ax.set_title("Epochs per condition")
+        ax.tick_params(axis="x", rotation=30)
+        fig.tight_layout()
+
+    summary = f"{n_total} epochs across {n_conditions} condition{'s' if n_conditions != 1 else ''}"
+    return ActionResult(summary=summary, fig=fig, details=counts)
