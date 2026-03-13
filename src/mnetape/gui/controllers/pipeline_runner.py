@@ -51,7 +51,8 @@ class PipelineRunner:
         if isinstance(action.result, ActionResult):
             on_results = lambda res=action.result, t=title: self.w.show_action_result(res, t)
         elif action.result is not None:
-            logger.warning("Unexpected action.result type: %s (value=%r)", type(action.result).__name__, action.result)
+            logger.warning("Unexpected action.result type: %s (value=%r)",
+                           type(action.result).__name__, action.result)
         toast = ToastNotification(
             f'"{title}" complete',
             parent=self.w,
@@ -91,7 +92,7 @@ class PipelineRunner:
         """Infer DataType from a concrete data object instance."""
         if isinstance(data, ICASolution):
             return DataType.ICA
-        if isinstance(data, mne.Epochs):
+        if isinstance(data, mne.BaseEpochs):
             return DataType.EPOCHS
         if isinstance(data, mne.Evoked):
             return DataType.EVOKED
@@ -306,16 +307,21 @@ class PipelineRunner:
         final_status = "Pipeline complete"
         self.w.status.showMessage("Running pipeline...")
         logger.info("======== Running actions %d to %d ========", start_idx, end_idx)
-        QApplication.processEvents()
 
         if start_idx > 0 and self.state.data_states:
             stored = self.state.data_states[start_idx - 1]
+            if stored is None:
+                logger.warning(
+                    "Checkpoint at index %d is unavailable; falling back to raw_original", start_idx - 1
+                )
             data = stored.copy() if stored is not None else self.state.raw_original.copy()
             del stored  # release the DataStore reference, only copy is needed
             # Pop from LRU cache
             self.state.data_states.cache.pop(start_idx - 1, None)
         else:
             data = self.state.raw_original.copy()
+
+        QApplication.processEvents()
 
         # Drop the viz panel's reference to the previous checkpoint so it can be freed
         self.w.viz_panel.current_data = None
@@ -335,6 +341,8 @@ class PipelineRunner:
             in_type = action_def.input_type if action_def else DataType.RAW
             out_type = action_def.output_type if action_def else DataType.RAW
             pipeline_type = self.infer_data_type(data)
+            logger.debug("Action %d: data class=%s pipeline_type=%s",
+                         i + 1, type(data).__name__, pipeline_type)
             # For ANY actions, use the actual pipeline type for execution
             if in_type == DataType.ANY:
                 in_type = pipeline_type
@@ -347,7 +355,8 @@ class PipelineRunner:
                     f"Type mismatch: pipeline produces {pipeline_type.label} data, "
                     f"but this action expects {in_type.label}"
                 )
-                logger.error("Type mismatch at action %d: pipeline=%s action_input=%s", i + 1, pipeline_type, in_type)
+                logger.error("Type mismatch at action %d: pipeline=%s action_input=%s",
+                             i + 1, pipeline_type, in_type)
                 self.w.update_action_list(sync_code=False)
                 final_status = f"Pipeline stopped: type mismatch at action {i + 1}"
                 break

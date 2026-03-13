@@ -158,7 +158,7 @@ class DataStore:
                 self.cache.popitem(last=False)  # pop least recently used
             self.cache[index] = data
 
-    def _evict_oldest_disk_slot(self) -> None:
+    def evict_oldest_disk_slot(self) -> None:
         """Delete the lowest-indexed on-disk slot when max_disk_states is exceeded."""
         if self.max_disk_states == 0:
             return
@@ -192,7 +192,7 @@ class DataStore:
                 delete_slot_files(old[1])
             self.slots[index] = (type_tag, base)
             self.cache_put(index, data)
-            self._evict_oldest_disk_slot()
+            self.evict_oldest_disk_slot()
         except Exception as e:
             logger.error(
                 "DataStore: failed to serialize checkpoint at index %d: %s",
@@ -221,6 +221,10 @@ class DataStore:
 
         slot = self.slots[index]
         if slot is None:
+            # Slot may still be in cache if the disk write failed but data was kept in RAM
+            if index in self.cache:
+                self.cache.move_to_end(index)
+                return self.cache[index]
             return None
 
         if index in self.cache:
