@@ -235,7 +235,11 @@ def builder(fn: Callable) -> ActionBuilder:
         if isinstance(n, ast.FunctionDef) and n.name == fn.__name__
     )
     all_args = [a.arg for a in func_def.args.args]
-    ab.body_source = "\n".join(ast.unparse(stmt) for stmt in func_def.body)
+
+    # Extract body from the original source text
+    source_lines = source.splitlines()
+    body_start_line = func_def.body[0].lineno - 1
+    ab.body_source = textwrap.dedent("\n".join(source_lines[body_start_line:]))
     ab.input_vars = [a for a in all_args if a in SCOPE_VARS]
 
     # Detect kwargs groups
