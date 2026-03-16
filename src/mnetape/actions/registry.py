@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 ACTION_REGISTRY: dict[str, ActionDefinition] | None = None
 TITLE_REGISTRY: dict[str, ActionDefinition] | None = None
 
-
 def load_actions() -> dict[str, ActionDefinition]:
     """Scan the actions package and return a mapping of action_id -> ActionDefinition.
 
@@ -49,7 +48,6 @@ def load_actions() -> dict[str, ActionDefinition]:
         registry[action_def.action_id] = action_def
     return registry
 
-
 def get_action_registry() -> dict[str, ActionDefinition]:
     """Return the singleton action registry, loading it on first call.
 
@@ -62,7 +60,6 @@ def get_action_registry() -> dict[str, ActionDefinition]:
         TITLE_REGISTRY = {a.title: a for a in ACTION_REGISTRY.values()}
     return ACTION_REGISTRY
 
-
 def list_actions() -> list[ActionDefinition]:
     """Return all registered ActionDefinition objects.
 
@@ -70,7 +67,6 @@ def list_actions() -> list[ActionDefinition]:
         List of all loaded ActionDefinition instances.
     """
     return list(get_action_registry().values())
-
 
 def get_action_by_id(action_id: str) -> ActionDefinition | None:
     """Look up an action by its unique identifier.
@@ -83,7 +79,6 @@ def get_action_by_id(action_id: str) -> ActionDefinition | None:
     """
     return get_action_registry().get(action_id)
 
-
 def get_action_by_title(title: str) -> ActionDefinition | None:
     """Look up an action by its display title (O(1) via reverse index).
 
@@ -95,7 +90,6 @@ def get_action_by_title(title: str) -> ActionDefinition | None:
     """
     get_action_registry()  # ensure TITLE_REGISTRY is populated
     return TITLE_REGISTRY.get(title) if TITLE_REGISTRY else None
-
 
 def get_action_title(action: ActionConfig) -> str:
     """Return the display title for an ActionConfig.

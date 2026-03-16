@@ -1,92 +1,83 @@
-"""QScintilla code editor factory with a dark IDE theme and Python syntax highlighting.
+"""GtkSource.View code editor factory with a dark IDE theme and Python syntax highlighting.
 
-Exports a single factory function, create_code_editor(), that returns a fully
-configured QsciScintilla instance matching the application's dark color scheme.
+Exports a single factory function, create_code_editor(), that returns a fully configured GtkSource.View instance.
 """
 
-from PyQt6.QtGui import QColor, QFont
-from PyQt6.Qsci import QsciScintilla, QsciLexerPython
+from __future__ import annotations
+
+from gi.repository import Gtk, GtkSource
+
+def apply_python_highlighting(buffer: GtkSource.Buffer) -> None:
+    """Configure Python syntax highlighting and a dark color scheme on a GtkSource.Buffer."""
+    lang_manager = GtkSource.LanguageManager.get_default()
+    python_lang = lang_manager.get_language("python3") or lang_manager.get_language("python")
+    if python_lang:
+        buffer.set_language(python_lang)
+    buffer.set_highlight_syntax(True)
+
+    scheme_manager = GtkSource.StyleSchemeManager.get_default()
+    for scheme_id in ("Adwaita-dark", "oblivion", "solarized-dark", "classic-dark"):
+        scheme = scheme_manager.get_scheme(scheme_id)
+        if scheme is not None:
+            buffer.set_style_scheme(scheme)
+            break
 
 
-def create_code_editor(parent=None) -> QsciScintilla:
-    """Create a QsciScintilla editor with a dark theme and Python syntax highlighting.
+def create_code_preview() -> GtkSource.View:
+    """Create a read-only GtkSource.View with Python syntax highlighting.
 
-    Configures font, indentation, line-number margins, caret, selection colors,
-    and a QsciLexerPython with token-level color assignments.
-
-    Args:
-        parent: Optional parent QWidget.
+    Suitable for embedding a code preview panel where the user should not edit
+    the content. Uses the same dark color scheme as create_code_editor().
 
     Returns:
-        A fully configured QsciScintilla instance ready to embed in a layout.
+        A fully configured read-only GtkSource.View instance.
     """
-    editor = QsciScintilla(parent)
+    buffer = GtkSource.Buffer()
+    apply_python_highlighting(buffer)
 
-    font = QFont("Consolas", 11)
-    font.setFixedPitch(True)
-    editor.setFont(font)
+    view = GtkSource.View.new_with_buffer(buffer)
+    view.set_editable(False)
+    view.set_cursor_visible(False)
+    view.set_show_line_numbers(False)
+    view.set_wrap_mode(Gtk.WrapMode.NONE)
+    view.set_monospace(True)
+    view.set_left_margin(8)
+    view.set_right_margin(8)
+    view.set_top_margin(6)
+    view.set_bottom_margin(6)
+    view.set_hexpand(True)
 
-    editor.setUtf8(True)
-    editor.setTabWidth(4)
-    editor.setIndentationsUseTabs(False)
-    editor.setAutoIndent(True)
-    editor.setWrapMode(QsciScintilla.WrapMode.WrapNone)
-    editor.setEolMode(QsciScintilla.EolMode.EolUnix)
+    provider = Gtk.CssProvider()
+    provider.load_from_data(b"textview { font-size: 11pt; }")
+    view.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-    # Line numbers
-    editor.setMarginType(0, QsciScintilla.MarginType.NumberMargin)
-    editor.setMarginWidth(0, "0000")
-    editor.setMarginsForegroundColor(QColor("#858585"))
-    editor.setMarginsBackgroundColor(QColor("#1E1E1E"))
+    return view
 
-    editor.setPaper(QColor("#1E1E1E"))
-    editor.setColor(QColor("#A9B7C6"))
-    editor.setCaretForegroundColor(QColor("#A9B7C6"))
-    editor.setCaretLineVisible(True)
-    editor.setCaretLineBackgroundColor(QColor("#2B2B2B"))
-    editor.setSelectionBackgroundColor(QColor("#214283"))
-    editor.setSelectionForegroundColor(QColor("#A9B7C6"))
 
-    # Lexer
-    lexer = QsciLexerPython(editor)
-    lexer.setFont(font)
-    lexer.setDefaultPaper(QColor("#1E1E1E"))
-    lexer.setDefaultColor(QColor("#A9B7C6"))
+def create_code_editor() -> GtkSource.View:
+    """Create a GtkSource.View editor with a dark theme and Python syntax highlighting.
 
-    # Set background and font for all styles
-    for i in range(128):
-        lexer.setPaper(QColor("#1E1E1E"), i)
-        lexer.setFont(font, i)
+    Returns:
+        A fully configured GtkSource.View instance ready to embed in a layout.
+    """
+    buffer = GtkSource.Buffer()
+    apply_python_highlighting(buffer)
 
-    # Token colors
-    P = QsciLexerPython
-    str_color = QColor("#6AAB73")
-    for color, styles in [
-        (QColor("#A9B7C6"), [P.Default, P.Operator, P.Identifier]),
-        (QColor("#7A7E85"), [P.Comment, P.CommentBlock]),
-        (QColor("#2AACB8"), [P.Number]),
-        (str_color,         [P.SingleQuotedString, P.DoubleQuotedString,
-                             P.TripleSingleQuotedString, P.TripleDoubleQuotedString]),
-        (QColor("#CF8E6D"), [P.Keyword]),
-        (QColor("#56A8F5"), [P.ClassName, P.FunctionMethodName, P.Decorator]),
-    ]:
-        for style in styles:
-            lexer.setColor(color, style)
+    view = GtkSource.View.new_with_buffer(buffer)
+    view.set_show_line_numbers(True)
+    view.set_auto_indent(True)
+    view.set_indent_width(4)
+    view.set_insert_spaces_instead_of_tabs(True)
+    view.set_tab_width(4)
+    view.set_wrap_mode(Gtk.WrapMode.NONE)
+    view.set_monospace(True)
 
-    # Version-dependent styles
-    for color, names in [
-        (str_color,         ["SingleQuotedFString", "DoubleQuotedFString",
-                             "TripleSingleQuotedFString", "TripleDoubleQuotedFString"]),
-        (QColor("#E06C75"), ["UnclosedString"]),
-    ]:
-        for name in names:
-            if (style_id := getattr(P, name, None)) is not None:
-                lexer.setColor(color, style_id)
+    # Font size via CSS (override_font was removed in GTK4)
+    provider = Gtk.CssProvider()
+    provider.load_from_data(b"textview { font-size: 11pt; }")
+    view.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-    # Bold keywords
-    kw_font = QFont(font)
-    kw_font.setBold(True)
-    lexer.setFont(kw_font, P.Keyword)
+    view.set_hexpand(True)
+    view.set_vexpand(True)
 
-    editor.setLexer(lexer)
-    return editor
+    return view

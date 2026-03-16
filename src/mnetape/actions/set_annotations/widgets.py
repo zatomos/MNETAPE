@@ -12,89 +12,103 @@ from __future__ import annotations
 import logging
 
 import mne
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtWidgets import (
-    QDialog,
-    QDialogButtonBox,
-    QHBoxLayout,
-    QLabel,
-    QListWidget,
-    QPushButton,
-    QSplitter,
-    QVBoxLayout,
-    QWidget,
-)
+
+
+from gi.repository import Adw, GLib, Gtk
 
 from mnetape.actions.base import ParamWidgetBinding
-from mnetape.gui.widgets.common import disable_mne_browser_channel_clicks, sanitize_mne_browser_toolbar
+from mnetape.gui.dialogs.base import ModalDialog
+from mnetape.gui.widgets.common import (
+    disable_mne_browser_channel_clicks,
+    embed_mne_browser,
+    sanitize_mne_browser_toolbar,
+)
 
 logger = logging.getLogger(__name__)
 
-
-class AnnotationsValueWidget(QWidget):
+class AnnotationsValueWidget(Gtk.Box):
     """Hidden value widget that stores the annotations list."""
 
-    value_changed = pyqtSignal()
-
-    def __init__(self, annotations: list[dict], parent=None):
-        super().__init__(parent)
-        self.hide()
+    def __init__(self, annotations: list[dict]):
+        super().__init__()
+        self.set_visible(False)
         self.annotations: list[dict] = list(annotations) if annotations else []
+        self.changed_cbs: list = []
 
     def set_value(self, annotations: list[dict]):
         self.annotations = list(annotations)
-        self.value_changed.emit()
+        for cb in self.changed_cbs:
+            cb()
 
     def get_value(self) -> list[dict]:
         return self.annotations
 
+    def connect_value_changed(self, cb):
+        self.changed_cbs.append(cb)
 
-class AnnotationEditorDialog(QDialog):
+class AnnotationEditorDialog(ModalDialog):
     """Dialog for managing annotations through the MNE browser.
 
     Left panel shows a read-only list of annotations.
     Right panel hosts the MNE browser where annotations are edited.
     """
 
-    def __init__(self, raw, annotations: list[dict], parent=None):
-        super().__init__(parent)
+    def __init__(self, raw, annotations: list[dict], parent_window=None):
         self.raw = raw
         self.seed_annotations = list(annotations) if annotations else []
         self.raw_copy: mne.io.Raw | None = raw.copy() if raw is not None else None
 
         self.browser = None
-        self.right_layout = None
+        self.poll_source: int | None = None
         self.last_ann_hash: int | None = None
 
-        self.setWindowTitle("Edit Annotations")
-        self.setMinimumSize(1000, 560)
-        self.setSizeGripEnabled(True)
+        self.dialog = Adw.Dialog()
+        self.dialog.set_title("Edit Annotations")
+        self.dialog.set_content_width(1000)
 
-        outer = QVBoxLayout(self)
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        toolbar_view = Adw.ToolbarView()
+        toolbar_view.add_top_bar(Adw.HeaderBar())
+        self.dialog.set_child(toolbar_view)
 
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 0, 0)
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        outer.set_margin_start(12)
+        outer.set_margin_end(12)
+        outer.set_margin_top(8)
+        outer.set_margin_bottom(8)
+        toolbar_view.set_content(outer)
 
-        hint = QLabel("Use the browser to add/edit annotations.\nThis list is read-only.")
-        hint.setStyleSheet("color: #777777;")
-        hint.setWordWrap(True)
-        left_layout.addWidget(hint)
+        # Horizontal paned (left: list, right: browser)
+        paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        paned.set_vexpand(True)
+        paned.set_position(350)
+        outer.append(paned)
 
-        self.list_widget = QListWidget()
-        self.list_widget.setAlternatingRowColors(True)
-        self.list_widget.setSelectionMode(QListWidget.SelectionMode.NoSelection)
-        left_layout.addWidget(self.list_widget)
+        # Left panel
+        left_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        left_box.set_margin_start(4)
+        left_box.set_margin_end(4)
+        left_box.set_margin_top(4)
+        left_box.set_margin_bottom(4)
 
-        splitter.addWidget(left)
+        hint = Gtk.Label(label="Use the browser to add/edit annotations.\nThis list is read-only.")
+        hint.set_wrap(True)
+        hint.add_css_class("dim-label")
+        left_box.append(hint)
 
-        right = QWidget()
-        self.right_layout = QVBoxLayout(right)
-        self.right_layout.setContentsMargins(0, 0, 0, 0)
-        splitter.addWidget(right)
-        splitter.setSizes([350, 650])
-        outer.addWidget(splitter, 1)
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_vexpand(True)
+        scrolled.set_hexpand(True)
+        self.list_box = Gtk.ListBox()
+        self.list_box.set_selection_mode(Gtk.SelectionMode.NONE)
+        scrolled.set_child(self.list_box)
+        left_box.append(scrolled)
+        paned.set_start_child(left_box)
+
+        # Right panel: browser container
+        self.browser_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.browser_container.set_hexpand(True)
+        self.browser_container.set_vexpand(True)
+        paned.set_end_child(self.browser_container)
 
         self.initialize_annotations()
         self.refresh_list_from_annotations()
@@ -105,31 +119,33 @@ class AnnotationEditorDialog(QDialog):
                 self.browser = self.raw_copy.plot(show=False)
                 sanitize_mne_browser_toolbar(self.browser, allow_annotation_mode=True)
                 disable_mne_browser_channel_clicks(self.browser)
-                self.right_layout.addWidget(self.browser)
+                embed_mne_browser(self.browser, self.browser_container)
             except Exception as e:
                 logger.warning("Could not embed MNE browser in annotation editor: %s", e)
-                lbl = QLabel(f"Browser unavailable:\n{e}")
-                lbl.setWordWrap(True)
-                lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.right_layout.addWidget(lbl)
+                lbl = Gtk.Label(label=f"Browser unavailable:\n{e}")
+                lbl.set_wrap(True)
+                self.browser_container.append(lbl)
         else:
-            lbl = QLabel("Load data to view and edit annotations")
-            lbl.setStyleSheet("color: #999999; font-size: 14pt;")
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.right_layout.addWidget(lbl)
+            lbl = Gtk.Label(label="Load data to view and edit annotations")
+            lbl.add_css_class("dim-label")
+            self.browser_container.append(lbl)
 
-        self.poll_timer = QTimer()
-        self.poll_timer.setInterval(250)
-        self.poll_timer.timeout.connect(self.poll_browser)
+        # Button row
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        btn_row.set_halign(Gtk.Align.END)
+        cancel_btn = Gtk.Button(label="Cancel")
+        cancel_btn.connect("clicked", self.reject)
+        ok_btn = Gtk.Button(label="OK")
+        ok_btn.add_css_class("suggested-action")
+        ok_btn.connect("clicked", self.accept)
+        btn_row.append(cancel_btn)
+        btn_row.append(ok_btn)
+        outer.append(btn_row)
+
+        self.setup_modal(parent_window)
+
         if self.browser is not None:
-            self.poll_timer.start()
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        outer.addWidget(buttons)
+            self.poll_source = GLib.timeout_add(250, self.poll_browser)
 
     def initialize_annotations(self):
         """Seed raw_copy annotations from param value or existing raw annotations."""
@@ -170,7 +186,12 @@ class AnnotationEditorDialog(QDialog):
 
     def refresh_list_from_annotations(self):
         """Render current annotations into the read-only list."""
-        self.list_widget.clear()
+        # Remove all existing rows
+        while True:
+            row = self.list_box.get_first_child()
+            if row is None:
+                break
+            self.list_box.remove(row)
 
         if self.raw_copy is None:
             anns = self.seed_annotations
@@ -190,23 +211,31 @@ class AnnotationEditorDialog(QDialog):
             ]
 
         if not anns:
-            self.list_widget.addItem("No annotations")
+            row = Gtk.ListBoxRow()
+            row.set_child(Gtk.Label(label="No annotations"))
+            self.list_box.append(row)
             return
 
         for idx, a in enumerate(anns, start=1):
-            self.list_widget.addItem(
-                f"{idx}. {a['onset']:.3f}s | {a['duration']:.3f}s | {a['description']}"
+            row = Gtk.ListBoxRow()
+            lbl = Gtk.Label(
+                label=f"{idx}. {a['onset']:.3f}s | {a['duration']:.3f}s | {a['description']}"
             )
+            lbl.set_xalign(0.0)
+            lbl.set_margin_start(6)
+            lbl.set_margin_end(6)
+            row.set_child(lbl)
+            self.list_box.append(row)
 
-    def poll_browser(self):
-        """Refresh the list only when browser annotations changed."""
+    def poll_browser(self) -> bool:
+        """Refresh the list only when browser annotations changed. Returns True to keep polling."""
         if self.raw_copy is None or self.browser is None:
-            return
+            return False
         h = self.ann_hash()
-        if h == self.last_ann_hash:
-            return
-        self.last_ann_hash = h
-        self.refresh_list_from_annotations()
+        if h != self.last_ann_hash:
+            self.last_ann_hash = h
+            self.refresh_list_from_annotations()
+        return True  # keep the timeout alive
 
     def get_annotations(self) -> list[dict]:
         """Return current annotations from raw_copy (or seed list if no raw)."""
@@ -227,23 +256,15 @@ class AnnotationEditorDialog(QDialog):
             )
         ]
 
-    def done(self, result):
-        self.poll_timer.stop()
-        if self.browser is not None:
-            try:
-                if self.right_layout is not None:
-                    self.right_layout.removeWidget(self.browser)
-                self.browser.close()
-                self.browser.deleteLater()
-            except Exception as e:
-                logger.debug("Browser cleanup error: %s", e)
-            self.browser = None
-        super().done(result)
-
+    def on_closed(self, *_) -> None:
+        if self.poll_source is not None:
+            GLib.source_remove(self.poll_source)
+            self.poll_source = None
+        self.loop.quit()
 
 # -------- Param widget factory --------
 
-def annotations_factory(current_value, raw, parent):
+def annotations_factory(current_value, raw):
     """Param widget factory for the annotations param type."""
     annotations = list(current_value) if current_value else []
     value_widget = AnnotationsValueWidget(annotations)
@@ -252,29 +273,30 @@ def annotations_factory(current_value, raw, parent):
         n = len(value_widget.get_value())
         return f"{n} annotation{'s' if n != 1 else ''}" if n else "No annotations"
 
-    summary_label = QLabel(make_summary())
-    btn = QPushButton("Open Browser…")
+    summary_label = Gtk.Label(label=make_summary())
+    summary_label.set_xalign(0.0)
+    summary_label.set_hexpand(True)
+    btn = Gtk.Button(label="Open Browser\u2026")
 
-    def open_editor():
+    def open_editor(_btn):
+        parent_window = btn.get_root()
         dlg = AnnotationEditorDialog(
             raw=raw,
             annotations=value_widget.get_value(),
-            parent=parent,
+            parent_window=parent_window,
         )
-        if dlg.exec() == QDialog.DialogCode.Accepted:
+        if dlg.exec():
             value_widget.set_value(dlg.get_annotations())
-            summary_label.setText(make_summary())
+            summary_label.set_text(make_summary())
 
-    btn.clicked.connect(open_editor)
+    btn.connect("clicked", open_editor)
 
-    container = QWidget()
-    layout = QHBoxLayout(container)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.addWidget(summary_label, 1)
-    layout.addWidget(btn)
+    container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+    container.set_hexpand(True)
+    container.append(summary_label)
+    container.append(btn)
 
     return container, value_widget
-
 
 # -------- Widget bindings --------
 

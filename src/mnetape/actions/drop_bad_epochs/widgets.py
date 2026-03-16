@@ -4,24 +4,13 @@ from __future__ import annotations
 
 import logging
 
-from mnetape.actions.base import ParamWidgetBinding
 
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import (
-    QCheckBox,
-    QDialog,
-    QDialogButtonBox,
-    QDoubleSpinBox,
-    QFormLayout,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
+from gi.repository import Adw, Gtk
+
+from mnetape.actions.base import ParamWidgetBinding
+from mnetape.gui.dialogs.base import ModalDialog
 
 logger = logging.getLogger(__name__)
-
 
 # -------- Unit / default tables --------
 
@@ -52,41 +41,32 @@ FLAT_DEFAULTS: dict[str, float] = {
     "grad": 0.1,
 }
 
-
 # -------- ThresholdsValueWidget --------
 
-class ThresholdsValueWidget(QWidget):
+class ThresholdsValueWidget(Gtk.Box):
     """Hidden value widget storing a thresholds dict (SI units) or None."""
 
-    value_changed = pyqtSignal()
-
-    def __init__(self, value: dict | None, parent=None):
-        super().__init__(parent)
-        self.hide()
+    def __init__(self, value: dict | None):
+        super().__init__()
+        self.set_visible(False)
         self.value = value
+        self.changed_cbs: list = []
 
     def set_value(self, v: dict | None):
         self.value = v
-        self.value_changed.emit()
+        for cb in self.changed_cbs:
+            cb()
 
     def get_value(self) -> dict | None:
         return self.value
 
+    def connect_value_changed(self, cb):
+        self.changed_cbs.append(cb)
 
 # -------- ThresholdsDialog --------
 
-class ThresholdsDialog(QDialog):
-    """Dialog for configuring per-channel-type amplitude thresholds.
-
-    Values are stored in SI units on save.
-
-    Args:
-        raw: MNE Raw object used to detect channel types present in the data.
-        current_value: Existing threshold dict in SI units, or None.
-        defaults: Default display-unit values per channel type.
-        title: Dialog window title.
-        parent: Optional parent widget.
-    """
+class ThresholdsDialog(ModalDialog):
+    """Dialog for configuring per-channel-type amplitude thresholds."""
 
     def __init__(
         self,
@@ -94,71 +74,82 @@ class ThresholdsDialog(QDialog):
         current_value: dict | None,
         defaults: dict[str, float],
         title: str,
-        parent=None,
+        parent_window=None,
     ):
-        super().__init__(parent)
-        self.setWindowTitle(title)
-        self.setMinimumWidth(340)
+        self.dialog = Adw.Dialog()
+        self.dialog.set_title(title)
+        self.dialog.set_content_width(380)
 
-        layout = QVBoxLayout(self)
+        toolbar_view = Adw.ToolbarView()
+        toolbar_view.add_top_bar(Adw.HeaderBar())
+        self.dialog.set_child(toolbar_view)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        content.set_margin_start(16)
+        content.set_margin_end(16)
+        content.set_margin_top(12)
+        content.set_margin_bottom(12)
+        toolbar_view.set_content(content)
 
         present_types = sorted(set(raw.get_channel_types())) if raw is not None else list(UNITS.keys())
         supported_types = [t for t in present_types if t in UNITS]
 
-        self.rows: dict[str, tuple[QCheckBox, QDoubleSpinBox]] = {}
+        self.rows: dict[str, tuple[Gtk.CheckButton, Gtk.SpinButton]] = {}
 
         if not supported_types:
-            layout.addWidget(QLabel("No supported channel types found in data."))
+            content.append(Gtk.Label(label="No supported channel types found in data."))
         else:
-            layout.addWidget(QLabel("Set a threshold for each channel type to reject:"))
+            content.append(Gtk.Label(label="Set a threshold for each channel type to reject:"))
 
-            # Checkboxes + spinboxes for each channel type
-            form = QFormLayout()
             for ch_type in supported_types:
                 unit, factor = UNITS[ch_type]
 
-                cb = QCheckBox()
-                spinbox = QDoubleSpinBox()
-                spinbox.setRange(0.001, 999999.0)
-                spinbox.setDecimals(3)
+                cb = Gtk.CheckButton()
+                adj = Gtk.Adjustment(value=0.0, lower=0.001, upper=999999.0,
+                                     step_increment=0.001, page_increment=1.0)
+                spinbox = Gtk.SpinButton(adjustment=adj, climb_rate=1.0, digits=3)
 
                 if current_value is not None and ch_type in current_value:
-                    cb.setChecked(True)
-                    spinbox.setValue(current_value[ch_type] / factor)
+                    cb.set_active(True)
+                    spinbox.set_value(current_value[ch_type] / factor)
                 else:
-                    # If no current value, default to checked with the provided defaults
-                    cb.setChecked(current_value is None)
-                    spinbox.setValue(defaults.get(ch_type, 100.0))
+                    cb.set_active(current_value is None)
+                    spinbox.set_value(defaults.get(ch_type, 100.0))
 
-                spinbox.setEnabled(cb.isChecked())
-                cb.toggled.connect(spinbox.setEnabled)
+                spinbox.set_sensitive(cb.get_active())
+                cb.connect("toggled", lambda _cb, sb=spinbox: sb.set_sensitive(_cb.get_active()))
 
-                row_widget = QWidget()
-                row_layout = QHBoxLayout(row_widget)
-                row_layout.setContentsMargins(0, 0, 0, 0)
-                row_layout.addWidget(cb)
-                row_layout.addWidget(spinbox, 1)
-                form.addRow(f"{ch_type} ({unit}):", row_widget)
+                row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                row.append(cb)
+                lbl = Gtk.Label(label=f"{ch_type} ({unit}):")
+                lbl.set_size_request(90, -1)
+                lbl.set_xalign(0.0)
+                row.append(lbl)
+                spinbox.set_hexpand(True)
+                row.append(spinbox)
+                content.append(row)
                 self.rows[ch_type] = (cb, spinbox)
 
-            layout.addLayout(form)
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        btn_row.set_halign(Gtk.Align.END)
+        cancel_btn = Gtk.Button(label="Cancel")
+        cancel_btn.connect("clicked", self.reject)
+        ok_btn = Gtk.Button(label="OK")
+        ok_btn.add_css_class("suggested-action")
+        ok_btn.connect("clicked", self.accept)
+        btn_row.append(cancel_btn)
+        btn_row.append(ok_btn)
+        content.append(btn_row)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        self.setup_modal(parent_window)
 
     def get_value(self) -> dict | None:
-        """Return threshold dict in SI units, or None if nothing is checked."""
         result = {}
         for ch_type, (cb, spinbox) in self.rows.items():
-            if cb.isChecked():
+            if cb.get_active():
                 _, factor = UNITS[ch_type]
-                result[ch_type] = float(f"{spinbox.value() * factor:.10g}")
+                result[ch_type] = float(f"{spinbox.get_value() * factor:.10g}")
         return result if result else None
-
 
 # -------- Factories --------
 
@@ -174,9 +165,7 @@ def make_summary(value: dict | None) -> str:
             parts.append(f"{ch_type}: {si_val:.2e}")
     return ",  ".join(parts)
 
-
 def build_defaults_dict(raw, defaults: dict[str, float]) -> dict:
-    """Return a defaults dict in SI units for channel types present in raw."""
     present = set(raw.get_channel_types()) if raw is not None else set(UNITS.keys())
     return {
         t: float(f"{defaults[t] * UNITS[t][1]:.10g}")
@@ -184,68 +173,72 @@ def build_defaults_dict(raw, defaults: dict[str, float]) -> dict:
         if t in defaults and t in UNITS
     }
 
-
 def thresholds_factory(defaults: dict[str, float], title: str = "Thresholds"):
     """Return a param widget factory for a threshold dict param."""
 
-    def factory(current_value, raw, parent):
+    def factory(current_value, raw):
         value_widget = ThresholdsValueWidget(current_value)
 
-        toggle = QCheckBox()
-        toggle.setChecked(current_value is not None)
+        toggle = Gtk.CheckButton()
+        toggle.set_active(current_value is not None)
 
-        summary_label = QLabel(make_summary(current_value))
-        btn = QPushButton("Configure…")
+        summary_label = Gtk.Label(label=make_summary(current_value))
+        summary_label.set_xalign(0.0)
+        summary_label.set_hexpand(True)
+        btn = Gtk.Button(label="Configure…")
 
         def set_active(enabled: bool):
-            summary_label.setEnabled(enabled)
-            btn.setEnabled(enabled)
+            summary_label.set_sensitive(enabled)
+            btn.set_sensitive(enabled)
 
         set_active(current_value is not None)
 
-        def on_toggle(checked: bool):
+        def on_toggle(_cb):
+            checked = toggle.get_active()
             if checked and value_widget.get_value() is None:
                 value_widget.set_value(build_defaults_dict(raw, defaults))
-                summary_label.setText(make_summary(value_widget.get_value()))
+                summary_label.set_text(make_summary(value_widget.get_value()))
             elif not checked:
                 value_widget.set_value(None)
-                summary_label.setText("")
+                summary_label.set_text("")
             set_active(checked)
 
-        toggle.toggled.connect(on_toggle)
+        toggle.connect("toggled", on_toggle)
 
-        def open_dialog():
+        def open_dialog(_btn):
+            parent_window = None
+            widget = btn
+            while widget is not None:
+                parent_window = widget.get_root()
+                break
             dlg = ThresholdsDialog(
                 raw=raw,
                 current_value=value_widget.get_value(),
                 defaults=defaults,
                 title=title,
-                parent=parent,
+                parent_window=parent_window,
             )
-            if dlg.exec() == QDialog.DialogCode.Accepted:
+            if dlg.exec():
                 new_val = dlg.get_value()
                 value_widget.set_value(new_val)
-                summary_label.setText(make_summary(new_val))
+                summary_label.set_text(make_summary(new_val))
                 if new_val is None:
-                    toggle.setChecked(False)
+                    toggle.set_active(False)
 
-        btn.clicked.connect(open_dialog)
+        btn.connect("clicked", open_dialog)
 
-        container = QWidget()
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(toggle)
-        layout.addWidget(summary_label, 1)
-        layout.addWidget(btn)
+        container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        container.set_hexpand(True)
+        container.append(toggle)
+        container.append(summary_label)
+        container.append(btn)
 
         return container, value_widget
 
     return factory
 
-
 reject_thresholds_factory = thresholds_factory(REJECT_DEFAULTS, title="Reject thresholds")
 flat_thresholds_factory = thresholds_factory(FLAT_DEFAULTS, title="Flat thresholds")
-
 
 # -------- Widget bindings --------
 

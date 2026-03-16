@@ -12,243 +12,269 @@ Exports:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
-
 import threading
-import time
 
 import mne
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (
-    QApplication,
-    QButtonGroup,
-    QComboBox,
-    QDialog,
-    QFileDialog,
-    QHBoxLayout,
-    QLabel,
-    QMessageBox,
-    QProgressDialog,
-    QPushButton,
-    QRadioButton,
-    QVBoxLayout,
-)
+from gi.repository import Adw, Gio, GLib, Gtk
 
-if TYPE_CHECKING:
-    from mne.io import BaseRaw
+from mnetape.gui.dialogs.base import ModalDialog
 
 logger = logging.getLogger(__name__)
 
-MONTAGE_FILE_FILTER = (
-    "Montage files (*.loc *.locs *.elc *.sfp *.csd *.elp *.htps *.bvef *.bvct);;"
-    "CapTrak files (*.bvct);;"
-    "All files (*)"
-)
+MONTAGE_FILE_FILTER_PATTERNS = [
+    "*.loc", "*.locs", "*.elc", "*.sfp", "*.csd", "*.elp", "*.htps", "*.bvef", "*.bvct",
+]
 
-
-class AutoDetectDialog(QDialog):
+class AutoDetectDialog(ModalDialog):
     """Confirmation dialog shown after montage auto-detection completes.
 
-    Displays the best match ratio and, when multiple montages tie, a combo box that lets the user choose among them.
-    Also shows any EEG channels that could not be matched.
-
     Args:
-        tied: List of (montage_name, ratio, matched_count, total_count) tuples
-            with equal best ratio, sorted best-first.
+        tied: List of (montage_name, ratio, matched_count, total_count) tuples.
         raw: The loaded MNE Raw object.
-        parent: Optional parent widget.
+        parent_window: Optional parent window.
     """
 
     def __init__(
         self,
         tied: list[tuple[str, float, int, int]],
-        raw: BaseRaw,
-        parent=None,
+        raw,
+        parent_window=None,
     ):
-        super().__init__(parent)
-        self.setWindowTitle("Auto-Detect Result")
         self.tied = tied
         self.raw = raw
+        self.selected_name = tied[0][0] if tied else ""
 
         _, ratio, matched, total = tied[0]
-        layout = QVBoxLayout(self)
 
-        # Montage selection + summary
+        self.dialog = Adw.Dialog()
+        self.dialog.set_title("Auto-Detect Result")
+        self.dialog.set_content_width(380)
+
+        toolbar_view = Adw.ToolbarView()
+        toolbar_view.add_top_bar(Adw.HeaderBar())
+        self.dialog.set_child(toolbar_view)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        content.set_margin_start(16)
+        content.set_margin_end(16)
+        content.set_margin_top(12)
+        content.set_margin_bottom(12)
+        toolbar_view.set_content(content)
+
         if len(tied) == 1:
-            layout.addWidget(QLabel(f"Best match: <b>{tied[0][0]}</b>"))
+            lbl = Gtk.Label(label=f"Best match: <b>{tied[0][0]}</b>")
+            lbl.set_use_markup(True)
+            lbl.set_xalign(0.0)
+            content.append(lbl)
         else:
-            layout.addWidget(
-                QLabel(f"{len(tied)} montages matched {matched}/{total} channels ({ratio:.1%}):")
-            )
-            self._combo = QComboBox()
-            for name, *_ in tied:
-                self._combo.addItem(name)
-            self._combo.currentTextChanged.connect(self.update_unmatched)
-            layout.addWidget(self._combo)
+            lbl = Gtk.Label(label=f"{len(tied)} montages matched {matched}/{total} channels ({ratio:.1%}):")
+            lbl.set_xalign(0.0)
+            content.append(lbl)
 
-        info_text = f"Matched: {matched}/{total} channels ({ratio:.1%})"
-        layout.addWidget(QLabel(info_text))
+            model = Gtk.StringList(strings=[name for name, *_ in tied])
+            self.combo = Gtk.DropDown(model=model)
+            self.combo.connect("notify::selected", self.on_combo_changed)
+            content.append(self.combo)
 
-        # Show unmatched channels (if any)
-        self.unmatched_label = QLabel()
-        self.unmatched_label.setWordWrap(True)
-        self.unmatched_label.setStyleSheet("color: gray;")
-        layout.addWidget(self.unmatched_label)
-        self.update_unmatched(self.selected_name())
+        info_lbl = Gtk.Label(label=f"Matched: {matched}/{total} channels ({ratio:.1%})")
+        info_lbl.set_xalign(0.0)
+        content.append(info_lbl)
 
-        layout.addSpacing(8)
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        no_btn = QPushButton("No")
-        no_btn.clicked.connect(self.reject)
-        btn_row.addWidget(no_btn)
-        yes_btn = QPushButton("Yes")
-        yes_btn.setDefault(True)
-        yes_btn.clicked.connect(self.accept)
-        btn_row.addWidget(yes_btn)
-        layout.addLayout(btn_row)
+        self.unmatched_label = Gtk.Label(label="")
+        self.unmatched_label.set_wrap(True)
+        self.unmatched_label.add_css_class("dim-label")
+        self.unmatched_label.set_xalign(0.0)
+        content.append(self.unmatched_label)
+        self.update_unmatched(self.selected_name)
 
-    def selected_name(self) -> str:
-        """Return the montage name currently selected in the dialog.
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        btn_row.set_halign(Gtk.Align.END)
+        btn_row.set_margin_top(8)
 
-        Returns:
-            The single tied name when there is no combo box, or the combo's current text otherwise.
-        """
-        if len(self.tied) == 1:
-            return self.tied[0][0]
-        return self._combo.currentText()
+        no_btn = Gtk.Button(label="No")
+        no_btn.connect("clicked", self.reject)
+        btn_row.append(no_btn)
+
+        yes_btn = Gtk.Button(label="Yes")
+        yes_btn.add_css_class("suggested-action")
+        yes_btn.connect("clicked", self.accept)
+        btn_row.append(yes_btn)
+
+        content.append(btn_row)
+
+        self.setup_modal(parent_window)
+
+    def on_combo_changed(self, dropdown, _pspec):
+        idx = dropdown.get_selected()
+        if 0 <= idx < len(self.tied):
+            self.selected_name = self.tied[idx][0]
+            self.update_unmatched(self.selected_name)
 
     def update_unmatched(self, name: str):
-        """Refresh the unmatched-channels label for a given montage name.
-
-        Args:
-            name: The standard montage name to compare against the raw's EEG channels.
-        """
         eeg_picks = mne.pick_types(self.raw.info, eeg=True, exclude=[])
         eeg_names = {self.raw.ch_names[i] for i in eeg_picks}
-        montage = mne.channels.make_standard_montage(name)
-        unmatched = eeg_names - set(montage.ch_names)
-        if unmatched:
-            self.unmatched_label.setText(
-                f"Unmatched channels: {', '.join(sorted(unmatched))}"
-            )
-        else:
-            self.unmatched_label.setText("")
+        try:
+            montage = mne.channels.make_standard_montage(name)
+            unmatched = eeg_names - set(montage.ch_names)
+            if unmatched:
+                self.unmatched_label.set_text(f"Unmatched channels: {', '.join(sorted(unmatched))}")
+            else:
+                self.unmatched_label.set_text("")
+        except Exception:
+            self.unmatched_label.set_text("")
 
+    def selected_name(self) -> str:
+        return self.selected_name
 
-class MontageDialog(QDialog):
+class MontageDialog(ModalDialog):
     """Dialog for resolving a missing EEG montage on file load.
-
-    Offers three options:
-        - Import: load a montage from a file (loc, sfp, elc, etc.).
-        - Standard: select from MNE's built-in montage library.
-        - Auto-detect: scan all built-in montages and select the best channel-name match.
-
-    Applies the chosen montage directly to the raw object.
 
     Args:
         raw: The loaded MNE Raw object to apply the montage to.
-        parent: Optional parent widget.
+        parent_window: Optional parent window.
     """
 
-    def __init__(self, raw: BaseRaw, parent=None):
-        super().__init__(parent)
+    def __init__(self, raw, parent_window=None):
         self.raw = raw
-        self._montage_path: str | None = None
-        self.setWindowTitle("Missing Montage")
-        self.setFixedSize(420, 250)
-        layout = QVBoxLayout(self)
+        self.montage_path: str | None = None
 
-        layout.addWidget(QLabel("No montage/digitization found in the loaded file."))
-        layout.addSpacing(8)
+        self.dialog = Adw.Dialog()
+        self.dialog.set_title("Missing Montage")
+        self.dialog.set_content_width(440)
 
-        # Option 1. Import file
-        self.radio_import = QRadioButton("Import montage file")
-        row_import = QHBoxLayout()
-        row_import.addWidget(self.radio_import, 1)
-        self.browse_btn = QPushButton("Browse...")
-        self.browse_btn.setFixedWidth(90)
-        self.browse_btn.clicked.connect(self.browse_file)
-        row_import.addWidget(self.browse_btn)
-        layout.addLayout(row_import)
+        toolbar_view = Adw.ToolbarView()
+        toolbar_view.add_top_bar(Adw.HeaderBar())
+        self.dialog.set_child(toolbar_view)
 
-        self.file_label = QLabel("")
-        self.file_label.setStyleSheet("color: gray; margin-left: 24px;")
-        layout.addWidget(self.file_label)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        content.set_margin_start(16)
+        content.set_margin_end(16)
+        content.set_margin_top(12)
+        content.set_margin_bottom(12)
+        toolbar_view.set_content(content)
 
-        # Option 2. Standard montage
-        self.radio_standard = QRadioButton("Choose standard montage")
-        row_standard = QHBoxLayout()
-        row_standard.addWidget(self.radio_standard, 1)
-        self.montage_combo = QComboBox()
-        self.montage_combo.addItems(mne.channels.get_builtin_montages())
-        self.montage_combo.setCurrentText("standard_1020")
-        self.montage_combo.setFixedWidth(180)
-        row_standard.addWidget(self.montage_combo)
-        layout.addLayout(row_standard)
+        content.append(Gtk.Label(label="No montage/digitization found in the loaded file."))
 
-        # Option 3: Auto-detect
-        self.radio_auto = QRadioButton("Auto-detect best match")
-        layout.addWidget(self.radio_auto)
+        # Radio group
+        self.radio_import = Gtk.CheckButton(label="Import montage file")
+        self.radio_standard = Gtk.CheckButton(label="Choose standard montage")
+        self.radio_standard.set_group(self.radio_import)
+        self.radio_auto = Gtk.CheckButton(label="Auto-detect best match")
+        self.radio_auto.set_group(self.radio_import)
+        self.radio_standard.set_active(True)
 
-        # Group radio buttons
-        self.group = QButtonGroup(self)
-        self.group.addButton(self.radio_import, 0)
-        self.group.addButton(self.radio_standard, 1)
-        self.group.addButton(self.radio_auto, 2)
-        self.radio_standard.setChecked(True)
+        # Option 1: import file
+        import_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        import_row.append(self.radio_import)
+        self.browse_btn = Gtk.Button(label="Browse...")
+        self.browse_btn.set_size_request(90, -1)
+        self.browse_btn.connect("clicked", self.on_browse)
+        import_row.append(self.browse_btn)
+        content.append(import_row)
 
-        # Apply/Skip buttons
-        layout.addSpacing(12)
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        skip_btn = QPushButton("Skip")
-        skip_btn.clicked.connect(self.reject)
-        btn_row.addWidget(skip_btn)
-        apply_btn = QPushButton("Apply")
-        apply_btn.setDefault(True)
-        apply_btn.clicked.connect(self.apply)
-        btn_row.addWidget(apply_btn)
-        layout.addLayout(btn_row)
+        self.file_label = Gtk.Label(label="")
+        self.file_label.add_css_class("dim-label")
+        self.file_label.set_xalign(0.0)
+        self.file_label.set_margin_start(24)
+        content.append(self.file_label)
 
-    def browse_file(self):
-        """Open a file picker dialog and record the chosen montage file path."""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Montage File", "", MONTAGE_FILE_FILTER
-        )
-        if path:
-            self._montage_path = path
-            self.file_label.setText(path.rsplit("/", 1)[-1])
-            self.radio_import.setChecked(True)
-
-    def apply(self):
-        """Apply the selected montage option and close the dialog on success."""
-        checked = self.group.checkedId()
-
+        # Option 2: standard montage
+        standard_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        standard_row.append(self.radio_standard)
+        montage_names = mne.channels.get_builtin_montages()
+        model = Gtk.StringList(strings=montage_names)
+        self.montage_combo = Gtk.DropDown(model=model)
+        self.montage_combo.set_size_request(200, -1)
         try:
-            if checked == 0:  # Import file
-                if not self._montage_path:
-                    QMessageBox.warning(self, "No File", "Please select a montage file first.")
-                    return
-                if self._montage_path.lower().endswith(".bvct"):
-                    montage = mne.channels.read_dig_captrak(self._montage_path)
-                else:
-                    montage = mne.channels.read_custom_montage(self._montage_path)
-                self.raw.set_montage(montage, on_missing="warn")
-                logger.info("Applied custom montage from %s", self._montage_path)
+            idx = montage_names.index("standard_1020")
+            self.montage_combo.set_selected(idx)
+        except ValueError:
+            pass
+        standard_row.append(self.montage_combo)
+        content.append(standard_row)
 
-            elif checked == 1:  # Standard montage
-                name = self.montage_combo.currentText()
+        # Option 3: auto-detect
+        content.append(self.radio_auto)
+
+        # Buttons
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        btn_row.set_halign(Gtk.Align.END)
+        btn_row.set_margin_top(12)
+
+        skip_btn = Gtk.Button(label="Skip")
+        skip_btn.connect("clicked", self.reject)
+        btn_row.append(skip_btn)
+
+        apply_btn = Gtk.Button(label="Apply")
+        apply_btn.add_css_class("suggested-action")
+        apply_btn.connect("clicked", self.on_apply)
+        btn_row.append(apply_btn)
+
+        content.append(btn_row)
+
+        self.setup_modal(parent_window)
+
+    def on_browse(self, _btn):
+        file_dialog = Gtk.FileDialog()
+        file_dialog.set_title("Select Montage File")
+
+        filter_montage = Gtk.FileFilter()
+        filter_montage.set_name("Montage files")
+        for pat in MONTAGE_FILE_FILTER_PATTERNS:
+            filter_montage.add_pattern(pat)
+
+        filter_all = Gtk.FileFilter()
+        filter_all.set_name("All files")
+        filter_all.add_pattern("*")
+
+        filters = gio_liststore_for_filters([filter_montage, filter_all])
+        file_dialog.set_filters(filters)
+
+        file_dialog.open(self.get_parent_gtk_window(), None, self.on_browse_done)
+
+    def get_parent_gtk_window(self):
+        """Return the parent Gtk.Window if available."""
+        if self.parent_window is not None and isinstance(self.parent_window, Gtk.Window):
+            return self.parent_window
+        return None
+
+    def on_browse_done(self, file_dialog, result):
+        try:
+            gfile = file_dialog.open_finish(result)
+            if gfile is not None:
+                path = gfile.get_path()
+                if path:
+                    self.montage_path = path
+                    self.file_label.set_text(path.rsplit("/", 1)[-1])
+                    self.radio_import.set_active(True)
+        except Exception as e:
+            logger.warning("Browse montage file failed: %s", e)
+
+    def on_apply(self, _btn):
+        try:
+            if self.radio_import.get_active():
+                if not self.montage_path:
+                    self.show_error("No File", "Please select a montage file first.")
+                    return
+                if self.montage_path.lower().endswith(".bvct"):
+                    montage = mne.channels.read_dig_captrak(self.montage_path)
+                else:
+                    montage = mne.channels.read_custom_montage(self.montage_path)
+                self.raw.set_montage(montage, on_missing="warn")
+                logger.info("Applied custom montage from %s", self.montage_path)
+
+            elif self.radio_standard.get_active():
+                idx = self.montage_combo.get_selected()
+                names = mne.channels.get_builtin_montages()
+                name = names[idx] if 0 <= idx < len(names) else "standard_1020"
                 montage = mne.channels.make_standard_montage(name)
                 self.raw.set_montage(montage, on_missing="warn")
                 logger.info("Applied standard montage: %s", name)
 
-            elif checked == 2:  # Auto-detect
+            elif self.radio_auto.get_active():
                 results = self.auto_detect_in_thread()
                 if not results:
-                    QMessageBox.information(
-                        self, "Auto-Detect", "No matching montages found."
-                    )
+                    self.show_info("Auto-Detect", "No matching montages found.")
                     return
                 best_name = self.confirm_auto_detect(results)
                 if best_name is None:
@@ -260,23 +286,37 @@ class MontageDialog(QDialog):
 
         except Exception as exc:
             logger.exception("Failed to apply montage")
-            QMessageBox.critical(self, "Error", f"Failed to apply montage:\n{exc}")
+            self.show_error("Error", f"Failed to apply montage:\n{exc}")
             return
 
         self.accept()
 
+    def show_error(self, title: str, message: str):
+        dlg = Adw.AlertDialog(heading=title, body=message)
+        dlg.add_response("ok", "OK")
+        dlg.set_default_response("ok")
+        parent_win = self.get_parent_gtk_window()
+        dlg.present(parent_win)
+
+    def show_info(self, title: str, message: str):
+        dlg = Adw.AlertDialog(heading=title, body=message)
+        dlg.add_response("ok", "OK")
+        dlg.set_default_response("ok")
+        parent_win = (self.
+                      get_parent_gtk_window())
+        dlg.present(parent_win)
+
     def confirm_auto_detect(self, results: list[tuple[str, float, int, int]]) -> str | None:
-        """Show confirmation dialog. Returns chosen montage name, or None if canceled."""
         best_ratio = results[0][1]
         tied = [r for r in results if r[1] == best_ratio]
 
-        dlg = AutoDetectDialog(tied, self.raw, parent=self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            return dlg.selected_name()
+        dlg = AutoDetectDialog(tied, self.raw, parent_window=self.get_parent_gtk_window())
+        if dlg.exec():
+            return dlg.selected_name
         return None
 
     def auto_detect_in_thread(self) -> list[tuple[str, float, int, int]]:
-        """Run auto_detect in a background thread."""
+        """Run auto_detect in a background thread with a progress dialog."""
         result: list = []
         error: list[BaseException | None] = [None]
         finished = threading.Event()
@@ -292,15 +332,27 @@ class MontageDialog(QDialog):
         t = threading.Thread(target=_worker, daemon=True)
         t.start()
 
-        progress = QProgressDialog("Scanning montages...", None, 0, 0, self)
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.show()
+        # Show a simple progress indicator
+        progress_dlg = Adw.AlertDialog(heading="Scanning montages...", body="Please wait.")
+        spinner = Gtk.Spinner()
+        spinner.start()
+        progress_dlg.set_extra_child(spinner)
+        parent_win = (self.
+                      get_parent_gtk_window())
+        progress_dlg.present(parent_win)
 
-        while not finished.is_set():
-            QApplication.processEvents()
-            time.sleep(0.05)
+        # Poll until done
+        loop = GLib.MainLoop()
 
-        progress.close()
+        def _check():
+            if finished.is_set():
+                progress_dlg.close()
+                loop.quit()
+                return False
+            return True
+
+        GLib.timeout_add(50, _check)
+        loop.run()
 
         if error[0]:
             raise error[0]
@@ -308,19 +360,13 @@ class MontageDialog(QDialog):
         return result
 
     def auto_detect(self) -> list[tuple[str, float, int, int]]:
-        """Score all built-in MNE montages against the raw's EEG channel names.
-
-        Returns:
-            List of (name, ratio, matched_count, total_eeg_count) tuples,
-            sorted by descending ratio then descending matched count.
-            Empty list when there are no EEG channels or no matches.
-        """
+        """Score all built-in MNE montages against the raw's EEG channel names."""
         eeg_picks = mne.pick_types(self.raw.info, eeg=True, exclude=[])
         eeg_names = {self.raw.ch_names[i] for i in eeg_picks}
         if not eeg_names:
             return []
 
-        results: list[tuple[str, float, int, int]] = []     # (montage name, match ratio, matched count, total count)
+        results: list[tuple[str, float, int, int]] = []
         for name in mne.channels.get_builtin_montages():
             montage = mne.channels.make_standard_montage(name)
             matched = len(eeg_names & set(montage.ch_names))
@@ -329,3 +375,10 @@ class MontageDialog(QDialog):
         results.sort(key=lambda x: (-x[1], -x[2]))
         logger.info("Auto-detect montage results: %s", results)
         return results
+
+def gio_liststore_for_filters(filters: list) -> object:
+    """Create a Gio.ListStore containing Gtk.FileFilter objects."""
+    store = Gio.ListStore.new(Gtk.FileFilter)
+    for f in filters:
+        store.append(f)
+    return store

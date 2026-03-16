@@ -8,17 +8,16 @@ dependencies = [
     "numpy",
     "matplotlib",
     "mne",
-    "mne-qt-browser>=0.7.4",
     "mne-icalabel",
     "onnxruntime",
     "python-picard>=0.8.1",
-    "pyqt6>=6.10.2",
-    "pyqt6-qscintilla>=2.14",
+    "pygobject",
     "pyyaml>=6.0.3",
     "pyprep",
     "autoreject",
     "pandas>=3.0.1",
     "defusedxml>=0.7.1",
+    "pygobject-stubs>=2.16.0",
 ]
 
 [project.scripts]
@@ -32,3 +31,9 @@ dev = [
 
 [tool.uv]
 package = true
+
+[tool.ruff.lint.per-file-ignores]
+# app.py calls gi.require_version() and matplotlib.use() before their respective
+# gi.repository and matplotlib.pyplot imports. This ordering is a hard requirement
+# for GTK/matplotlib initialisation and cannot be resolved within the file.
+"src/mnetape/gui/app.py" = ["E402"]

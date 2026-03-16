@@ -7,7 +7,6 @@ from typing import Annotated
 import mne
 from mnetape.actions.base import ParamMeta, builder, result_builder
 
-
 @builder
 def template_builder(
     raw: mne.io.Raw,
@@ -41,7 +40,6 @@ def template_builder(
     ica.fit(raw, picks="eeg", **fit_kwargs)
     ic_labels = None
     return ica, raw, ic_labels
-
 
 @result_builder
 def build_result(data):

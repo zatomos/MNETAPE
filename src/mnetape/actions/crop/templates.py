@@ -21,7 +21,6 @@ _tmax = ParamMeta(
     default=0.0,
 )
 
-
 @builder
 def crop_raw(
     raw: mne.io.Raw,
@@ -32,7 +31,6 @@ def crop_raw(
     raw.crop(tmin=tmin, tmax=tmax, **kwargs)
     return raw
 
-
 @builder
 def crop_epochs(
     epochs: mne.BaseEpochs,
@@ -42,7 +40,6 @@ def crop_epochs(
 ) -> mne.BaseEpochs:
     epochs.crop(tmin=tmin, tmax=tmax, **kwargs)
     return epochs
-
 
 @builder
 def crop_evoked(

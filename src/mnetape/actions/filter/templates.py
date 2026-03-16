@@ -26,7 +26,6 @@ _h_freq = ParamMeta(
     nullable=True,
 )
 
-
 @builder
 def filter_raw(
     raw: mne.io.Raw,
@@ -37,7 +36,6 @@ def filter_raw(
     raw.filter(l_freq=l_freq, h_freq=h_freq, **kwargs)
     return raw
 
-
 @builder
 def filter_epochs(
     epochs: mne.BaseEpochs,
@@ -47,7 +45,6 @@ def filter_epochs(
 ) -> mne.BaseEpochs:
     epochs.filter(l_freq=l_freq, h_freq=h_freq, **kwargs)
     return epochs
-
 
 @builder
 def filter_evoked(

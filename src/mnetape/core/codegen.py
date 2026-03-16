@@ -39,7 +39,6 @@ EXT_TO_READER: dict[str, str] = {
     ".mff":    "mne.io.read_raw_egi",
 }
 
-
 # -------- Function name deduplication --------
 
 def normalize_body(body_source: str) -> str:
@@ -49,16 +48,13 @@ def normalize_body(body_source: str) -> str:
     except SyntaxError:
         return body_source
 
-
 def bodies_match(actual: str, canonical: str) -> bool:
     """Return True when two body strings have the same AST structure."""
     return normalize_body(actual) == normalize_body(canonical)
 
-
 def get_canonical_body(action_def) -> str:
     """Return the action body source (advanced params are now encoded in the function signature)."""
     return action_def.body_source
-
 
 def get_types_for_actions(actions: list[ActionConfig]) -> list[DataType]:
     """Return the input DataType for each action in the pipeline.
@@ -73,7 +69,6 @@ def get_types_for_actions(actions: list[ActionConfig]) -> list[DataType]:
         if action_def and action_def.output_type != DataType.ANY:
             current_type = action_def.output_type
     return types
-
 
 def assign_func_names(actions: list[ActionConfig], types: list[DataType] | None = None) -> list[str]:
     """Assign unique function names to actions, deduplicating shared bodies.
@@ -121,7 +116,6 @@ def assign_func_names(actions: list[ActionConfig], types: list[DataType] | None 
 
     return func_names
 
-
 # -------- Script generation --------
 
 def generate_action_code(action: ActionConfig, context_type: DataType | None = None) -> str:
@@ -131,6 +125,7 @@ def generate_action_code(action: ActionConfig, context_type: DataType | None = N
     or the custom code verbatim.
 
     Args:
+        action: the config of the action.
         context_type: The DataType of data flowing into this action. Required for ANY actions
             to generate the correct variant body.
     """
@@ -143,7 +138,6 @@ def generate_action_code(action: ActionConfig, context_type: DataType | None = N
         return ""
 
     return action_def.build_function_def(action.action_id, context_type)
-
 
 def collect_func_defs(actions: list[ActionConfig], func_names: list[str], types: list[DataType]) -> dict[str, str]:
     """Collect unique function definitions for a list of actions, preserving first occurrence order."""
@@ -161,7 +155,6 @@ def collect_func_defs(actions: list[ActionConfig], func_names: list[str], types:
         else:
             emitted[func_name] = action_def.build_function_def(func_name, context_type)
     return emitted
-
 
 def generate_full_script(filepath: Path | None, actions: list[ActionConfig]) -> str:
     """Generate a complete Python pipeline script from an action list.
@@ -247,7 +240,6 @@ def generate_full_script(filepath: Path | None, actions: list[ActionConfig]) -> 
 
     return "\n".join(lines)
 
-
 # -------- Script parsing --------
 
 def extract_func_defs(script: str) -> dict[str, str]:
@@ -279,7 +271,6 @@ def extract_func_defs(script: str) -> dict[str, str]:
             result[node.name] = body_stmts
 
     return result
-
 
 def parse_script_to_actions(script: str) -> list[ActionConfig]:
     """Parse a pipeline script back into a list of ActionConfig objects.
@@ -402,12 +393,10 @@ def parse_script_to_actions(script: str) -> list[ActionConfig]:
 
     return actions
 
-
 def get_action_by_title(title: str):
     """Look up an action definition by display title."""
     from mnetape.actions.registry import get_action_by_title
     return get_action_by_title(title)
-
 
 def parse_call_site(
     call_site: str,
@@ -480,7 +469,6 @@ def parse_call_site(
         # else: unknown kwarg, ignore
 
     return params, advanced_params, func_name
-
 
 # -------- Helpers for execution --------
 

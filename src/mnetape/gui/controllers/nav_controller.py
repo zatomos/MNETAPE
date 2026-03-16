@@ -1,15 +1,14 @@
-"""Step navigation and MNE browser shortcut for the main window.
-
-NavController manages the step-selector combo box and the MNE browser shortcut.
-"""
+"""MNE browser shortcut for the main window."""
 
 from __future__ import annotations
 
 import logging
-
-from PyQt6.QtWidgets import QMessageBox
 from typing import TYPE_CHECKING
 
+import mne
+from gi.repository import Adw
+
+from mnetape.core.models import ICASolution
 from mnetape.gui.widgets.common import (
     disable_mne_browser_channel_clicks,
     sanitize_mne_browser_toolbar,
@@ -20,61 +19,42 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
 class NavController:
-    """Handles step-selector navigation and MNE browser launch."""
+    """Handles the MNE browser launch shortcut."""
 
     def __init__(self, window: MainWindow) -> None:
         self.w = window
         self.state = window.state
 
-    def on_step_changed(self):
-        """Respond to the step combo box selection changing."""
-        self.w.update_visualization()
+    def open_browser(self, _action=None, _param=None):
+        """Open MNE's interactive browser for the latest computed pipeline step."""
+        # Find the latest non-None data state
+        data = None
+        step_label = "Original"
+        for i in range(len(self.state.data_states) - 1, -1, -1):
+            candidate = self.state.data_states[i]
+            if candidate is not None:
+                data = candidate
+                step_label = f"After step {i + 1}"
+                break
 
-        idx = self.w.viz_panel.step_combo.currentIndex()
-        if 0 < idx <= len(self.state.actions):
-            self.w.set_selected_action_row(idx - 1)
-        else:
-            self.w.action_list.clearSelection()
-        self.w.update_button_states()
+        if data is None:
+            if self.state.raw_original is None:
+                dlg = Adw.AlertDialog(heading="No Data", body="No data to display.")
+                dlg.add_response("ok", "OK")
+                dlg.set_default_response("ok")
+                dlg.present(self.w.window)
+                return
+            data = self.state.raw_original
+            step_label = "Original"
 
-    def prev_step(self):
-        """Move the step combo to the previous entry."""
-        idx = self.w.viz_panel.step_combo.currentIndex()
-        if idx > 0:
-            self.w.viz_panel.step_combo.setCurrentIndex(idx - 1)
-
-    def next_step(self):
-        """Move the step combo to the next entry."""
-        idx = self.w.viz_panel.step_combo.currentIndex()
-        if idx < self.w.viz_panel.step_combo.count() - 1:
-            self.w.viz_panel.step_combo.setCurrentIndex(idx + 1)
-
-    def open_browser(self):
-        """Open MNE's interactive browser for the currently selected step."""
-        import mne
-        from mnetape.core.models import ICASolution
-
-        step = self.w.viz_panel.step_combo.currentIndex()
-        if step == 0 and self.state.raw_original:
-            browser = self.state.raw_original.plot(block=False, title="Original")
+        if isinstance(data, ICASolution):
+            browser = data.raw.plot(block=False, title=step_label)
             sanitize_mne_browser_toolbar(browser, allow_annotation_mode=False)
             disable_mne_browser_channel_clicks(browser)
-        elif 0 < step <= len(self.state.data_states):
-            data = self.state.data_states[step - 1]
-            if data is None:
-                QMessageBox.warning(self.w, "No Data", "This step has not been computed yet.")
-            elif isinstance(data, ICASolution):
-                # ICA slots: show the raw the ICA was fitted on
-                browser = data.raw.plot(block=False, title=f"Raw at ICA step {step}")
-                sanitize_mne_browser_toolbar(browser, allow_annotation_mode=False)
-                disable_mne_browser_channel_clicks(browser)
-            elif isinstance(data, mne.Evoked):
-                data.plot(show=True)
-            else:
-                browser = data.plot(block=False, title=f"After step {step}")
-                sanitize_mne_browser_toolbar(browser, allow_annotation_mode=False)
-                disable_mne_browser_channel_clicks(browser)
+        elif isinstance(data, mne.Evoked):
+            data.plot(show=True)
         else:
-            QMessageBox.warning(self.w, "No Data", "No data to display.")
+            browser = data.plot(block=False, title=step_label)
+            sanitize_mne_browser_toolbar(browser, allow_annotation_mode=False)
+            disable_mne_browser_channel_clicks(browser)

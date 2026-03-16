@@ -16,7 +16,6 @@ _sfreq = ParamMeta(
     max=10000,
 )
 
-
 @builder
 def resample_raw(
     raw: mne.io.Raw,
@@ -26,7 +25,6 @@ def resample_raw(
     raw.resample(sfreq=sfreq, **kwargs)
     return raw
 
-
 @builder
 def resample_epochs(
     epochs: mne.BaseEpochs,
@@ -35,7 +33,6 @@ def resample_epochs(
 ) -> mne.BaseEpochs:
     epochs.resample(sfreq=sfreq, **kwargs)
     return epochs
-
 
 @builder
 def resample_evoked(

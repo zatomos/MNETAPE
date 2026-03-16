@@ -1,85 +1,84 @@
 """Pipeline execution for the main window.
 
-PipelineRunner orchestrates running actions, manages QThread workers for non-interactive processing,
-and handles cancellation.
+PipelineRunner orchestrates running actions, manages threading workers for non-interactive
+processing, and handles cancellation.
 """
 
 from __future__ import annotations
 
 import logging
-
-import mne
+import threading
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtWidgets import QApplication, QMessageBox, QProgressDialog
+import mne
+from gi.repository import Adw, GLib, Gtk
 
 from mnetape.actions.registry import get_action_by_id, get_action_title
 from mnetape.core.executor import exec_action
-from mnetape.core.models import ActionStatus, DataType, ICASolution
+from mnetape.core.models import ActionResult, ActionStatus, DataType, ICASolution
 
 if TYPE_CHECKING:
     from mnetape.gui.controllers.main_window import MainWindow
 
 logger = logging.getLogger(__name__)
 
-
 class OperationCancelled(Exception):
     """Raised when a long-running operation is canceled by the user."""
-
 
 class PipelineRunner:
     """Orchestrates action execution for the main window.
 
-    All heavy processing runs inside a QThread via run_in_thread().
+    All heavy processing runs inside a background threading.Thread via run_in_thread().
+    UI callbacks are dispatched back to the main thread via GLib.idle_add().
     """
 
     def __init__(self, window: MainWindow) -> None:
         self.w = window
         self.state = window.state
-        self.current_toast = None
+        self.current_toast: Adw.Toast | None = None
+        self.cancel_label = None
 
     # -------- Helpers --------
 
     def show_toast(self, action, title: str) -> None:
-        """Show a toast notification for a completed action, replacing any existing one."""
-        from mnetape.gui.widgets.toast_notification import ToastNotification
-        from mnetape.core.models import ActionResult
+        """Show an Adw.Toast for a completed action, with an optional 'View Results' button."""
         if self.current_toast is not None:
-            self.current_toast.close()
-        on_results = None
+            self.current_toast.dismiss()
+            self.current_toast = None
+
+        toast = Adw.Toast(title=f'"{title}" complete')
+        toast.set_timeout(4)
+
         if isinstance(action.result, ActionResult):
-            on_results = lambda res=action.result, t=title: self.w.show_action_result(res, t)
-        elif action.result is not None:
-            logger.warning("Unexpected action.result type: %s (value=%r)",
-                           type(action.result).__name__, action.result)
-        toast = ToastNotification(
-            f'"{title}" complete',
-            parent=self.w,
-            on_view_results=on_results,
-        )
-        toast.destroyed.connect(lambda: setattr(self, "current_toast", None))
+            toast.set_button_label("View Results")
+            res = action.result
+
+            def _on_button(_t):
+                self.w.show_action_result(res, title)
+
+            toast.connect("button-clicked", _on_button)
+
+        def _on_dismissed(_t):
+            self.current_toast = None
+
+        toast.connect("dismissed", _on_dismissed)
         self.current_toast = toast
-        toast.show()
+        self.w.toast_overlay.add_toast(toast)
+
+
 
     def require_data(self) -> bool:
         """Show a warning and return False when no EEG file is loaded."""
         if self.state.raw_original is None:
-            QMessageBox.warning(self.w, "No Data", "Load a FIF file first.")
+            dlg = Adw.AlertDialog(heading="No Data", body="Load a FIF file first.")
+            dlg.add_response("ok", "OK")
+            dlg.set_default_response("ok")
+            dlg.present(self.w.window)
             return False
         return True
 
     def get_data_type_at(self, row: int) -> DataType:
-        """Return the DataType flowing into the action at row.
-
-        Walks through all preceding actions to compute the cumulative output type.
-
-        Args:
-            row: Index of the action to check.
-
-        Returns:
-            The DataType the preceding action outputs. Fallbacks to DataType.RAW.
-        """
+        """Return the DataType flowing into the action at row."""
         current_type = DataType.RAW
         for action in self.state.actions[:row]:
             action_def = get_action_by_id(action.action_id)
@@ -99,16 +98,7 @@ class PipelineRunner:
         return DataType.RAW
 
     def get_data_for_action(self, row: int):
-        """Return a copy of the data object to pass into the action at row.
-
-        Reads from data_states[row-1] when available, then falls back to raw_original.
-
-        Args:
-            row: Index of the action in the pipeline list.
-
-        Returns:
-            A copy of the appropriate data object.
-        """
+        """Return a copy of the data object to pass into the action at row."""
         if 0 < row <= len(self.state.data_states):
             stored = self.state.data_states[row - 1]
             if stored is not None:
@@ -116,15 +106,7 @@ class PipelineRunner:
         return self.state.raw_original.copy()
 
     def store_action_result(self, row, data):
-        """Store the processed data object at the given pipeline position.
-
-        Pads data_states with copies of raw_original (for RAW positions) or None
-        if needed so the list is contiguous up to row.
-
-        Args:
-            row: Index where the result should be stored.
-            data: The processed data object to store.
-        """
+        """Store the processed data object at the given pipeline position."""
         while len(self.state.data_states) < row:
             pad_index = len(self.state.data_states)
             pad_type = self.get_data_type_at(pad_index)
@@ -145,9 +127,7 @@ class PipelineRunner:
             return True
 
         preceding = self.state.actions[:action_idx]
-        completed_ids = {
-            a.action_id for a in preceding if a.status == ActionStatus.COMPLETE
-        }
+        completed_ids = {a.action_id for a in preceding if a.status == ActionStatus.COMPLETE}
 
         warnings: list[str] = []
         for prereq in action_def.prerequisites:
@@ -158,103 +138,142 @@ class PipelineRunner:
             return True
 
         text = "\n".join(f"• {w}" for w in warnings)
-        reply = QMessageBox.warning(
-            self.w,
-            f"Missing Prerequisites for {action_def.title}",
-            f"{text}\n\nContinue anyway?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+        result = [False]
+        loop = GLib.MainLoop()
+
+        dlg = Adw.AlertDialog(
+            heading=f"Missing Prerequisites for {action_def.title}",
+            body=f"{text}\n\nContinue anyway?",
         )
-        return reply == QMessageBox.StandardButton.Yes
+        dlg.add_response("no", "No")
+        dlg.add_response("yes", "Yes")
+        dlg.set_default_response("no")
+        dlg.set_close_response("no")
+
+        def _on_response(_d, response):
+            result[0] = response == "yes"
+            loop.quit()
+
+        dlg.connect("response", _on_response)
+        dlg.present(self.w.window)
+        loop.run()
+        return result[0]
 
     def ensure_previous_actions(self, row) -> bool:
         """Ensure that all actions before row have been executed."""
         if row <= 0 or row <= len(self.state.data_states):
             return True
-        reply = QMessageBox.question(
-            self.w, "Run Previous?",
-            "Previous actions haven't been run. Run them first?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+
+        result = [False]
+        loop = GLib.MainLoop()
+
+        dlg = Adw.AlertDialog(
+            heading="Run Previous?",
+            body="Previous actions haven't been run. Run them first?",
         )
-        if reply == QMessageBox.StandardButton.Yes:
+        dlg.add_response("no", "No")
+        dlg.add_response("yes", "Yes")
+        dlg.set_default_response("yes")
+        dlg.set_close_response("no")
+
+        def _on_response(_d, response):
+            result[0] = response == "yes"
+            loop.quit()
+
+        dlg.connect("response", _on_response)
+        dlg.present(self.w.window)
+        loop.run()
+
+        if result[0]:
             self.run_actions(len(self.state.data_states), row)
         return row <= len(self.state.data_states)
 
-    def run_in_thread(self, fn, message="Processing..."):
-        """Execute a callable in a background QThread with a cancellable progress dialog."""
+    def run_in_thread(self, fn, message: str = "Processing..."):
+        """Execute a callable in a background thread with a cancellable progress dialog.
+
+        This method blocks the calling code (via a GLib.MainLoop) until the background
+        thread completes or the user cancels. It must be called from the GTK main thread.
+        """
         result: list[object | None] = [None]
         error: list[Exception | None] = [None]
         cancel_requested = [False]
+        loop = GLib.MainLoop()
 
-        class _Worker(QThread):
-            done = pyqtSignal()
+        # Progress dialog
+        dialog = Adw.Dialog()
+        dialog.set_title(message)
+        dialog.set_content_width(300)
 
-            def run(self):
-                try:
-                    if self.isInterruptionRequested():
-                        return
-                    result[0] = fn()
-                except BaseException as e:
-                    error[0] = e
-                finally:
-                    self.done.emit()
+        toolbar_view = Adw.ToolbarView()
+        toolbar_view.add_top_bar(Adw.HeaderBar())
+        dialog.set_child(toolbar_view)
 
-        progress = QProgressDialog(message, "Cancel", 0, 0, self.w)
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setAutoClose(False)
-        progress.setAutoReset(False)
-        progress.setMinimumDuration(0)
-        progress.setFixedSize(350, 100)
-        progress.setValue(0)
-        progress.show()
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        content.set_margin_start(20)
+        content.set_margin_end(20)
+        content.set_margin_top(16)
+        content.set_margin_bottom(16)
+        toolbar_view.set_content(content)
 
-        worker = _Worker()
-        worker.start()
-        while worker.isRunning():
-            QApplication.processEvents()
-            if progress.wasCanceled() and not cancel_requested[0]:
+        spinner = Gtk.Spinner()
+        spinner.start()
+        spinner.set_size_request(40, 40)
+        content.append(spinner)
+
+        label = Gtk.Label(label=message)
+        label.set_wrap(True)
+        content.append(label)
+
+        cancel_btn = Gtk.Button(label="Cancel")
+        cancel_btn.set_halign(Gtk.Align.CENTER)
+        content.append(cancel_btn)
+        self.cancel_label = label
+
+        def _on_cancel(_btn):
+            if not cancel_requested[0]:
                 cancel_requested[0] = True
-                self.w.status.showMessage("Cancelling...")
-                progress.setCancelButtonText("Cancelling...")
-                progress.setCancelButton(None)
-                worker.requestInterruption()
-            if cancel_requested[0]:
-                break
-            worker.wait(25)
-        progress.close()
+                label.set_text("Cancelling...")
+                cancel_btn.set_sensitive(False)
+
+        cancel_btn.connect("clicked", _on_cancel)
+
+        def _worker():
+            try:
+                if not cancel_requested[0]:
+                    result[0] = fn()
+            except BaseException as e:
+                error[0] = e
+            finally:
+                GLib.idle_add(_on_done)
+
+        def _on_done():
+            dialog.close()
+            loop.quit()
+            return False
+
+        dialog.present(self.w.window)
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        loop.run()
 
         if cancel_requested[0]:
-            if not worker.wait(500):
-                logger.warning("Worker thread still running after cancel; it will complete in background")
-            self.w.status.showMessage("Operation cancelled.")
+            self.w.set_status("Operation cancelled.")
             raise OperationCancelled("Operation cancelled.")
-        if worker.isRunning() and not worker.wait(200):
-            raise RuntimeError("Background worker did not finish cleanly.")
+
         if error[0]:
             raise error[0]
         return result[0]
 
-    def execute_action(self, action, action_def, call_site: str, func_defs: str, data,
-                       input_type: DataType = DataType.RAW, output_type: DataType = DataType.RAW):
-        """Execute a single action and return the resulting data object.
-
-        Actions are run in a background QThread.
-
-        Args:
-            action: The ActionConfig being executed.
-            action_def: The ActionDefinition for the action.
-            call_site: Call-site Python statement (or custom code block).
-            func_defs: Function definition(s) to exec before the call site.
-            data: Input data object.
-            input_type: DataType of the incoming data.
-            output_type: DataType of the expected result.
-
-        Returns:
-            The new data object produced by the action.
-
-        Raises:
-            OperationCancelled: When the user cancels a threaded action.
-        """
+    def execute_action(
+        self,
+        action,
+        call_site: str,
+        func_defs: str,
+        data,
+        input_type: DataType = DataType.RAW,
+        output_type: DataType = DataType.RAW,
+    ):
+        """Execute a single action and return the resulting data object."""
         title = get_action_title(action)
         return self.run_in_thread(
             lambda cs=call_site, fd=func_defs, d=data: exec_action(
@@ -291,47 +310,36 @@ class PipelineRunner:
         if self.require_data():
             self.run_actions(len(self.state.data_states), len(self.state.actions))
 
-    def run_actions(self, start_idx, end_idx):
-        """Run a contiguous range of pipeline actions.
-
-        Executes actions from start_idx up to (but not including) end_idx,
-        accumulating data states and updating the UI after each action.
-
-        Args:
-            start_idx: Index of the first action to run.
-            end_idx: Index one past the last action to run.
-        """
+    def run_actions(self, start_idx: int, end_idx: int):
+        """Run a contiguous range of pipeline actions."""
         if not self.require_data():
             return
 
         final_status = "Pipeline complete"
-        self.w.status.showMessage("Running pipeline...")
+        self.w.set_status("Running pipeline...")
         logger.info("======== Running actions %d to %d ========", start_idx, end_idx)
 
         if start_idx > 0 and self.state.data_states:
             stored = self.state.data_states[start_idx - 1]
             if stored is None:
                 logger.warning(
-                    "Checkpoint at index %d is unavailable; falling back to raw_original", start_idx - 1
+                    "Checkpoint at index %d is unavailable; falling back to raw_original",
+                    start_idx - 1,
                 )
             data = stored.copy() if stored is not None else self.state.raw_original.copy()
-            del stored  # release the DataStore reference, only copy is needed
-            # Pop from LRU cache
+            del stored
             self.state.data_states.cache.pop(start_idx - 1, None)
         else:
             data = self.state.raw_original.copy()
 
-        QApplication.processEvents()
-
-        # Drop the viz panel's reference to the previous checkpoint so it can be freed
+        # Drop the viz panel's reference to the previous checkpoint
         self.w.viz_panel.current_data = None
 
         for i in range(start_idx, min(end_idx, len(self.state.actions))):
             action = self.state.actions[i]
             title = get_action_title(action)
-            self.w.status.showMessage(f"Running: {title}...")
+            self.w.set_status(f"Running: {title}...")
             logger.info("-------- Running action %d: %s --------", i + 1, title)
-            QApplication.processEvents()
 
             if not self.check_prerequisites(i):
                 final_status = "Pipeline stopped (missing prerequisites)"
@@ -341,9 +349,10 @@ class PipelineRunner:
             in_type = action_def.input_type if action_def else DataType.RAW
             out_type = action_def.output_type if action_def else DataType.RAW
             pipeline_type = self.infer_data_type(data)
-            logger.debug("Action %d: data class=%s pipeline_type=%s",
-                         i + 1, type(data).__name__, pipeline_type)
-            # For ANY actions, use the actual pipeline type for execution
+            logger.debug(
+                "Action %d: data class=%s pipeline_type=%s", i + 1, type(data).__name__, pipeline_type
+            )
+
             if in_type == DataType.ANY:
                 in_type = pipeline_type
             if out_type == DataType.ANY:
@@ -355,16 +364,20 @@ class PipelineRunner:
                     f"Type mismatch: pipeline produces {pipeline_type.label} data, "
                     f"but this action expects {in_type.label}"
                 )
-                logger.error("Type mismatch at action %d: pipeline=%s action_input=%s",
-                             i + 1, pipeline_type, in_type)
+                logger.error(
+                    "Type mismatch at action %d: pipeline=%s action_input=%s",
+                    i + 1, pipeline_type, in_type,
+                )
                 self.w.update_action_list(sync_code=False)
                 final_status = f"Pipeline stopped: type mismatch at action {i + 1}"
                 break
 
             try:
                 call_site, func_defs = self.w.get_execution_code(i, action)
-                data = self.execute_action(action, action_def, call_site, func_defs, data,
-                                           input_type=in_type, output_type=out_type)
+                data = self.execute_action(
+                    action, call_site, func_defs, data,
+                    input_type=in_type, output_type=out_type,
+                )
                 self.store_action_result(i, data)
                 action.status = ActionStatus.COMPLETE
                 if action_def.result_builder_fn:
@@ -374,21 +387,28 @@ class PipelineRunner:
                         logger.warning("Result builder failed for %s: %s", title, e, exc_info=True)
                 self.show_toast(action, title)
                 logger.info("Completed action %d: %s", i + 1, title)
+
             except OperationCancelled:
                 action.status = ActionStatus.PENDING
                 logger.info("Cancelled while running action %d: %s", i + 1, title)
                 final_status = "Pipeline cancelled"
                 break
+
             except Exception as e:
                 action.status = ActionStatus.ERROR
                 action.error_msg = str(e)
                 logger.exception("Action failed at index %d: %s", i, title)
-                QMessageBox.critical(self.w, "Error", f"{title} failed:\n{e}")
+                err_dlg = Adw.AlertDialog(
+                    heading="Error",
+                    body=f"{title} failed:\n{e}",
+                )
+                err_dlg.add_response("ok", "OK")
+                err_dlg.set_default_response("ok")
+                err_dlg.present(self.w.window)
                 final_status = f"Pipeline failed at action {i + 1}: {title}"
                 break
 
             self.w.update_action_list()
 
-        self.w.viz_panel.step_combo.setCurrentIndex(min(end_idx, len(self.state.data_states)))
         self.w.update_visualization()
-        self.w.status.showMessage(final_status)
+        self.w.set_status(final_status)

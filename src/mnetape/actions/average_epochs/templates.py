@@ -7,7 +7,6 @@ from typing import Annotated
 import mne
 from mnetape.actions.base import ParamMeta, builder
 
-
 @builder
 def template_builder(
     epochs: mne.BaseEpochs,
