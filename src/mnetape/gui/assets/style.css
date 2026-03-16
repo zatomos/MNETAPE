@@ -1,0 +1,88 @@
+/* Action list item styling */
+.action-item {
+    padding: 4px 8px;
+}
+
+.action-item-name {
+    font-weight: bold;
+}
+
+.action-item-mismatch {
+    color: @error_color;
+}
+
+/* Status bar / info bar */
+.status-bar {
+    font-size: smaller;
+    color: @insensitive_fg_color;
+}
+
+/* Code preview in action editor */
+.code-preview-scroll {
+    border-radius: 4px;
+    border: 1px solid alpha(@borders, 0.5);
+}
+
+/* Run button */
+.run-button {
+    background-color: #2E7D32;
+    color: white;
+    font-weight: bold;
+}
+
+.run-button:hover {
+    background-color: #388E3C;
+}
+
+/* View mode toggle buttons */
+.view-toggle-viz:checked {
+    background-color: #0f766e;
+    color: white;
+    font-weight: 600;
+}
+
+.view-toggle-viz:hover:not(:checked) {
+    background-color: alpha(#0f766e, 0.12);
+}
+
+.view-toggle-code:checked {
+    background-color: #b45309;
+    color: white;
+    font-weight: 600;
+}
+
+.view-toggle-code:hover:not(:checked) {
+    background-color: alpha(#b45309, 0.12);
+}
+
+/* Type-header row in action list */
+.type-header {
+    color: alpha(@foreground_color, 0.5);
+    font-style: italic;
+}
+
+/* Warning banner text */
+.warning-label {
+    color: @warning_color;
+}
+
+/* Gray / hint labels */
+.dim-label {
+    color: alpha(@foreground_color, 0.55);
+    font-size: smaller;
+}
+
+/* Status indicator labels inside action rows */
+.status-complete {
+    color: #2E7D32;
+    font-weight: bold;
+}
+
+.status-error {
+    color: @error_color;
+    font-weight: bold;
+}
+
+.status-pending {
+    color: alpha(@foreground_color, 0.5);
+}
