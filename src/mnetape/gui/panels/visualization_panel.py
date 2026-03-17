@@ -6,33 +6,56 @@ The active tab set switches depending on the data type.
 The time-series tab embeds an MNE interactive browser widget.
 """
 
-from __future__ import annotations
-
 import logging
-import threading
 from typing import Callable
 
-from gi.repository import Gtk, GLib
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 from matplotlib.figure import Figure
 import mne
 
+from mnetape.actions.registry import get_action_title
+from mnetape.core.models import ActionConfig, STATUS_ICONS
 from mnetape.gui.widgets import PlotCanvas
 from mnetape.gui.widgets.common import (
     disable_mne_browser_channel_clicks,
     disable_psd_span_popups,
-    embed_mne_browser,
     sanitize_mne_browser_toolbar,
 )
 
 logger = logging.getLogger(__name__)
+
+
+class PlotWorker(QThread):
+    """Background thread for the compute phase of a plot update."""
+
+    finished = pyqtSignal(object)
+
+    def __init__(self, fn: Callable):
+        super().__init__()
+        self.fn = fn
+
+    def run(self):
+        try:
+            self.finished.emit(self.fn())
+        except Exception as e:
+            logger.warning("Background plot computation failed: %s", e)
+            self.finished.emit(None)
 
 # Tab indices for each mode
 RAW_TAB_NAMES = ["Time Series", "PSD", "Sensors", "Topomap"]
 EPOCHS_TAB_NAMES = ["PSD", "Epochs Browser", "Sensors", "Topomap", "Epochs Image"]
 EVOKED_TAB_NAMES = ["Evoked", "Topomap", "Sensors"]
 
+
 def make_loading_fig(message: str, color: str = "#666666", fontstyle: str = "italic") -> Figure:
-    """Return a matplotlib Figure showing a loading/placeholder message."""
+    """Return a matplotlib Figure showing a loading message."""
     fig = Figure(figsize=(8, 4))
     ax = fig.add_subplot(111)
     ax.text(0.5, 0.5, message, ha="center", va="center",
@@ -43,51 +66,21 @@ def make_loading_fig(message: str, color: str = "#666666", fontstyle: str = "ita
     return fig
 
 
-def setup_browser_scroll_focus(browser) -> None:
-    """Configure the embedded browser for sizing and native input handling.
-    """
-    canvas = getattr(browser, "canvas", None)
-    if canvas is None:
-        return
-    try:
-        canvas.set_focusable(True)
-        canvas.set_hexpand(True)
-        canvas.set_vexpand(True)
-        canvas.set_size_request(-1, -1)
+class VisualizationPanel(QWidget):
+    """Panel showing EEG visualizations across tabs for a selected pipeline step.
 
-        motion = Gtk.EventControllerMotion()
-        motion.connect("enter", lambda *_: canvas.grab_focus())
-        canvas.add_controller(motion)
-
-        def on_scroll(_ctrl, _dx, dy):
-            mne_state = getattr(browser, "mne", None)
-            if dy == 0 or mne_state is None:
-                return False
-
-            max_start = max(0, len(mne_state.ch_order) - mne_state.n_channels)
-            direction = 1 if dy > 0 else -1
-            new_start = min(max(mne_state.ch_start + direction, 0), max_start)
-            if new_start == mne_state.ch_start:
-                return True
-
-            mne_state.ch_start = new_start
-            browser._update_picks()
-            browser._update_vscroll()
-            browser._redraw()
-            return True
-
-        scroll = Gtk.EventControllerScroll.new(Gtk.EventControllerScrollFlags.VERTICAL)
-        scroll.connect("scroll", on_scroll)
-        canvas.add_controller(scroll)
-    except Exception as e:
-        logger.debug("Failed to set up browser scroll focus: %s", e)
-
-
-class VisualizationPanel(Gtk.Box):
-    """Panel showing EEG visualizations across tabs for the latest pipeline step.
+    Switches based on the data type being visualized.
 
     Attributes:
-        notebook: Gtk.Notebook containing the visualization tabs.
+        step_combo: Combo box for choosing which pipeline step to visualize.
+        btn_prev: Button to step backward through the pipeline.
+        btn_next: Button to step forward through the pipeline.
+        status_label: Displays a warning when the selected step has no computed data.
+        tabs: QTabWidget containing the visualization tabs.
+        plot_psd: PlotCanvas for the PSD plot.
+        plot_sensors: PlotCanvas for the sensor map.
+        plot_topomap: PlotCanvas for the topomap plot.
+        plot_image: PlotCanvas for the epochs image plot (Epochs mode only).
         current_data: The MNE object currently being visualized.
         psd_data_id: id of the data used for the cached PSD, to skip redraws.
         topomap_data_id: id of the data used for the cached topomap.
@@ -95,163 +88,98 @@ class VisualizationPanel(Gtk.Box):
         mode: Current tab mode: "raw", "epochs", or "evoked".
     """
 
-    def __init__(self):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        self.set_hexpand(True)
-        self.set_vexpand(True)
-
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.current_data = None
         self.psd_data_id = None
         self.topomap_data_id = None
         self.browser = None
         self.mode = "raw"
-        # Worker management: slot_key -> slot identity list
-        self.slot_workers: dict[str, list] = {}
+        # Worker management
+        self.slot_workers: dict[str, PlotWorker] = {}
+        self.orphaned_workers: set[PlotWorker] = set()
         self.loading_count = 0
+        self.current_step = 0
 
-        # ---- Tab notebook ----
-        self.notebook = Gtk.Notebook()
-        self.notebook.set_hexpand(True)
-        self.notebook.set_vexpand(True)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        # Create plot canvases
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: orange; font-weight: bold; padding: 2px 4px;")
+
+        self.tabs = QTabWidget()
+
         self.plot_psd = PlotCanvas()
         self.plot_evoked = PlotCanvas()
         self.plot_sensors = PlotCanvas()
         self.plot_topomap = PlotCanvas()
         self.plot_image = PlotCanvas()
 
-        # Time-series container (Raw mode)
-        self.time_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.time_container.set_hexpand(True)
-        self.time_container.set_vexpand(True)
-        self.time_placeholder = Gtk.Label(label="Load data to view")
-        self.time_placeholder.add_css_class("dim-label")
-        self.time_placeholder.set_hexpand(True)
-        self.time_placeholder.set_vexpand(True)
-        self.time_container.append(self.time_placeholder)
+        # Time-series tab (Raw mode)
+        self.time_container = QWidget()
+        self.time_layout = QVBoxLayout(self.time_container)
+        self.time_layout.setContentsMargins(0, 0, 0, 0)
+        self.time_placeholder = QLabel("Load data to view")
+        self.time_placeholder.setStyleSheet(
+            "color: #999999; font-size: 14pt; qproperty-alignment: AlignCenter;"
+        )
+        self.time_layout.addWidget(self.time_placeholder)
 
-        # Epochs browser container (Epochs mode)
-        self.epochs_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.epochs_container.set_hexpand(True)
-        self.epochs_container.set_vexpand(True)
-        self.epochs_placeholder = Gtk.Label(label="Run epoching to view")
-        self.epochs_placeholder.add_css_class("dim-label")
-        self.epochs_placeholder.set_hexpand(True)
-        self.epochs_placeholder.set_vexpand(True)
-        self.epochs_container.append(self.epochs_placeholder)
+        # Epochs browser tab (Epochs mode)
+        self.epochs_container = QWidget()
+        self.epochs_layout = QVBoxLayout(self.epochs_container)
+        self.epochs_layout.setContentsMargins(0, 0, 0, 0)
+        self.epochs_placeholder = QLabel("Run epoching to view")
+        self.epochs_placeholder.setStyleSheet(
+            "color: #999999; font-size: 14pt; qproperty-alignment: AlignCenter;"
+        )
+        self.epochs_layout.addWidget(self.epochs_placeholder)
 
-        # Tab bar
-        self.tab_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
-        self.tab_bar_box.add_css_class("linked")
-        self.tab_bar_box.set_margin_start(8)
-        self.tab_bar_box.set_margin_top(4)
-        self.tab_bar_box.set_margin_bottom(4)
-        self.append(self.tab_bar_box)
-
-        # Stack
-        self.tab_stack = Gtk.Stack()
-        self.tab_stack.set_hexpand(True)
-        self.tab_stack.set_vexpand(True)
-        self.tab_stack.set_transition_type(Gtk.StackTransitionType.NONE)
-        self.tab_stack.add_named(self.plot_psd, "psd")
-        self.tab_stack.add_named(self.time_container, "time")
-        self.tab_stack.add_named(self.epochs_container, "epochs")
-        self.tab_stack.add_named(self.plot_sensors, "sensors")
-        self.tab_stack.add_named(self.plot_topomap, "topomap")
-        self.tab_stack.add_named(self.plot_image, "image")
-        self.tab_stack.add_named(self.plot_evoked, "evoked")
-        self.append(self.tab_stack)
-
-        self.current_tab_names: list[str] = []
-        self.mode = "raw"
+        layout.addWidget(self.status_label)
         self.build_raw_tabs()
+        layout.addWidget(self.tabs)
         self.show_placeholder()
+
 
     # -------- Tab set switching --------
 
-    def rebuild_tab_bar(self, tabs: list[tuple[str, str]]) -> None:
-        """Rebuild tab toggle buttons for the given (stack-name, label) pairs."""
-        child = self.tab_bar_box.get_first_child()
-        while child is not None:
-            nxt = child.get_next_sibling()
-            self.tab_bar_box.remove(child)
-            child = nxt
-
-        self.current_tab_names = [name for name, _ in tabs]
-        first_btn: Gtk.ToggleButton | None = None
-        for name, label in tabs:
-            btn = Gtk.ToggleButton(label=label)
-            if first_btn is None:
-                first_btn = btn
-                btn.set_active(True)
-            else:
-                btn.set_group(first_btn)
-            btn.connect("toggled", self.on_tab_toggled, name)
-            self.tab_bar_box.append(btn)
-
-        if self.current_tab_names:
-            self.tab_stack.set_visible_child_name(self.current_tab_names[0])
-
-    def on_tab_toggled(self, btn: Gtk.ToggleButton, tab_name: str) -> None:
-        if not btn.get_active():
-            return
-        self.tab_stack.set_visible_child_name(tab_name)
-        idx = self.current_tab_names.index(tab_name)
-        if self.current_data is None:
-            return
-        if isinstance(self.current_data, mne.Epochs):
-            self.render_epochs_tab(idx)
-        elif isinstance(self.current_data, mne.Evoked):
-            self.render_evoked_tab(idx)
-        else:
-            self.render_raw_tab(idx)
-
-    def build_raw_tabs(self) -> None:
-        self.rebuild_tab_bar([
-            ("time", "Time Series"), ("psd", "PSD"),
-            ("sensors", "Sensors"), ("topomap", "Topomap"),
-        ])
+    def build_raw_tabs(self):
+        """Populate the tab widget with Raw mode tabs."""
+        self.tabs.clear()
+        self.tabs.addTab(self.time_container, "Time Series")
+        self.tabs.addTab(self.plot_psd, "PSD")
+        self.tabs.addTab(self.plot_sensors, "Sensors")
+        self.tabs.addTab(self.plot_topomap, "Topomap")
         self.mode = "raw"
 
-    def build_epochs_tabs(self) -> None:
-        self.rebuild_tab_bar([
-            ("psd", "PSD"), ("epochs", "Epochs Browser"),
-            ("sensors", "Sensors"), ("topomap", "Topomap"), ("image", "Image"),
-        ])
+    def build_epochs_tabs(self):
+        """Populate the tab widget with Epochs mode tabs."""
+        self.tabs.clear()
+        self.tabs.addTab(self.plot_psd, "PSD")
+        self.tabs.addTab(self.epochs_container, "Epochs Browser")
+        self.tabs.addTab(self.plot_sensors, "Sensors")
+        self.tabs.addTab(self.plot_topomap, "Topomap")
+        self.tabs.addTab(self.plot_image, "Image")
         self.mode = "epochs"
 
-    def build_evoked_tabs(self) -> None:
-        self.rebuild_tab_bar([
-            ("evoked", "Evoked"), ("topomap", "Topomap"), ("sensors", "Sensors"),
-        ])
+    def build_evoked_tabs(self):
+        """Populate the tab widget with Evoked mode tabs."""
+        self.tabs.clear()
+        self.tabs.addTab(self.plot_evoked, "Evoked")
+        self.tabs.addTab(self.plot_topomap, "Topomap")
+        self.tabs.addTab(self.plot_sensors, "Sensors")
         self.mode = "evoked"
 
-    def get_current_tab_index(self) -> int:
-        visible = self.tab_stack.get_visible_child_name() or ""
-        try:
-            return self.current_tab_names.index(visible)
-        except ValueError:
-            return 0
 
     # -------- Helper methods --------
 
     def close_browser(self):
-        """Close and remove the current MNE browser widget, freeing the matplotlib figure."""
+        """Close and remove the current MNE browser widget."""
         if self.browser is not None:
-            import matplotlib.pyplot as plt
-
-            container = self.epochs_container if self.mode == "epochs" else self.time_container
-            child = container.get_first_child()
-            while child is not None:
-                nxt = child.get_next_sibling()
-                if child is not self.time_placeholder and child is not self.epochs_placeholder:
-                    container.remove(child)
-                child = nxt
-            try:
-                plt.close(self.browser)
-            except Exception as e:
-                logger.warning("close_browser: plt.close failed: %s", e)
+            container_layout = self.epochs_layout if self.mode == "epochs" else self.time_layout
+            container_layout.removeWidget(self.browser)
+            self.browser.close()
+            self.browser.deleteLater()
             self.browser = None
 
     def sanitize_browser_toolbar(self):
@@ -268,39 +196,35 @@ class VisualizationPanel(Gtk.Box):
         """Render the time-series tab by embedding an MNE browser widget."""
         if self.current_data is None or isinstance(self.current_data, (mne.Epochs, mne.Evoked)):
             return
-        self.time_placeholder.set_text("Loading...")
-        self.time_placeholder.set_visible(True)
+        self.show_browser_loading(self.time_placeholder)
         try:
             self.close_browser()
-            self.time_placeholder.set_visible(False)
+            self.time_placeholder.setVisible(False)
             self.browser = self.current_data.plot(show=False)
             self.sanitize_browser_toolbar()
-            embed_mne_browser(self.browser, self.time_container)
-            setup_browser_scroll_focus(self.browser)
+            self.time_layout.addWidget(self.browser)
         except Exception as e:
             logger.warning("Time-series plot update failed: %s", e)
-            self.close_browser()
-            self.time_placeholder.set_text("Load data to view")
-            self.time_placeholder.set_visible(True)
+            self.time_placeholder.setText("Load data to view")
+        finally:
+            self.clear_browser_loading()
 
     def update_epochs_browser(self):
         """Render the epochs browser tab by embedding an MNE Epochs browser widget."""
         if self.current_data is None or not isinstance(self.current_data, mne.Epochs):
             return
-        self.epochs_placeholder.set_text("Loading...")
-        self.epochs_placeholder.set_visible(True)
+        self.show_browser_loading(self.epochs_placeholder)
         try:
             self.close_browser()
-            self.epochs_placeholder.set_visible(False)
+            self.epochs_placeholder.setVisible(False)
             self.browser = self.current_data.plot(show=False)
             self.sanitize_browser_toolbar()
-            embed_mne_browser(self.browser, self.epochs_container)
-            setup_browser_scroll_focus(self.browser)
+            self.epochs_layout.addWidget(self.browser)
         except Exception as e:
             logger.warning("Epochs browser update failed: %s", e)
-            self.close_browser()
-            self.epochs_placeholder.set_text("Run epoching to view")
-            self.epochs_placeholder.set_visible(True)
+            self.epochs_placeholder.setText("Run epoching to view")
+        finally:
+            self.clear_browser_loading()
 
     def show_placeholder(self):
         """Show placeholder text when no data is loaded."""
@@ -309,12 +233,42 @@ class VisualizationPanel(Gtk.Box):
         for plot in [self.plot_psd, self.plot_evoked, self.plot_sensors, self.plot_topomap, self.plot_image]:
             plot.update_figure(make_loading_fig("Load data to view", color="#999999", fontstyle="normal"))
         self.close_browser()
-        self.time_placeholder.set_visible(True)
-        self.epochs_placeholder.set_visible(True)
+        self.time_placeholder.setVisible(True)
+        self.epochs_placeholder.setVisible(True)
 
-    def update_plots(self, data: mne.io.Raw | mne.Epochs | mne.Evoked | None):
-        """Update the active tab's plot for a new data object."""
+    def update_step_list(self, actions: list[ActionConfig]):
+        """Clamp current_step to the valid range when the action list changes.
+
+        Args:
+            actions: The ordered list of pipeline actions.
+        """
+        max_step = len(actions)
+        if self.current_step > max_step:
+            self.current_step = max_step
+
+    def update_plots(
+        self,
+        data: mne.io.Raw | mne.Epochs | mne.Evoked | None,
+        current_step: int = 0,
+        computed_steps: int = 0,
+    ):
+        """Update the active tab's plot for a new data object or step selection.
+
+        Switches between tab sets when the data type changes.
+        Sets status_label when the requested step has not been computed yet.
+        Reconnects the tab-changed signal so that switching tabs triggers a fresh render.
+
+        Args:
+            data: The MNE object to visualize, or None to show a placeholder.
+            current_step: Index of the step combo selection (0 = original).
+            computed_steps: Number of actions whose results are available.
+        """
         self.current_data = data
+
+        if current_step > computed_steps and current_step > 0:
+            self.status_label.setText("(not computed - showing original)")
+        else:
+            self.status_label.setText("")
 
         if data is None:
             self.show_placeholder()
@@ -336,7 +290,7 @@ class VisualizationPanel(Gtk.Box):
             else:
                 self.build_raw_tabs()
         else:
-            current_tab = self.get_current_tab_index()
+            current_tab = self.tabs.currentIndex()
 
         if new_mode == "epochs":
             self.render_epochs_tab(current_tab)
@@ -345,16 +299,27 @@ class VisualizationPanel(Gtk.Box):
         else:
             self.render_raw_tab(current_tab)
 
+        try:
+            self.tabs.currentChanged.disconnect()
+        except TypeError:
+            pass
+        self.tabs.currentChanged.connect(self.on_tab_changed)
+
+
     # ------- Loading / worker helpers --------
 
     def start_loading(self, canvas: PlotCanvas, message: str) -> None:
-        """Show a loading placeholder on canvas."""
+        """Show a loading placeholder on canvas and set the wait cursor."""
         canvas.update_figure(make_loading_fig(message))
         self.loading_count += 1
+        if self.loading_count == 1:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
 
     def finish_loading(self) -> None:
-        """Decrement loading counter."""
+        """Decrement loading counter and restore cursor when all workers are done."""
         self.loading_count = max(0, self.loading_count - 1)
+        if self.loading_count == 0:
+            QApplication.restoreOverrideCursor()
 
     def run_plot_worker(
         self,
@@ -364,69 +329,83 @@ class VisualizationPanel(Gtk.Box):
         render_fn: Callable,
         message: str = "Computing...",
     ) -> None:
-        """Start a background thread to compute data, then render on the main thread.
+        """Start a background thread to compute data, then render a figure on the main thread.
+
+        Shows a loading placeholder immediately. The background thread runs compute_fn and emits the result
+        via a queued signal.
+        If a worker for the same slot is already running, its result is discarded.
 
         Args:
             slot_key: Unique name for this plot slot (e.g. "psd", "topomap").
             canvas: The PlotCanvas to update when done.
-            compute_fn: Runs in background; returns intermediate data. Return None to skip.
+            compute_fn: Runs in background; returns intermediate data (e.g. a Spectrum object).
+                        Return None to skip rendering.
             render_fn: Runs on the main thread; receives the compute_fn result; returns a Figure.
             message: Text shown in the loading placeholder.
         """
-        # Cancel any existing worker for this slot by marking it superseded
-        slot_id = [id(self)]  # mutable reference to detect supersession
-
-        self.slot_workers[slot_key] = slot_id
+        # Discard result from any previous worker for this slot.
+        # Keep a live reference in orphaned_workers until the thread exits.
+        old = self.slot_workers.pop(slot_key, None)
+        if old is not None:
+            try:
+                old.finished.disconnect()
+            except TypeError:
+                pass
+            self.orphaned_workers.add(old)
+            old.finished.connect(lambda _: self.orphaned_workers.discard(old),
+                                 Qt.ConnectionType.QueuedConnection)
 
         self.start_loading(canvas, message)
 
-        my_slot_id = slot_id  # capture reference
+        worker = PlotWorker(compute_fn)
+        self.slot_workers[slot_key] = worker
 
-        def _worker():
-            try:
-                result = compute_fn()
-            except Exception as e:
-                logger.warning("Background plot computation failed (%s): %s", slot_key, e)
-                result = None
+        def on_worker_done(result):
+            self.slot_workers.pop(slot_key, None)
+            self.finish_loading()
+            if result is not None:
+                try:
+                    fig = render_fn(result)
+                    if fig is not None:
+                        canvas.update_figure(fig)
+                except Exception as e:
+                    logger.warning("Plot render failed for %s: %s", slot_key, e)
 
-            def _on_done():
-                # Check if this worker has been superseded
-                if self.slot_workers.get(slot_key) is not my_slot_id:
-                    self.finish_loading()
-                    return False
-                self.slot_workers.pop(slot_key, None)
-                self.finish_loading()
-                if result is not None:
-                    try:
-                        fig = render_fn(result)
-                        if fig is not None:
-                            canvas.update_figure(fig)
-                    except Exception as e:
-                        logger.warning("Plot render failed for %s: %s", slot_key, e)
-                return False  # Don't repeat
+        worker.finished.connect(on_worker_done, Qt.ConnectionType.QueuedConnection)
+        worker.start()
 
-            GLib.idle_add(_on_done)
+    def show_browser_loading(self, label: QLabel) -> None:
+        """Show a loading label in a browser container and push the wait cursor."""
+        label.setText("Loading...")
+        label.setVisible(True)
+        self.loading_count += 1
+        if self.loading_count == 1:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        QApplication.processEvents()  # browser loads are synchronous — flush now so label is visible
 
-        t = threading.Thread(target=_worker, daemon=True)
-        t.start()
-
-    # ------- Tab signal --------
-
-    def on_switch_page(self, _notebook, _page, page_num: int):
-        """Render the newly selected tab."""
-        if self.current_data is None:
-            return
-        if isinstance(self.current_data, mne.Epochs):
-            self.render_epochs_tab(page_num)
-        elif isinstance(self.current_data, mne.Evoked):
-            self.render_evoked_tab(page_num)
-        else:
-            self.render_raw_tab(page_num)
+    def clear_browser_loading(self) -> None:
+        """Pop the wait cursor after a synchronous browser-load operation."""
+        self.finish_loading()
 
     # ------- Plot update methods --------
 
+    def on_tab_changed(self, index: int):
+        """Render the newly selected tab when the user switches tabs.
+
+        Args:
+            index: The tab index that was just selected.
+        """
+        if self.current_data is None:
+            return
+        if isinstance(self.current_data, mne.Epochs):
+            self.render_epochs_tab(index)
+        elif isinstance(self.current_data, mne.Evoked):
+            self.render_evoked_tab(index)
+        else:
+            self.render_raw_tab(index)
+
     def render_raw_tab(self, index: int):
-        """Render tab by index for Raw mode."""
+        """Render tab by index (0=Time, 1=PSD, 2=Sensors, 3=Topomap) for Raw mode."""
         if index == 0:
             self.update_time_plot()
         elif index == 1:
@@ -437,7 +416,7 @@ class VisualizationPanel(Gtk.Box):
             self.update_topomap_plot()
 
     def render_epochs_tab(self, index: int):
-        """Render tab by index for Epochs mode."""
+        """Render a tab by index (0=PSD, 1=Browser, 2=Sensors, 3=Topomap, 4=Image) for Epochs mode."""
         if index == 0:
             self.update_psd_plot()
         elif index == 1:
@@ -450,7 +429,7 @@ class VisualizationPanel(Gtk.Box):
             self.update_image_plot()
 
     def render_evoked_tab(self, index: int):
-        """Render tab by index for Evoked mode."""
+        """Render a tab by index (0=Evoked, 1=Topomap, 2=Sensors) for Evoked mode."""
         if index == 0:
             self.update_evoked_plot()
         elif index == 1:
@@ -459,7 +438,7 @@ class VisualizationPanel(Gtk.Box):
             self.update_sensors_plot()
 
     def update_psd_plot(self):
-        """Compute and display the PSD plot in a background thread."""
+        """Compute and display the PSD plot in a background thread, skipping if data is unchanged."""
         if self.current_data is None:
             return
         data_id = id(self.current_data)
@@ -489,7 +468,7 @@ class VisualizationPanel(Gtk.Box):
         )
 
     def update_sensors_plot(self):
-        """Render a sensor map plot."""
+        """Render a sensor map plot on the main thread."""
         if self.current_data is None:
             return
         data = self.current_data
@@ -502,7 +481,7 @@ class VisualizationPanel(Gtk.Box):
         self.run_plot_worker("sensors", self.plot_sensors, lambda: data, render, "Rendering sensor map...")
 
     def update_topomap_plot(self):
-        """Compute PSD in a background thread, then render the topomap."""
+        """Compute PSD in a background thread, then render the topomap on the main thread."""
         if self.current_data is None:
             return
         data_id = id(self.current_data)
@@ -526,7 +505,7 @@ class VisualizationPanel(Gtk.Box):
                                  lambda: data.compute_psd(fmax=60), render_psd_topo, "Computing topomap...")
 
     def update_image_plot(self):
-        """Render an epochs image plot (Epochs mode only)."""
+        """Render an epochs image plot on the main thread (Epochs mode only)."""
         if self.current_data is None or not isinstance(self.current_data, mne.Epochs):
             return
         data = self.current_data

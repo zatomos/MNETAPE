@@ -8,13 +8,25 @@ from __future__ import annotations
 import json
 import logging
 
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 import mne
 
-
-from gi.repository import Adw, Gtk
-
 from mnetape.actions.base import ParamWidgetBinding
-from mnetape.gui.dialogs.base import ModalDialog
 
 logger = logging.getLogger(__name__)
 
@@ -34,224 +46,191 @@ except Exception as e:
         "syst", "temperature",
     )
 
-class ChannelTypeDialog(ModalDialog):
+
+class ChannelTypeDialog(QDialog):
     """Dialog for setting channel types via a filterable table with per-row dropdowns.
 
-    Displays all channels with their current type and a dropdown to select a new type.
+    Displays all channels with their current type and a combo box to select a new type.
     Only channels whose type was changed are included in the returned mapping.
     The table can be filtered by channel name or current type.
+
+    Args:
+        raw: The MNE Raw object providing channel names and current types.
+        current_mapping: Pre-existing channel->type mapping to pre-populate the combos.
+        parent: Optional parent widget.
     """
 
     def __init__(
         self,
         raw: mne.io.Raw,
         current_mapping: dict[str, str] | None = None,
-        parent_window=None,
+        parent=None,
     ):
+        super().__init__(parent)
         self.raw = raw
-        self.current_mapping = dict(current_mapping or {})
+        self._current_mapping = dict(current_mapping or {})
+        self._combo_widgets: dict[str, QComboBox] = {}
 
-        # Per-channel row data: {ch_name: (orig_type, dropdown)}
-        self.rows: dict[str, tuple[str, Gtk.DropDown]] = {}
-        self.all_row_widgets: list[tuple[str, str, Gtk.ListBoxRow]] = []  # (ch_name, orig_type, row)
+        self.setWindowTitle("Set Channel Types")
+        self.setMinimumSize(600, 500)
 
-        self.dialog = Adw.Dialog()
-        self.dialog.set_title("Set Channel Types")
-        self.dialog.set_content_width(620)
+        layout = QVBoxLayout(self)
 
-        toolbar_view = Adw.ToolbarView()
-        toolbar_view.add_top_bar(Adw.HeaderBar())
-        self.dialog.set_child(toolbar_view)
-
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        outer.set_margin_start(12)
-        outer.set_margin_end(12)
-        outer.set_margin_top(8)
-        outer.set_margin_bottom(8)
-        toolbar_view.set_content(outer)
-
-        info = Gtk.Label(
-            label=(
-                "Change the type for any channel using the dropdown. "
-                "Only channels with a changed type will be included in the mapping."
-            )
+        info = QLabel(
+            "Change the type for any channel using the dropdown. "
+            "Only channels with a changed type will be included in the mapping."
         )
-        info.set_wrap(True)
-        info.set_xalign(0.0)
-        outer.append(info)
+        info.setWordWrap(True)
+        layout.addWidget(info)
 
         # Filter row
-        filter_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        filter_box.append(Gtk.Label(label="Filter:"))
-        self.filter_entry = Gtk.SearchEntry()
-        self.filter_entry.set_placeholder_text("Type to filter channels...")
-        self.filter_entry.set_hexpand(True)
-        self.filter_entry.connect("search-changed", self.apply_filter)
-        filter_box.append(self.filter_entry)
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("Filter:"))
+        self._filter_edit = QLineEdit()
+        self._filter_edit.setPlaceholderText("Type to filter channels...")
+        self._filter_edit.textChanged.connect(self.apply_filter)
+        filter_layout.addWidget(self._filter_edit, 1)
 
-        # Type filter dropdown
-        present_types = sorted(set(
-            mne.channel_type(raw.info, i) for i in range(len(raw.ch_names))
-        ))
-        type_items = ["All types"] + present_types
-        type_model = Gtk.StringList(strings=type_items)
-        self.type_dropdown = Gtk.DropDown(model=type_model)
-        self.type_dropdown.connect("notify::selected", self.apply_filter)
-        filter_box.append(self.type_dropdown)
-        outer.append(filter_box)
+        self._type_filter = QComboBox()
+        self._type_filter.addItem("All types")
+        # Populate with types actually present in the data
+        present_types = sorted(set(mne.channel_type(raw.info, i) for i in range(len(raw.ch_names))))
+        for t in present_types:
+            self._type_filter.addItem(t)
+        self._type_filter.currentTextChanged.connect(self.apply_filter)
+        filter_layout.addWidget(self._type_filter)
+        layout.addLayout(filter_layout)
 
-        # Column headers
-        header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        header_box.set_margin_start(6)
-        header_box.set_margin_end(6)
-        ch_hdr = Gtk.Label(label="Channel")
-        ch_hdr.set_xalign(0.0)
-        ch_hdr.set_hexpand(True)
-        cur_hdr = Gtk.Label(label="Current Type")
-        cur_hdr.set_size_request(110, -1)
-        cur_hdr.set_xalign(0.0)
-        new_hdr = Gtk.Label(label="New Type")
-        new_hdr.set_size_request(160, -1)
-        new_hdr.set_xalign(0.0)
-        header_box.append(ch_hdr)
-        header_box.append(cur_hdr)
-        header_box.append(new_hdr)
-        outer.append(header_box)
+        # Channel table
+        self._table = QTableWidget()
+        self._table.setColumnCount(3)
+        self._table.setHorizontalHeaderLabels(["Channel", "Current Type", "New Type"])
+        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.verticalHeader().setVisible(False)
+        layout.addWidget(self._table, 1)
 
-        # Scrollable list
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_vexpand(True)
-        scrolled.set_min_content_height(300)
-        self.list_box = Gtk.ListBox()
-        self.list_box.set_selection_mode(Gtk.SelectionMode.NONE)
-        scrolled.set_child(self.list_box)
-        outer.append(scrolled)
+        self.populate_table()
 
-        self.populate_rows()
+        # Summary + buttons
+        footer = QHBoxLayout()
+        self._summary_label = QLabel()
+        self._summary_label.setStyleSheet("color: gray;")
+        footer.addWidget(self._summary_label, 1)
 
-        # Summary + footer buttons
-        self.summary_label = Gtk.Label(label="No changes.")
-        self.summary_label.set_xalign(0.0)
-        self.summary_label.add_css_class("dim-label")
-        self.summary_label.set_hexpand(True)
+        btn_reset = QPushButton("Reset All")
+        btn_reset.clicked.connect(self._reset_all)
+        footer.addWidget(btn_reset)
 
-        footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        footer.set_halign(Gtk.Align.FILL)
-        footer.append(self.summary_label)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        footer.addWidget(buttons)
+        layout.addLayout(footer)
 
-        btn_reset = Gtk.Button(label="Reset All")
-        btn_reset.connect("clicked", self.reset_all)
-        footer.append(btn_reset)
-
-        cancel_btn = Gtk.Button(label="Cancel")
-        cancel_btn.connect("clicked", self.reject)
-        footer.append(cancel_btn)
-
-        ok_btn = Gtk.Button(label="OK")
-        ok_btn.add_css_class("suggested-action")
-        ok_btn.connect("clicked", self.accept)
-        footer.append(ok_btn)
-
-        outer.append(footer)
-
-        self.setup_modal(parent_window)
         self.update_summary()
 
-    def populate_rows(self) -> None:
-        """Populate the list with one row per channel."""
+    def populate_table(self) -> None:
+        """Populate the table with one row per channel, pre-selecting current or mapped types."""
         ch_names = self.raw.ch_names
         original_types = [mne.channel_type(self.raw.info, i) for i in range(len(ch_names))]
+
+        self._table.setRowCount(len(ch_names))
+        self._combo_widgets.clear()
+
         type_list = list(VALID_CHANNEL_TYPES)
 
-        self.all_row_widgets.clear()
-        self.rows.clear()
+        for row, (ch_name, orig_type) in enumerate(zip(ch_names, original_types)):
+            # Channel name
+            name_item = QTableWidgetItem(ch_name)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self._table.setItem(row, 0, name_item)
 
-        for ch_name, orig_type in zip(ch_names, original_types):
-            row = Gtk.ListBoxRow()
+            # Current type
+            type_item = QTableWidgetItem(orig_type)
+            type_item.setFlags(type_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self._table.setItem(row, 1, type_item)
 
-            row_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-            row_box.set_margin_start(6)
-            row_box.set_margin_end(6)
-            row_box.set_margin_top(3)
-            row_box.set_margin_bottom(3)
+            # New type dropdown
+            combo = QComboBox()
+            combo.addItems(type_list)
 
-            ch_label = Gtk.Label(label=ch_name)
-            ch_label.set_xalign(0.0)
-            ch_label.set_hexpand(True)
-            row_box.append(ch_label)
+            # Set to mapped type if exists, otherwise current type
+            target = self._current_mapping.get(ch_name, orig_type)
+            idx = combo.findText(target)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+            else:
+                # Type not in list, add it
+                combo.insertItem(0, target)
+                combo.setCurrentIndex(0)
 
-            cur_label = Gtk.Label(label=orig_type)
-            cur_label.set_size_request(110, -1)
-            cur_label.set_xalign(0.0)
-            row_box.append(cur_label)
+            combo.currentTextChanged.connect(self.update_summary)
+            self._table.setCellWidget(row, 2, combo)
+            self._combo_widgets[ch_name] = combo
 
-            # Dropdown for new type
-            target = self.current_mapping.get(ch_name, orig_type)
-            items_for_row = list(type_list)
-            if target not in items_for_row:
-                items_for_row.insert(0, target)
+    def apply_filter(self) -> None:
+        """Hide rows that do not match the current text filter and type-filter selection."""
+        text = self._filter_edit.text().lower()
+        type_filter = self._type_filter.currentText()
 
-            model = Gtk.StringList(strings=items_for_row)
-            dropdown = Gtk.DropDown(model=model)
-            dropdown.set_size_request(160, -1)
-            try:
-                idx = items_for_row.index(target)
-                dropdown.set_selected(idx)
-            except ValueError:
-                dropdown.set_selected(0)
-            dropdown.connect("notify::selected", lambda *_: self.update_summary())
-            row_box.append(dropdown)
+        for row in range(self._table.rowCount()):
+            name_item = self._table.item(row, 0)
+            type_item = self._table.item(row, 1)
+            if name_item is None:
+                continue
 
-            row.set_child(row_box)
-            # Store metadata on row for filter
-            row._ch_name = ch_name
-            row._orig_type = orig_type
-            self.list_box.append(row)
-            self.rows[ch_name] = (orig_type, dropdown, items_for_row)
-            self.all_row_widgets.append((ch_name, orig_type, row))
+            name_match = not text or text in name_item.text().lower()
+            type_match = type_filter == "All types" or type_item.text() == type_filter
 
-    def apply_filter(self, *_args) -> None:
-        """Show/hide rows based on text filter and type filter."""
-        text = self.filter_entry.get_text().lower()
-        sel_idx = self.type_dropdown.get_selected()
-        type_items = ["All types"] + sorted(set(
-            mne.channel_type(self.raw.info, i) for i in range(len(self.raw.ch_names))
-        ))
-        type_filter = type_items[sel_idx] if sel_idx < len(type_items) else "All types"
-
-        for ch_name, orig_type, row in self.all_row_widgets:
-            name_match = not text or text in ch_name.lower()
-            type_match = type_filter == "All types" or orig_type == type_filter
-            row.set_visible(name_match and type_match)
+            self._table.setRowHidden(row, not (name_match and type_match))
 
     def update_summary(self) -> None:
+        """Refresh the summary label to show how many channels will be re-typed."""
         mapping = self.get_mapping()
         n = len(mapping)
         if n == 0:
-            self.summary_label.set_text("No changes.")
+            self._summary_label.setText("No changes.")
         else:
-            self.summary_label.set_text(f"{n} channel{'s' if n != 1 else ''} will be re-typed.")
+            self._summary_label.setText(f"{n} channel{'s' if n != 1 else ''} will be re-typed.")
 
-    def reset_all(self, _btn) -> None:
-        """Reset all dropdowns to the channel's original type."""
-        for ch_name, orig_type, items_for_row, dropdown in self.iter_rows():
-            try:
-                idx = items_for_row.index(orig_type)
-                dropdown.set_selected(idx)
-            except ValueError:
-                pass
+    def _reset_all(self) -> None:
+        """Reset all combo boxes to the channel's original type."""
+        for row in range(self._table.rowCount()):
+            type_item = self._table.item(row, 1)
+            name_item = self._table.item(row, 0)
+            if type_item is None or name_item is None:
+                continue
+            combo = self._combo_widgets.get(name_item.text())
+            if combo is not None:
+                idx = combo.findText(type_item.text())
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
         self.update_summary()
 
-    def iter_rows(self):
-        for ch_name, (orig_type, dropdown, items_for_row) in self.rows.items():
-            yield ch_name, orig_type, items_for_row, dropdown
-
     def get_mapping(self) -> dict[str, str]:
-        """Return a dict of channels whose type was changed from their original value."""
+        """Return a dict of channels whose type was changed from their original value.
+
+        Returns:
+            Dict mapping channel name to the new type string; empty if no changes.
+        """
         mapping: dict[str, str] = {}
-        for ch_name, (orig_type, dropdown, items_for_row) in self.rows.items():
-            sel = dropdown.get_selected()
-            new_type = items_for_row[sel] if sel < len(items_for_row) else orig_type
+        for row in range(self._table.rowCount()):
+            name_item = self._table.item(row, 0)
+            type_item = self._table.item(row, 1)
+            if name_item is None or type_item is None:
+                continue
+            ch_name = name_item.text()
+            orig_type = type_item.text()
+            combo = self._combo_widgets.get(ch_name)
+            if combo is None:
+                continue
+            new_type = combo.currentText()
             if new_type != orig_type:
                 mapping[ch_name] = new_type
         return mapping
@@ -263,32 +242,41 @@ class ChannelTypeDialog(ModalDialog):
             return ""
         return json.dumps(mapping)
 
+
 # -------- Param widget factory --------
 
-def channel_types_widget_factory(current_value, raw):
+def channel_types_widget_factory(current_value, raw, parent):
     """Build a compound widget for the 'channel_types' param type.
 
     Returns a (container, value_widget) pair:
-        - container has a read-only Entry and an "Edit..." button.
-        - value_widget is the Gtk.Entry holding the JSON string.
+        - container is a QWidget with a read-only QLineEdit and an "Edit..." button that opens the ChannelTypeDialog.
+        - value_widget is the QLineEdit where the JSON string representation of the mapping is stored.
+
+    Args:
+        param_def: Parameter metadata dict (unused here, kept for factory protocol).
+        current_value: Current mapping as a JSON string or dict to pre-populate.
+        raw: The MNE Raw object passed to ChannelTypeDialog. May be None.
+        parent: Parent widget for the dialog.
+
+    Returns:
+        Tuple of (container QWidget, QLineEdit value widget).
     """
-    container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-    container.set_hexpand(True)
+    container = QWidget()
+    layout = QHBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
 
-    entry = Gtk.Entry()
-    entry.set_text(str(current_value or ""))
-    entry.set_editable(False)
-    entry.set_placeholder_text("Click 'Edit...' to set channel types")
-    entry.set_hexpand(True)
-    container.append(entry)
+    line_edit = QLineEdit(str(current_value or ""))
+    line_edit.setReadOnly(True)
+    line_edit.setPlaceholderText("Click 'Edit...' to set channel types")
+    layout.addWidget(line_edit, 1)
 
-    btn_edit = Gtk.Button(label="Edit...")
-    btn_edit.set_sensitive(raw is not None)
+    btn_edit = QPushButton("Edit...")
+    btn_edit.setEnabled(raw is not None)
 
-    def _edit(_btn):
+    def _edit():
         if raw is None:
             return
-        current_text = entry.get_text().strip()
+        current_text = line_edit.text().strip()
         current_mapping: dict[str, str] = {}
         if current_text:
             try:
@@ -301,15 +289,15 @@ def channel_types_widget_factory(current_value, raw):
                     if ":" in pair:
                         ch, typ = pair.split(":", 1)
                         current_mapping[ch.strip()] = typ.strip()
-        parent_window = btn_edit.get_root()
-        dlg = ChannelTypeDialog(raw, current_mapping, parent_window=parent_window)
-        if dlg.exec():
-            entry.set_text(dlg.get_mapping_string())
+        dlg = ChannelTypeDialog(raw, current_mapping, parent)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            line_edit.setText(dlg.get_mapping_string())
 
-    btn_edit.connect("clicked", _edit)
-    container.append(btn_edit)
+    btn_edit.clicked.connect(_edit)
+    layout.addWidget(btn_edit)
 
-    return container, entry
+    return container, line_edit
+
 
 # -------- Widget bindings --------
 

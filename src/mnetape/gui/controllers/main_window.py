@@ -1,426 +1,325 @@
 """Main application window for the EEG preprocessing pipeline.
 
-MainWindow is the top-level Adw.ApplicationWindow. It owns the shared AppState and instantiates all controller objects
+MainWindow is the top-level QMainWindow. It owns the shared AppState and instantiates the controller objects
 that implement all user-facing operations.
+The window itself only builds the menu, sets up the layout widgets, and provides update helpers that keep
+the action list, code panel, and visualization panel in sync.
 """
 
-from __future__ import annotations
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QAction, QBrush, QColor, QKeySequence, QShortcut
+from PyQt6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QListWidgetItem,
+    QMainWindow,
+    QMenu,
+    QPushButton,
+    QStackedWidget,
+    QStatusBar,
+    QVBoxLayout,
+    QWidget,
+)
 
-import logging
-from pathlib import Path
-
-import mne
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk
-
-from mnetape.actions.registry import get_action_by_id, get_action_title
-from mnetape.core.codegen import generate_full_script
-from mnetape.core.models import CUSTOM_ACTION_ID, DataType, ICASolution
-from mnetape.gui.dialogs.action_result_dialog import ActionResultDialog
-from mnetape.gui.dialogs.preferences_dialog import PreferencesDialog
+from mnetape.actions.registry import get_action_by_id
+from mnetape.core.codegen import (
+    generate_full_script,
+)
+from mnetape.core.models import CUSTOM_ACTION_ID, DataType
 from mnetape.gui.controllers.action_controller import ActionController
 from mnetape.gui.controllers.file_handler import FileHandler
 from mnetape.gui.controllers.nav_controller import NavController
 from mnetape.gui.controllers.pipeline_runner import PipelineRunner
 from mnetape.gui.controllers.state import AppState
+from mnetape.gui.dialogs.action_result_dialog import ActionResultDialog
 from mnetape.gui.panels import CodePanel, VisualizationPanel
-from mnetape.gui.widgets import ActionListItem
+from mnetape.gui.widgets import ActionListItem, ActionListWidget
 
-logger = logging.getLogger(__name__)
 
-class MainWindow:
+def make_type_header(data_type: DataType) -> QListWidgetItem:
+    """Create a section header item for the given data type."""
+    header = QListWidgetItem(f"── {data_type.label} ──")
+    header.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+    header.setForeground(QBrush(QColor("#888888")))
+    font = header.font()
+    font.setItalic(True)
+    header.setFont(font)
+    header.setFlags(Qt.ItemFlag.NoItemFlags)
+    header.setData(Qt.ItemDataRole.UserRole, -1)
+    return header
+
+
+class MainWindow(QMainWindow):
     """Top-level application window.
 
-    Composes the left action-list panel, the right view stack, and a status bar at the bottom.
+    Composes the left action-list panel, the right view stack (visualization or code editor), and a status bar.
     All operations are delegated to the controller objects stored as instance attributes.
 
     Attributes:
-        window: The Adw.ApplicationWindow.
-        toast_overlay: Adw.ToastOverlay wrapping the main content.
         state: Shared mutable application state.
         files: File I/O controller.
         runner: Pipeline execution controller.
-        action_ctrl: Action management controller.
-        nav: Navigation controller.
         viz_panel: Visualisation panel.
-        code_panel: Code editor panel.
-        action_list: Gtk.ListBox for pipeline steps.
+        code_panel:Code editor panel.
+        action_list: Pipeline action list.
+        status: QStatusBar for transient messages.
+        recent_menu: The File > Open Recent sub-menu.
     """
 
-    def __init__(self, app: Adw.Application):
-        self.tab_bar_box = None
-        self.recent_submenu = None
-        self.action_list = None
-        self.btn_move_up = None
-        self.btn_move_down = None
-        self.btn_viz = None
-        self.btn_code = None
-        self.view_stack = None
-        self.viz_panel = None
+    def __init__(self):
+        super().__init__()
         self.code_panel = None
-        self.app = app
+        self.viz_panel = None
+        self.view_stack = None
+        self.btn_code = None
+        self.btn_run = None
+        self.btn_move_down = None
+        self.btn_move_up = None
+        self.action_list = None
+        self.btn_add_action = None
+        self.recent_menu = None
+        self.btn_viz = None
+
+        # Basic window setup
+        self.setWindowTitle("MNETAPE")
+        self.resize(1400, 900)
 
         # State
         self.state = AppState.create()
         self.state.data_states.close()
         self.open_dialogs: list = []
 
-        # Controllers
+        # Helpers
         self.files = FileHandler(self)
         self.runner = PipelineRunner(self)
         self.action_ctrl = ActionController(self)
         self.nav = NavController(self)
 
+        # DataStore shows a progress dialog when reading a file
         self.state.data_states.thread_runner = self.runner.run_in_thread
 
-        # Build main window
-        self.window = Adw.ApplicationWindow(application=app)
-        self.window.set_title("MNETAPE")
-        self.window.set_default_size(1400, 900)
-
-        # Toast overlay wraps everything
-        self.toast_overlay = Adw.ToastOverlay()
-
-        # Outer vertical box: header bar + content
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.toast_overlay.set_child(outer)
-        self.window.set_content(self.toast_overlay)
-
-        # Header bar
-        self.setup_header(outer)
-
-        # Main content area
-        self.setup_ui(outer)
-
-        # Bottom status bar
-        self.status_label = Gtk.Label(label="Ready - Open a FIF file to begin")
-        self.status_label.set_xalign(0.0)
-        self.status_label.set_margin_start(8)
-        self.status_label.set_margin_end(8)
-        self.status_label.set_margin_top(4)
-        self.status_label.set_margin_bottom(4)
-        self.status_label.add_css_class("status-bar")
-
-        self.raw_info_label = Gtk.Label(label="")
-        self.raw_info_label.add_css_class("dim-label")
-        self.raw_info_label.set_xalign(1.0)
-        self.raw_info_label.set_hexpand(True)
-        self.raw_info_label.set_margin_end(8)
-
-        status_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
-        status_bar.append(self.status_label)
-        status_bar.append(self.raw_info_label)
-        outer.append(status_bar)
-
-        # Keyboard shortcuts
+        # UI
+        self.setup_menu()
+        self.setup_ui()
         self.setup_shortcuts()
 
-        self.window.connect("close-request", self.on_close_request)
+        self.raw_info_label = QLabel()
+        self.raw_info_label.setStyleSheet("color: gray;")
 
-    # -------- Header / menu setup --------
+        self.status = QStatusBar()
+        self.setStatusBar(self.status)
+        self.status.addPermanentWidget(self.raw_info_label)
+        self.status.showMessage("Ready - Open a FIF file to begin")
 
-    def setup_header(self, outer: Gtk.Box):
-        """Build the Adw.HeaderBar with menu button and action buttons."""
-        header = Adw.HeaderBar()
-        outer.append(header)
 
-        # Menu button
-        menu_btn = Gtk.MenuButton()
-        menu_btn.set_icon_name("open-menu-symbolic")
-        menu_btn.set_menu_model(self.build_menu())
-        header.pack_end(menu_btn)
+    # -------- Menu setup --------
 
-        # Add Action button
-        add_btn = Gtk.Button(label="+ Add Action")
-        add_btn.connect("clicked", self.action_ctrl.add_action)
-        header.pack_start(add_btn)
+    def setup_menu(self):
+        """Build the application menu bar."""
+        menubar = self.menuBar()
 
-        # Run All button
-        run_btn = Gtk.Button(label="▶  Run All")
-        run_btn.add_css_class("suggested-action")
-        run_btn.connect("clicked", lambda _: self.runner.run_all())
-        header.pack_start(run_btn)
+        file_menu = menubar.addMenu("File")
 
-    def build_menu(self) -> Gio.Menu:
-        """Build the application menu model."""
-        menu = Gio.Menu()
+        open_action = QAction("Open EEG File...", self)
+        open_action.setShortcut(QKeySequence.StandardKey.Open)
+        open_action.triggered.connect(self.files.open_file)
+        file_menu.addAction(open_action)
 
-        # File section
-        file_section = Gio.Menu()
-        file_section.append("Open EEG File...", "win.open_file")
-        self.recent_submenu = Gio.Menu()
-        recent_item = Gio.MenuItem.new_submenu("Open Recent", self.recent_submenu)
-        file_section.append_item(recent_item)
-        file_section.append("Close File", "win.close_file")
-        file_section.append("Export Processed...", "win.export_file")
-        menu.append_section("File", file_section)
+        self.recent_menu = QMenu("Open Recent", self)
+        self.recent_menu.aboutToShow.connect(self.files.refresh_recent_menu)
+        file_menu.addMenu(self.recent_menu)
 
-        # Pipeline section
-        pipeline_section = Gio.Menu()
-        pipeline_section.append("New Pipeline", "win.new_pipeline")
-        pipeline_section.append("Save Pipeline...", "win.save_pipeline")
-        pipeline_section.append("Load Pipeline...", "win.load_pipeline")
-        pipeline_section.append("Run All", "win.run_all")
-        menu.append_section("Pipeline", pipeline_section)
+        close_action = QAction("Close File", self)
+        close_action.setShortcut(QKeySequence.StandardKey.Close)
+        close_action.triggered.connect(self.files.close_file)
+        file_menu.addAction(close_action)
 
-        # View section
-        view_section = Gio.Menu()
-        view_section.append("Show Visualization", "win.show_viz")
-        view_section.append("Show Code", "win.show_code")
-        menu.append_section("View", view_section)
+        file_menu.addSeparator()
 
-        # App section
-        app_section = Gio.Menu()
-        app_section.append("Preferences...", "win.open_prefs")
-        menu.append_section("App", app_section)
+        export_action = QAction("Export Processed...", self)
+        export_action.triggered.connect(lambda checked: self.files.export_file())
+        file_menu.addAction(export_action)
 
-        return menu
+        file_menu.addSeparator()
 
-    def register_actions(self):
-        """Register Gio.SimpleAction objects on the window."""
-        actions = [
-            ("open_file", self.files.open_file),
-            ("close_file", self.files.close_file),
-            ("export_file", lambda *_: self.files.export_file()),
-            ("new_pipeline", self.files.new_pipeline),
-            ("save_pipeline", self.files.save_pipeline),
-            ("load_pipeline", self.files.load_pipeline),
-            ("run_all", lambda *_: self.runner.run_all()),
-            ("open_browser", self.nav.open_browser),
-            ("show_viz", lambda *_: self.set_view_mode("viz")),
-            ("show_code", lambda *_: self.set_view_mode("code")),
-            ("open_prefs", lambda *_: self.open_preferences()),
-        ]
-        for name, cb in actions:
-            action = Gio.SimpleAction.new(name, None)
-            action.connect("activate", cb)
-            self.window.add_action(action)
+        prefs_action = QAction("Preferences...", self)
+        prefs_action.triggered.connect(self.open_preferences)
+        file_menu.addAction(prefs_action)
 
-    def rebuild_recent_actions(self):
-        """Rebuild the recent files menu actions and menu model."""
-        # Remove old recent actions
-        for i in range(20):
-            try:
-                self.window.lookup_action(f"open_recent_{i}")
-                self.window.remove_action(f"open_recent_{i}")
-            except Exception as e:
-                logger.debug(f"No existing action open_recent_{i} to remove: {e}")
+        file_menu.addSeparator()
 
-        # Rebuild menu model
-        while self.recent_submenu.get_n_items() > 0:
-            self.recent_submenu.remove(0)
+        quit_action = QAction("Quit", self)
+        quit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        quit_action.triggered.connect(self.close)
+        file_menu.addAction(quit_action)
 
-        if not self.state.recent_fif:
-            self.recent_submenu.append("No recent files", None)
-        else:
-            for i, path in enumerate(self.state.recent_fif):
-                label = Path(path).name
-                self.recent_submenu.append(label, f"win.open_recent_{i}")
-                action = Gio.SimpleAction.new(f"open_recent_{i}", None)
+        pipeline_menu = menubar.addMenu("Pipeline")
 
-                def _make_cb(p):
-                    return lambda *_: self.files.load_data_path(p)
+        new_action = QAction("New Pipeline", self)
+        new_action.setShortcut(QKeySequence.StandardKey.New)
+        new_action.triggered.connect(self.files.new_pipeline)
+        pipeline_menu.addAction(new_action)
 
-                action.connect("activate", _make_cb(path))
-                self.window.add_action(action)
+        save_action = QAction("Save Pipeline...", self)
+        save_action.setShortcut(QKeySequence.StandardKey.Save)
+        save_action.triggered.connect(self.files.save_pipeline)
+        pipeline_menu.addAction(save_action)
 
-    # -------- Main UI setup --------
+        load_action = QAction("Load Pipeline...", self)
+        load_action.triggered.connect(self.files.load_pipeline)
+        pipeline_menu.addAction(load_action)
 
-    def setup_ui(self, outer: Gtk.Box):
-        """Build the resizable paned layout: action list left, view stack right."""
-        paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        paned.set_hexpand(True)
-        paned.set_vexpand(True)
-        outer.append(paned)
+        pipeline_menu.addSeparator()
 
-        # ---- Left panel: action list ----
-        left_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        left_panel.set_size_request(240, -1)
-        left_panel.set_margin_start(8)
-        left_panel.set_margin_end(4)
-        left_panel.set_margin_top(8)
-        left_panel.set_margin_bottom(8)
+        run_all_action = QAction("Run All", self)
+        run_all_action.setShortcut(QKeySequence("Ctrl+Shift+Return"))
+        run_all_action.triggered.connect(self.runner.run_all)
+        pipeline_menu.addAction(run_all_action)
 
-        paned.set_start_child(left_panel)
-        paned.set_position(290)
+    # -------- UI setup --------
 
-        # Scrolled action list
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_vexpand(True)
-        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+    def setup_ui(self):
+        """Build the central widget: action list on the left, view stack on the right."""
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QHBoxLayout(central)
 
-        self.action_list = Gtk.ListBox()
-        self.action_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
-        self.action_list.set_activate_on_single_click(False)
-        self.action_list.connect("row-selected", self.action_ctrl.on_action_row_selected)
-        self.action_list.connect("row-activated", self.action_ctrl.on_action_row_activated)
-        scrolled.set_child(self.action_list)
-        left_panel.append(scrolled)
+        left_panel = QWidget()
+        left_panel.setMaximumWidth(300)
+        left_panel.setMinimumWidth(240)
+        left_layout = QVBoxLayout(left_panel)
 
-        # Move up/down buttons
-        move_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        left_layout.addWidget(QLabel("<b>Actions</b>"))
 
-        self.btn_move_up = Gtk.Button(label="▲")
-        self.btn_move_up.set_size_request(40, -1)
-        self.btn_move_up.connect("clicked", lambda _: self.action_ctrl.move_action(-1))
-        self.btn_move_up.set_sensitive(False)
-        move_row.append(self.btn_move_up)
+        self.btn_add_action = QPushButton("+ Add Action")
+        self.btn_add_action.clicked.connect(self.action_ctrl.add_action)
+        left_layout.addWidget(self.btn_add_action)
 
-        self.btn_move_down = Gtk.Button(label="▼")
-        self.btn_move_down.set_size_request(40, -1)
-        self.btn_move_down.connect("clicked", lambda _: self.action_ctrl.move_action(1))
-        self.btn_move_down.set_sensitive(False)
-        move_row.append(self.btn_move_down)
+        self.action_list = ActionListWidget()
+        self.action_list.itemClicked.connect(self.action_ctrl.on_action_clicked)
+        self.action_list.itemDoubleClicked.connect(self.action_ctrl.on_action_double_clicked)
+        self.action_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.action_list.customContextMenuRequested.connect(self.action_ctrl.show_action_context_menu)
+        self.action_list.items_reordered.connect(self.action_ctrl.move_action_to)
+        left_layout.addWidget(self.action_list)
 
-        left_panel.append(move_row)
+        move_btns = QHBoxLayout()
 
-        # ---- Right panel: view stack ----
-        right_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        right_panel.set_hexpand(True)
-        right_panel.set_vexpand(True)
-        paned.set_end_child(right_panel)
+        self.btn_move_up = QPushButton("\u25b2")
+        self.btn_move_up.setFixedWidth(40)
+        self.btn_move_up.clicked.connect(lambda: self.action_ctrl.move_action(-1))
+        self.btn_move_up.setEnabled(False)
+        move_btns.addWidget(self.btn_move_up)
 
-        # Toggle row: Visualization / Code
-        toggle_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        toggle_row.set_margin_start(8)
-        toggle_row.set_margin_top(6)
-        toggle_row.set_margin_bottom(4)
+        self.btn_move_down = QPushButton("\u25bc")
+        self.btn_move_down.setFixedWidth(40)
+        self.btn_move_down.clicked.connect(lambda: self.action_ctrl.move_action(1))
+        self.btn_move_down.setEnabled(False)
+        move_btns.addWidget(self.btn_move_down)
 
-        self.tab_bar_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
-        self.tab_bar_box.add_css_class("linked")
-        self.tab_bar_box.set_margin_start(0)
-        self.tab_bar_box.set_margin_top(4)
-        self.tab_bar_box.set_margin_bottom(4)
+        move_btns.addStretch()
 
-        self.btn_viz = Gtk.ToggleButton(label="Visualization")
-        self.btn_viz.add_css_class("view-toggle-viz")
-        self.btn_viz.set_active(True)
-        self.btn_viz.connect("clicked", lambda _: self.set_view_mode("viz"))
-        self.tab_bar_box.append(self.btn_viz)
+        left_layout.addLayout(move_btns)
 
-        self.btn_code = Gtk.ToggleButton(label="Code")
-        self.btn_code.add_css_class("view-toggle-code")
-        self.btn_code.connect("clicked", lambda _: self.set_view_mode("code"))
-        self.tab_bar_box.append(self.btn_code)
+        self.btn_run = QPushButton("\u25b6  Run All")
+        self.btn_run.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #2E7D32;
+                color: white;
+                font-weight: bold;
+                padding: 8px;
+                border: none;
+                border-radius: 5px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #388E3C;
+            }
+            QPushButton:pressed {
+                background-color: #1B5E20;
+            }
+        """
+        )
+        self.btn_run.clicked.connect(self.runner.run_all)
+        left_layout.addWidget(self.btn_run)
 
-        toggle_row.append(self.tab_bar_box)
+        main_layout.addWidget(left_panel)
 
-        right_panel.append(toggle_row)
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
 
-        # View stack
-        self.view_stack = Gtk.Stack()
-        self.view_stack.set_hexpand(True)
-        self.view_stack.set_vexpand(True)
-        self.view_stack.set_transition_type(Gtk.StackTransitionType.NONE)
-        right_panel.append(self.view_stack)
+        toggle_layout = QHBoxLayout()
+        self.btn_viz = QPushButton("Visualization")
+        self.btn_viz.setCheckable(True)
+        self.btn_viz.setChecked(True)
+        self.btn_viz.clicked.connect(lambda: self.set_view_mode("viz"))
+        toggle_layout.addWidget(self.btn_viz)
 
-        # Visualization panel
+        self.btn_code = QPushButton("Code")
+        self.btn_code.setCheckable(True)
+        self.btn_code.clicked.connect(lambda: self.set_view_mode("code"))
+        toggle_layout.addWidget(self.btn_code)
+
+        toggle_layout.addStretch()
+        right_layout.addLayout(toggle_layout)
+
+        self.view_stack = QStackedWidget()
+
         self.viz_panel = VisualizationPanel()
-        self.view_stack.add_named(self.viz_panel, "viz")
+        self.view_stack.addWidget(self.viz_panel)
 
-        # Code panel
         self.code_panel = CodePanel()
         self.code_panel.on_external_change = self.files.on_external_code_change
         self.code_panel.on_manual_edit = self.action_ctrl.on_manual_code_edit
-        self.view_stack.add_named(self.code_panel, "code")
+        self.view_stack.addWidget(self.code_panel)
 
-        # Register window actions and recent files
-        self.register_actions()
-        self.rebuild_recent_actions()
+        right_layout.addWidget(self.view_stack)
+        main_layout.addWidget(right_panel, 1)
 
     def setup_shortcuts(self):
-        """Register global keyboard shortcuts."""
-        sc = Gtk.ShortcutController()
-        sc.set_scope(Gtk.ShortcutScope.GLOBAL)
+        """Register global keyboard shortcuts not covered by menu accelerators."""
+        shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
+        shortcut.activated.connect(self.runner.run_all)
 
-        # Ctrl+Return: run all
-        sc.add_shortcut(
-            Gtk.Shortcut(
-                trigger=Gtk.ShortcutTrigger.parse_string("<Control>Return"),
-                action=Gtk.CallbackAction.new(lambda *_: self.runner.run_all() or True),
-            )
-        )
-        # Ctrl+Shift+Return: run all
-        sc.add_shortcut(
-            Gtk.Shortcut(
-                trigger=Gtk.ShortcutTrigger.parse_string("<Control><Shift>Return"),
-                action=Gtk.CallbackAction.new(lambda *_: self.runner.run_all() or True),
-            )
-        )
-        # Ctrl+O: open file
-        sc.add_shortcut(
-            Gtk.Shortcut(
-                trigger=Gtk.ShortcutTrigger.parse_string("<Control>o"),
-                action=Gtk.CallbackAction.new(lambda *_: self.files.open_file() or True),
-            )
-        )
-        # Ctrl+N: new pipeline
-        sc.add_shortcut(
-            Gtk.Shortcut(
-                trigger=Gtk.ShortcutTrigger.parse_string("<Control>n"),
-                action=Gtk.CallbackAction.new(lambda *_: self.files.new_pipeline() or True),
-            )
-        )
-        # Ctrl+S: save pipeline
-        sc.add_shortcut(
-            Gtk.Shortcut(
-                trigger=Gtk.ShortcutTrigger.parse_string("<Control>s"),
-                action=Gtk.CallbackAction.new(lambda *_: self.files.save_pipeline() or True),
-            )
-        )
-        # Ctrl+B: open browser
-        sc.add_shortcut(
-            Gtk.Shortcut(
-                trigger=Gtk.ShortcutTrigger.parse_string("<Control>b"),
-                action=Gtk.CallbackAction.new(lambda *_: self.nav.open_browser() or True),
-            )
-        )
-        self.window.add_controller(sc)
 
     # -------- Toggle between code/viz --------
 
     def set_view_mode(self, mode: str):
-        """Switch the right panel between visualization and code editor."""
+        """Switch the right panel between visualization and code editor.
+
+        Args:
+            mode: "viz" to show the visualization panel, or "code" to show the code editor.
+        """
         if mode == "viz":
-            self.view_stack.set_visible_child_name("viz")
-            self.btn_viz.set_active(True)
-            self.btn_code.set_active(False)
+            self.view_stack.setCurrentWidget(self.viz_panel)
+            self.btn_viz.setChecked(True)
+            self.btn_code.setChecked(False)
         else:
-            self.view_stack.set_visible_child_name("code")
-            self.btn_code.set_active(True)
-            self.btn_viz.set_active(False)
+            self.view_stack.setCurrentWidget(self.code_panel)
+            self.btn_viz.setChecked(False)
+            self.btn_code.setChecked(True)
             self.update_code()
 
-    # -------- UI update helpers --------
 
-    def set_status(self, message: str):
-        """Update the status bar text."""
-        self.status_label.set_text(message)
+    # -------- UI update --------
 
     def update_action_list(self, sync_code: bool = True):
-        """Rebuild the action list widget and synchronize dependent UI elements."""
-        # Remove all existing rows
-        while True:
-            row = self.action_list.get_row_at_index(0)
-            if row is None:
-                break
-            self.action_list.remove(row)
+        """Rebuild the action list widget and synchronize dependent UI elements.
 
+        Repopulates action_list from state.actions, refreshes the step combo in the visualization panel,
+        and optionally regenerates the code panel.
+
+        Args:
+            sync_code: When True, also call update_code(). Pass False when the code panel already reflects the
+            current state to avoid a feedback loop (e.g. after a manual code edit).
+        """
+        self.action_list.clear()
         pipeline_type = DataType.RAW
 
-        def add_header(dt: DataType):
-            row = Gtk.ListBoxRow()
-            row.set_selectable(False)
-            lbl = Gtk.Label(label=f"── {dt.label} ──")
-            lbl.set_xalign(0.5)
-            lbl.add_css_class("type-header")
-            lbl.set_margin_top(4)
-            lbl.set_margin_bottom(4)
-            row.set_child(lbl)
-            setattr(row, "_action_row", -1)
-            self.action_list.append(row)
-
         if self.state.actions:
-            add_header(DataType.RAW)
+            self.action_list.addItem(make_type_header(DataType.RAW))
 
         for i, action in enumerate(self.state.actions):
             action_def = get_action_by_id(action.action_id)
@@ -428,93 +327,48 @@ class MainWindow:
             output_type = action_def.output_type if action_def else DataType.RAW
             is_mismatch = input_type != DataType.ANY and input_type != pipeline_type
 
-            item_widget = ActionListItem(
-                i + 1,
-                action,
-                type_mismatch=is_mismatch,
-                run_clicked_cb=self.runner.run_action_at,
-            )
-
-            row = Gtk.ListBoxRow()
-            setattr(row, "_action_row", i)
-            row.set_child(item_widget)
-
-            # Right-click context menu
-            gesture = Gtk.GestureClick()
-            gesture.set_button(3)  # right button
-            _i = i
-            _row = row
-            gesture.connect(
-                "pressed",
-                lambda g, n, x, y, r=_row, ri=_i: (
-                    g.set_state(Gtk.EventSequenceState.CLAIMED),
-                    self.action_ctrl.show_action_context_menu(ri, x, y, r),
-                ),
-            )
-            row.add_controller(gesture)
-
-            # Drag-and-drop reordering
-            drag_source = Gtk.DragSource.new()
-            drag_source.set_actions(Gdk.DragAction.MOVE)
-            drag_source.connect(
-                "prepare",
-                lambda src, x, y, ri=i: Gdk.ContentProvider.new_for_value(GLib.Variant("i", ri)),
-            )
-            drag_source.connect(
-                "drag-begin",
-                lambda src, drag, w=item_widget: src.set_icon(Gtk.WidgetPaintable.new(w), 0, 0),
-            )
-            row.add_controller(drag_source)
-
-            drop_target = Gtk.DropTarget.new(GLib.Variant, Gdk.DragAction.MOVE)
-            drop_target.connect(
-                "drop",
-                lambda target, value, x, y, dest=i: (
-                    self.action_ctrl.move_action_from_to(value.get_int32(), dest)
-                    if isinstance(value, GLib.Variant) and value.get_int32() != dest
-                    else None
-                ) or True,
-            )
-            row.add_controller(drop_target)
-
-            self.action_list.append(row)
+            item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole, i)
+            widget = ActionListItem(i + 1, action, type_mismatch=is_mismatch)
+            item.setSizeHint(widget.sizeHint())
+            widget.size_changed.connect(lambda it=item, w=widget: it.setSizeHint(w.sizeHint()))
+            widget.run_clicked.connect(self.runner.run_action_at)
+            self.action_list.addItem(item)
+            self.action_list.setItemWidget(item, widget)
 
             if not is_mismatch:
                 new_type = output_type
                 if new_type != DataType.ANY and new_type != pipeline_type:
                     pipeline_type = new_type
-                    add_header(pipeline_type)
+                    self.action_list.addItem(make_type_header(pipeline_type))
 
+        self.viz_panel.update_step_list(self.state.actions)
         if sync_code:
             self.update_code()
         self.update_button_states()
 
     def get_selected_action_row(self) -> int:
         """Return the action index of the currently selected list item, or -1."""
-        row = self.action_list.get_selected_row()
-        if row is None:
+        item = self.action_list.currentItem()
+        if item is None:
             return -1
-        idx = getattr(row, "_action_row", -1)
+        idx = item.data(Qt.ItemDataRole.UserRole)
         return idx if isinstance(idx, int) and idx >= 0 else -1
 
     def set_selected_action_row(self, action_row: int):
-        """Select the list item corresponding to action_row."""
-        i = 0
-        while True:
-            row = self.action_list.get_row_at_index(i)
-            if row is None:
-                break
-            if getattr(row, "_action_row", -1) == action_row:
-                self.action_list.select_row(row)
+        """Select the given action list item."""
+        for i in range(self.action_list.count()):
+            item = self.action_list.item(i)
+            if item and item.data(Qt.ItemDataRole.UserRole) == action_row:
+                self.action_list.setCurrentRow(i)
                 return
-            i += 1
 
     def update_button_states(self):
         """Enable or disable the move-up and move-down buttons based on selection."""
         row = self.get_selected_action_row()
         has_selection = row >= 0
-        self.btn_move_up.set_sensitive(has_selection and row > 0)
-        self.btn_move_down.set_sensitive(has_selection and row < len(self.state.actions) - 1)
+        self.btn_move_up.setEnabled(has_selection and row > 0)
+        self.btn_move_down.setEnabled(has_selection and row < len(self.state.actions) - 1)
 
     def update_code(self):
         """Regenerate the full pipeline script and push it to the code panel."""
@@ -522,56 +376,66 @@ class MainWindow:
         self.code_panel.set_code(code)
         self.files.auto_save()
 
-    def update_visualization(self, row: int = -1):
-        """Refresh the visualization panel.
+    def update_visualization(self):
+        """Refresh the visualization panel for the currently selected pipeline step."""
+        from mnetape.core.models import ICASolution
 
-        If row >= 0, show the data stored after that action (or raw_original if not yet
-        computed). If row == -1 (default), show the latest computed data.
-        """
-        if row >= 0:
-            stored = self.state.data_states[row] if row < len(self.state.data_states) else None
-            if stored is None:
-                data_to_show = self.state.raw_original
-            elif isinstance(stored, ICASolution):
+        step = self.viz_panel.current_step
+
+        if step == 0:
+            data_to_show = self.state.raw_original
+        elif 0 < step <= len(self.state.data_states):
+            stored = self.state.data_states[step - 1]
+            # ICASolution slots show the raw contained within; None slots fall back to original
+            if isinstance(stored, ICASolution):
                 data_to_show = stored.raw
             else:
-                data_to_show = stored
+                data_to_show = stored if stored is not None else self.state.raw_original
         else:
             data_to_show = self.state.raw_original
-            for i in range(len(self.state.data_states) - 1, -1, -1):
-                candidate = self.state.data_states[i]
-                if candidate is not None:
-                    data_to_show = candidate.raw if isinstance(candidate, ICASolution) else candidate
-                    break
 
-        self.viz_panel.update_plots(data_to_show)
+        self.viz_panel.update_plots(data_to_show, step, len(self.state.data_states))
         self.update_raw_info(data_to_show)
 
     def update_raw_info(self, data):
-        """Update the raw info label in the status bar."""
+        import mne
+
         if data is None:
-            self.raw_info_label.set_text("")
+            self.raw_info_label.setText("")
             return
         name = self.state.data_filepath.name if self.state.data_filepath else ""
         n_ch = len(data.ch_names)
         sfreq = data.info["sfreq"]
         if isinstance(data, mne.Epochs):
             n_epochs = len(data)
-            self.raw_info_label.set_text(f"{name}  ·  {n_ch} ch  ·  {sfreq:.0f} Hz  ·  {n_epochs} epochs")
+            self.raw_info_label.setText(f"{name}  ·  {n_ch} ch  ·  {sfreq:.0f} Hz  ·  {n_epochs} epochs")
         elif isinstance(data, mne.Evoked):
             n_ave = getattr(data, "nave", 0)
             dur = data.times[-1] - data.times[0] if len(data.times) else 0.0
-            self.raw_info_label.set_text(
+            self.raw_info_label.setText(
                 f"{name}  ·  {n_ch} ch  ·  {sfreq:.0f} Hz  ·  {dur:.3f} s  ·  nave={n_ave}"
             )
         else:
             dur = data.times[-1]
-            self.raw_info_label.set_text(f"{name}  ·  {n_ch} ch  ·  {sfreq:.0f} Hz  ·  {dur:.1f} s")
+            self.raw_info_label.setText(f"{name}  ·  {n_ch} ch  ·  {sfreq:.0f} Hz  ·  {dur:.1f} s")
 
-    # -------- Code generation and execution --------
+    # --------- Code generation and execution ---------
 
     def get_execution_code(self, index: int, action) -> tuple[str, str]:
-        """Return (call_site, func_defs) for executing a single action."""
+        """Return (call_site, func_defs) for executing a single action.
+
+        For custom/inline actions, func_defs is empty and call_site contains the raw code.
+        For standard actions, generates the call-site and the action's function definition fresh.
+
+        Args:
+            index: Position of the action in the pipeline.
+            action: The ActionConfig whose code to generate.
+
+        Returns:
+            Tuple of (call_site_str, func_defs_str).
+        """
+        from mnetape.actions.registry import get_action_by_id
+
         if action.action_id == CUSTOM_ACTION_ID:
             return action.custom_code or "", ""
 
@@ -582,14 +446,14 @@ class MainWindow:
         context_type = self.runner.get_data_type_at(index)
 
         if action.is_custom and action.custom_code:
-            func_defs = action_def.build_function_def_with_body(
-                action.action_id, action.custom_code, context_type
-            )
+            # Custom-edited body: wrap in canonical signature so call site still works
+            func_defs = action_def.build_function_def_with_body(action.action_id, action.custom_code, context_type)
             params = {**action_def.default_params(), **action.params}
             adv = action.advanced_params or None
             call_site = action_def.build_call_site(action.action_id, params, adv, context_type)
             return call_site, func_defs
 
+        # Standard action: generate function def + call site using action_id as func name
         params = {**action_def.default_params(), **action.params}
         adv = action.advanced_params or None
         func_defs = action_def.build_function_def(action.action_id, context_type)
@@ -603,24 +467,23 @@ class MainWindow:
         action = self.state.actions[row]
         if action.result is None:
             return
+        from mnetape.actions.registry import get_action_title
         self.show_action_result(action.result, get_action_title(action))
 
     def show_action_result(self, result, title: str):
         """Open the ActionResultDialog for a given result and title."""
-        dlg = ActionResultDialog(result, title, parent_window=self.window)
+
+        dlg = ActionResultDialog(result, title, parent=self)
         self.open_dialogs.append(dlg)
+        dlg.destroyed.connect(lambda: self.open_dialogs.remove(dlg) if dlg in self.open_dialogs else None)
         dlg.show()
+        dlg.raise_()
 
     def open_preferences(self):
-        """Open the preferences' dialog."""
-        dlg = PreferencesDialog(self.state, parent_window=self.window)
+        from mnetape.gui.dialogs.preferences_dialog import PreferencesDialog
+        dlg = PreferencesDialog(self.state, parent=self)
         dlg.exec()
 
-    def show(self):
-        """Present the main window."""
-        self.window.present()
-
-    def on_close_request(self, _window) -> bool:
+    def closeEvent(self, event):
         self.state.data_states.close()
-        self.app.quit()
-        return False
+        super().closeEvent(event)

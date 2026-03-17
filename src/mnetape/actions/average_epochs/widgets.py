@@ -2,48 +2,46 @@
 
 from __future__ import annotations
 
-
 import mne
-from gi.repository import Gtk
+from PyQt6.QtCore import pyqtSignal
 
 from mnetape.actions.base import ParamWidgetBinding
+from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QWidget
 
-class EventKeyWidget(Gtk.Box):
+
+class EventKeyWidget(QWidget):
     """Widget for selecting an epoch event key, or averaging all events."""
 
-    def __init__(self, event_keys: list[str], current_value: str | None):
-        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-        self.set_hexpand(True)
+    value_changed = pyqtSignal()
 
-        # Items
-        self.items = ["All events"] + list(event_keys)
-        self.values: list[str | None] = [None] + list(event_keys)
+    def __init__(self, event_keys: list[str], current_value: str | None, parent=None):
+        super().__init__(parent)
+        self.combo = QComboBox(self)
+        self.combo.addItem("All events", None)
 
-        model = Gtk.StringList(strings=self.items)
-        self.combo = Gtk.DropDown(model=model)
-        self.combo.set_hexpand(True)
-        self.append(self.combo)
+        for key in event_keys:
+            self.combo.addItem(key, key)
 
-        # Select current value
         idx = 0
         if current_value:
-            try:
-                idx = self.values.index(current_value)
-            except ValueError:
-                idx = 0
-        self.combo.set_selected(idx)
+            found = self.combo.findData(current_value)
+            if found >= 0:
+                idx = found
+        self.combo.setCurrentIndex(idx)
+        self.combo.currentIndexChanged.connect(lambda _: self.value_changed.emit())
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.combo)
 
     def get_value(self) -> str | None:
-        idx = self.combo.get_selected()
-        if idx == Gtk.INVALID_LIST_POSITION or idx < 0:
-            return None
-        return self.values[idx]
+        value = self.combo.currentData()
+        return str(value) if value else None
 
-    def connect_value_changed(self, cb):
-        self.combo.connect("notify::selected", lambda *_: cb())
 
-def event_key_factory(current_value, raw):
+def event_key_factory(current_value, raw, parent):
     """Param widget factory for selecting a single event key."""
+
     event_keys: list[str] = []
     hint_text = ""
 
@@ -54,18 +52,20 @@ def event_key_factory(current_value, raw):
     else:
         hint_text = "Run epoching first to select an event condition."
 
-    value_widget = EventKeyWidget(event_keys, current_value)
+    value_widget = EventKeyWidget(event_keys, current_value, parent)
 
-    container = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-    container.set_hexpand(True)
-    container.append(value_widget)
+    container = QWidget(parent)
+    layout = QHBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.addWidget(value_widget, 1)
 
     if hint_text:
-        hint = Gtk.Label(label=hint_text)
-        hint.add_css_class("dim-label")
-        container.append(hint)
+        hint = QLabel(hint_text, container)
+        hint.setStyleSheet("color: #777777;")
+        layout.addWidget(hint)
 
     return container, value_widget
+
 
 # -------- Widget bindings --------
 

@@ -1,309 +1,317 @@
 """Dialog for editing action parameters.
 
-ActionEditor is an Adw.Dialog that builds a form from an action's params_schema,
-an optional advanced params section, and a live code-preview panel.
+ActionEditor is a QDialog that builds a form from an action's params_schema, an optional advanced params section,
+and a live code-preview panel. It supports both full-action editing and step-level editing.
 """
 
-from __future__ import annotations
-
-import inspect
 import logging
 
-from gi.repository import Adw, Gtk
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import (
+    QAbstractSpinBox,
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QFrame,
+    QGraphicsOpacityEffect,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+import mne
 
 from mnetape.actions.registry import get_action_by_id, get_action_title
 from mnetape.core.codegen import generate_action_code
 from mnetape.core.models import CUSTOM_ACTION_ID, ActionConfig, ActionStatus, DataType
-from mnetape.gui.dialogs.base import ModalDialog
-from mnetape.gui.widgets import create_code_preview
+
 
 logger = logging.getLogger(__name__)
 
-# -------- Widget helpers --------
 
-class NullableWidget(Gtk.Box):
+# -------- Widget creation helpers --------
+
+
+class NullableWidget(QWidget):
     """A wrapper widget that adds a checkbox to enable/disable a param widget.
 
     When the checkbox is unchecked, the inner widget is disabled and get_value() returns None.
+    When checked, returns the inner widget's current value.
     """
 
-    def __init__(self, inner: Gtk.Widget, has_value: bool):
-        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+    value_changed = pyqtSignal()
+
+    def __init__(self, inner: QWidget, has_value: bool, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(has_value)
         self.inner = inner
-        self.value_changed_cbs: list = []
 
-        self.checkbox = Gtk.CheckButton()
-        self.checkbox.set_active(has_value)
-        inner.set_sensitive(has_value)
-        if not has_value:
-            inner.add_css_class("dim-widget")
+        self.opacity = QGraphicsOpacityEffect()
+        self.opacity.setOpacity(1.0 if has_value else 0.35)
+        inner.setGraphicsEffect(self.opacity)
+        inner.setEnabled(has_value)
 
-        self.checkbox.connect("toggled", self.on_toggle)
-        self.append(self.checkbox)
-        self.append(inner)
+        self.checkbox.toggled.connect(self.on_toggle)
+        self.checkbox.toggled.connect(lambda _: self.value_changed.emit())
 
-        # Re-emit value changes from inner widget
-        connect_inner_signal(inner, lambda: self.emit_changed())
+        if isinstance(inner, (QSpinBox, QDoubleSpinBox)):
+            inner.valueChanged.connect(self.value_changed)
+        elif isinstance(inner, QComboBox):
+            inner.currentTextChanged.connect(self.value_changed)
+        elif isinstance(inner, QCheckBox):
+            inner.stateChanged.connect(self.value_changed)
+        elif isinstance(inner, QLineEdit):
+            inner.textChanged.connect(self.value_changed)
 
-    def on_toggle(self, _cb):
-        checked = self.checkbox.get_active()
-        self.inner.set_sensitive(checked)
-        if checked:
-            self.inner.remove_css_class("dim-widget")
-        else:
-            self.inner.add_css_class("dim-widget")
-        self.emit_changed()
+        layout.addWidget(self.checkbox)
+        layout.addWidget(inner, 1)
 
-    def emit_changed(self):
-        for cb in self.value_changed_cbs:
-            cb()
-
-    def connect_value_changed(self, cb):
-        self.value_changed_cbs.append(cb)
+    def on_toggle(self, checked: bool):
+        self.inner.setEnabled(checked)
+        self.opacity.setOpacity(1.0 if checked else 0.35)
 
     def get_value(self):
-        if not self.checkbox.get_active():
+        if not self.checkbox.isChecked():
             return None
         return get_widget_value(self.inner)
 
-def connect_inner_signal(widget: Gtk.Widget, slot):
-    """Connect the value-changed signal of a param widget to a slot."""
-    if isinstance(widget, Gtk.SpinButton):
-        widget.connect("value-changed", lambda *_: slot())
-    elif isinstance(widget, Gtk.DropDown):
-        widget.connect("notify::selected", lambda *_: slot())
-    elif isinstance(widget, Gtk.CheckButton):
-        widget.connect("toggled", lambda *_: slot())
-    elif isinstance(widget, Gtk.Entry):
-        widget.connect("changed", lambda *_: slot())
-    elif hasattr(widget, "connect_value_changed"):
-        widget.connect_value_changed(slot)
 
-def create_widget_for_param(param_def: dict, current_value) -> Gtk.Widget:
-    """Create an appropriate GTK widget for a single parameter definition.
+def create_widget_for_param(param_def: dict, current_value):
+    """Create an appropriate Qt widget for a single parameter definition.
+
+    Selects the widget type and adapts accordingly for numeric ranges, choices, etc.
+    Falls back to a text input for unrecognized types.
 
     Args:
         param_def: Parameter metadata dict.
         current_value: The value to pre-populate the widget with.
 
     Returns:
-        A configured Gtk.Widget, or None if the type is not supported.
+        A configured Qt widget, or None if the type is not supported.
     """
     nullable = param_def.get("nullable", False)
+    # When current_value is None and the param is nullable, display the default in the widget
     display_value = current_value if current_value is not None else param_def.get("default")
     ptype = param_def.get("type", "text")
 
     if ptype == "float":
-        adj = Gtk.Adjustment(
-            value=0.0,
-            lower=param_def.get("min", -999999.0),
-            upper=param_def.get("max", 999999.0),
-            step_increment=10 ** (-param_def.get("decimals", 2)),
-            page_increment=1.0,
-        )
-        widget = Gtk.SpinButton(adjustment=adj, climb_rate=1.0, digits=param_def.get("decimals", 2))
+        widget = QDoubleSpinBox()
+        widget.setRange(param_def.get("min", -999999), param_def.get("max", 999999))
+        widget.setDecimals(param_def.get("decimals", 2))
+        widget.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
         try:
-            widget.set_value(float(display_value) if display_value is not None else 0.0)
+            widget.setValue(float(display_value) if display_value is not None else 0.0)
         except (TypeError, ValueError):
-            widget.set_value(float(param_def.get("default", 0.0)))
+            widget.setValue(param_def.get("default", 0.0))
         inner = widget
 
     elif ptype == "int":
-        adj = Gtk.Adjustment(
-            value=0.0,
-            lower=param_def.get("min", -999999),
-            upper=param_def.get("max", 999999),
-            step_increment=1.0,
-            page_increment=10.0,
-        )
-        widget = Gtk.SpinButton(adjustment=adj, climb_rate=1.0, digits=0)
+        widget = QSpinBox()
+        widget.setRange(param_def.get("min", -999999), param_def.get("max", 999999))
+        widget.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
         try:
-            widget.set_value(int(display_value) if display_value is not None else 0)
+            widget.setValue(int(display_value) if display_value is not None else 0)
         except (TypeError, ValueError):
-            widget.set_value(int(param_def.get("default", 0)))
+            widget.setValue(param_def.get("default", 0))
         inner = widget
 
     elif ptype == "choice":
-        choices = param_def.get("choices", [])
-        model = Gtk.StringList(strings=choices)
-        widget = Gtk.DropDown(model=model)
-        try:
-            idx = choices.index(str(display_value))
-            widget.set_selected(idx)
-        except (ValueError, TypeError):
-            widget.set_selected(0)
+        widget = QComboBox()
+        widget.addItems(param_def.get("choices", []))
+        widget.setCurrentText(str(display_value))
         inner = widget
 
     elif ptype == "bool":
-        widget = Gtk.CheckButton()
-        widget.set_active(bool(display_value))
+        widget = QCheckBox()
+        widget.setChecked(bool(display_value))
         inner = widget
 
     else:
         # text / fallback
-        widget = Gtk.Entry()
-        widget.set_text(str(display_value) if display_value is not None else "")
+        widget = QLineEdit(str(display_value) if display_value is not None else "")
         inner = widget
 
     if nullable:
         return NullableWidget(inner, has_value=(current_value is not None))
     return widget
 
-def get_widget_value(widget: Gtk.Widget):
+
+def get_widget_value(widget):
     """Extract the current value from a param widget.
 
     Args:
-        widget: A GTK widget created by create_widget_for_param.
+        widget: A Qt widget created by create_widget_for_param.
 
     Returns:
-        The widget's current value in its native Python type.
+        The widget's current value in its native Python type, or None for unrecognized widget types.
     """
-    if isinstance(widget, NullableWidget):
-        return widget.get_value()
-    if isinstance(widget, Gtk.SpinButton):
-        if widget.get_digits() == 0:
-            return int(widget.get_value())
-        return widget.get_value()
-    if isinstance(widget, Gtk.DropDown):
-        selected = widget.get_selected()
-        model = widget.get_model()
-        if model is not None and selected != Gtk.INVALID_LIST_POSITION:
-            item = model.get_item(selected)
-            if hasattr(item, "get_string"):
-                return item.get_string()
-        return ""
-    if isinstance(widget, Gtk.CheckButton):
-        return widget.get_active()
-    if isinstance(widget, Gtk.Entry):
-        return widget.get_text()
-    # Generic custom widget
+    # Custom get_value() takes priority over built-in type detection
     if hasattr(widget, "get_value") and callable(widget.get_value):
         return widget.get_value()
+    if isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+        return widget.value()
+    if isinstance(widget, QComboBox):
+        return widget.currentText()
+    if isinstance(widget, QCheckBox):
+        return widget.isChecked()
+    if isinstance(widget, QLineEdit):
+        return widget.text()
     return None
 
-def connect_widget_signal(widget: Gtk.Widget, slot):
-    """Connect the value-changed signal of a param widget to a slot function."""
+
+def connect_widget_signal(widget, slot):
+    """Connect the value-changed signal of a param widget to a slot function.
+
+    Args:
+        widget: A Qt widget created by create_widget_for_param.
+        slot: Callable to invoke whenever the widget's value changes.
+    """
     if isinstance(widget, NullableWidget):
-        widget.connect_value_changed(slot)
-    else:
-        connect_inner_signal(widget, slot)
+        widget.value_changed.connect(slot)
+    elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+        widget.valueChanged.connect(slot)
+    elif isinstance(widget, QComboBox):
+        widget.currentTextChanged.connect(slot)
+    elif isinstance(widget, QCheckBox):
+        widget.stateChanged.connect(slot)
+    elif isinstance(widget, QLineEdit):
+        widget.textChanged.connect(slot)
+    elif hasattr(widget, "value_changed"):
+        widget.value_changed.connect(slot)
+
 
 # -------- Main dialog --------
 
-class ActionEditor(ModalDialog):
+class ActionEditor(QDialog):
     """Dialog for editing the parameters of a pipeline action.
 
-    Builds a dynamic form from the action's params_schema, with an optional
-    collapsible "Advanced" section. A read-only code preview updates live.
+    Builds a dynamic form from the action's params_schema, with an optional collapsible "Advanced" section
+    containing additional MNE function kwargs.
+    A read-only code preview updates in real time as parameters change.
 
-    This uses a modal Adw.Dialog (window-level) presented on a parent window.
-    Results are returned via the accepted/rejected pattern with a callback.
+    When step_idx is provided, only the parameters of that specific step are shown and returned.
 
     Args:
         action: The ActionConfig being edited.
-        raw: The current MNE Raw object, or None.
-        parent_window: The Adw.ApplicationWindow to present the dialog on.
-        context_type: DataType flowing into this action.
+        raw: The current MNE Raw object, used by param widget factories that need channel information.
+            May be None if no file is loaded.
+        parent: Optional parent widget.
     """
 
     def __init__(
         self,
         action: ActionConfig,
-        raw=None,
-        parent_window=None,
+        raw: mne.io.Raw | None = None,
+        parent=None,
         context_type: DataType | None = None,
     ):
+        super().__init__(parent)
         self.action = action
         self.raw = raw
         self.context_type = context_type
         self.action_def = get_action_by_id(action.action_id)
 
-        # Build dialog
-        self.dialog = Adw.Dialog()
-        self.dialog.set_title(f"Edit: {get_action_title(action)}")
-        self.dialog.set_content_width(440)
+        self.setWindowTitle(f"Edit: {get_action_title(action)}")
+        visible_params = self.action_def.params_schema if self.action_def else {}
 
-        toolbar_view = Adw.ToolbarView()
-        header = Adw.HeaderBar()
-        toolbar_view.add_top_bar(header)
+        self.setMinimumWidth(420)
 
-        self.dialog.set_child(toolbar_view)
+        # Cap dialog height at 85% of available screen height so "Show Advanced"
+        # never grows the dialog off-screen; the scroll area handles overflow.
+        if screen := QApplication.primaryScreen():
+            self.setMaximumHeight(int(screen.availableGeometry().height() * 0.85))
 
-        # Scrolled content
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scrolled.set_propagate_natural_height(True)
-        scrolled.set_max_content_height(600)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        content_box.set_margin_start(16)
-        content_box.set_margin_end(16)
-        content_box.set_margin_top(12)
-        content_box.set_margin_bottom(12)
-        scrolled.set_child(content_box)
-        toolbar_view.set_content(scrolled)
+        # Scrollable params section
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Always reserve scrollbar space so its appearance never reflows content.
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        scroll_inner = QWidget()
+        layout = QVBoxLayout(scroll_inner)
+        layout.setContentsMargins(12, 10, 12, 8)
+        layout.setSpacing(6)
+        scroll.setWidget(scroll_inner)
+        outer.addWidget(scroll, 1)
 
-        self.visible_params = self.action_def.params_schema if self.action_def else {}
-        self.param_rows: dict[str, Gtk.Widget] = {}  # row label widget
-        self.param_widgets: dict[str, Gtk.Widget] = {}
+        # Fixed bottom: code preview + doc links + buttons
+        bottom = QWidget()
+        bottom_layout = QVBoxLayout(bottom)
+        bottom_layout.setContentsMargins(12, 4, 12, 10)
+        bottom_layout.setSpacing(6)
+        outer.addWidget(bottom)
+
+        # Warn about custom code if present
+        self.custom_warning = None
+        self.btn_reset_custom = None
         self.custom_was_reset = False
-
-        # Custom code warning
         if action.is_custom and action.action_id != CUSTOM_ACTION_ID:
-            warning = Gtk.Label(label="⚠ This action has custom code. Editing parameters will reset it.")
-            warning.add_css_class("warning-label")
-            warning.set_wrap(True)
-            content_box.append(warning)
+            self.custom_warning = QLabel("⚠ This action has custom code. Editing parameters will reset it.")
+            self.custom_warning.setStyleSheet("color: orange; margin-bottom: 10px;")
+            layout.addWidget(self.custom_warning)
 
-            reset_btn = Gtk.Button(label="Reset to Original")
-            reset_btn.connect("clicked", self.on_reset_custom)
-            content_box.append(reset_btn)
-            self.reset_btn = reset_btn
-            self.warning_label = warning
-        else:
-            self.reset_btn = None
-            self.warning_label = None
+            self.btn_reset_custom = QPushButton("Reset to Original")
+            self.btn_reset_custom.clicked.connect(self.reset_custom)
+            layout.addWidget(self.btn_reset_custom)
 
-        # Doc label
-        if self.action_def and self.action_def.doc:
-            doc_label = Gtk.Label(label=self.action_def.doc)
-            doc_label.set_wrap(True)
-            doc_label.add_css_class("dim-label")
-            doc_label.set_xalign(0.0)
-            content_box.append(doc_label)
+        # Show action docstring if available
+        doc_label = QLabel(self.action_def.doc if self.action_def else "")
+        doc_label.setWordWrap(True)
+        doc_label.setStyleSheet("color: gray; margin-bottom: 10px;")
+        layout.addWidget(doc_label)
 
-        # Primary params form
-        self.form_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        for param_name, param_def in self.visible_params.items():
+        # Primary params
+        self.form = QFormLayout()
+        self.visible_params = visible_params
+        self.param_rows: dict[str, int] = {}
+        self.param_widgets: dict[str, QWidget] = {}
+        row_idx = 0
+
+        for param_name, param_def in visible_params.items():
             current_value = action.params.get(param_name, param_def.get("default"))
 
-            binding = next((b for b in self.action_def.widget_bindings if b.param_name == param_name), None) \
-                if self.action_def else None
+            # Look up a custom widget factory by param name
+            binding = next((b for b in self.action_def.widget_bindings if b.param_name == param_name), None)
             factory = binding.factory if binding else None
-            if factory is not None:
-                nparams = len(inspect.signature(factory).parameters)
-                custom = factory(current_value, self.raw, self.param_widgets) if nparams >= 3 \
-                    else factory(current_value, self.raw)
-            else:
-                custom = None
-
+            custom = factory(current_value, self.raw, self) if factory else None
             if custom is not None:
                 container, value_widget = custom
                 self.param_widgets[param_name] = value_widget
-                row = make_form_row(param_def.get("label", param_name), container)
+                self.form.addRow(param_def.get("label", param_name) + ":", container)
             else:
                 widget = create_widget_for_param(param_def, current_value)
                 self.param_widgets[param_name] = widget
-                row = make_form_row(param_def.get("label", param_name), widget)
+                self.form.addRow(param_def.get("label", param_name) + ":", widget)
 
-            self.param_rows[param_name] = row
-            self.form_box.append(row)
+            self.param_rows[param_name] = row_idx
+            row_idx += 1
 
-        content_box.append(self.form_box)
+        layout.addLayout(self.form)
 
         # Wire visibility
         controller_params: set[str] = set()
-        for pdef in self.visible_params.values():
+        for pdef in visible_params.values():
             vw = pdef.get("visible_when")
             if vw:
                 controller_params |= set(vw.keys())
@@ -314,88 +322,81 @@ class ActionEditor(ModalDialog):
         self.update_visibility()
 
         # Advanced params
-        self.advanced_widgets: dict[str, dict[str, Gtk.Widget]] = {}
-        self.advanced_specs: dict[str, dict[str, dict]] = {}
-        self.advanced_group: Gtk.Box | None = None
-        self.advanced_expander: Gtk.Expander | None = None
-        self.build_advanced_section(content_box)
+        self.advanced_widgets: dict[str, dict[str, QWidget]] = {}  # func_name -> {param: widget}
+        self.advanced_specs: dict[str, dict[str, dict]] = {}  # func_name -> {param: spec}
+        self.advanced_group_box: QGroupBox | None = None
+        self.advanced_toggle_btn: QPushButton | None = None
+        self.build_advanced_section(layout)
+        layout.addStretch()
 
-        # Code preview
-        lbl = Gtk.Label()
-        lbl.set_markup("<b>Generated code:</b>")
-        lbl.set_xalign(0.0)
-        content_box.append(lbl)
-        self.code_preview = create_code_preview()
-        self.code_buf = self.code_preview.get_buffer()
-        self.update_code_preview()
-        code_scroll = Gtk.ScrolledWindow()
-        code_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        code_scroll.set_size_request(-1, 120)
-        code_scroll.set_child(self.code_preview)
-        code_scroll.add_css_class("code-preview-scroll")
-        content_box.append(code_scroll)
-
-        # MNE doc links
-        if self.action_def and self.action_def.mne_doc_urls:
-            mne_lbl = Gtk.Label()
-            mne_lbl.set_markup("<b>MNE documentation:</b>")
-            mne_lbl.set_xalign(0.0)
-            content_box.append(mne_lbl)
-            links_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            for func, url in self.action_def.mne_doc_urls.items():
-                btn = Gtk.LinkButton(uri=url, label=f"{func} docs")
-                links_box.append(btn)
-            content_box.append(links_box)
-
-        # Connect primary param signals for live code preview
+        # Connect primary param signals
         for widget in self.param_widgets.values():
             connect_widget_signal(widget, self.update_code_preview)
 
-        # Buttons row (outside scroll area so always visible)
-        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        btn_row.set_halign(Gtk.Align.END)
-        btn_row.set_margin_start(16)
-        btn_row.set_margin_end(16)
-        btn_row.set_margin_top(8)
-        btn_row.set_margin_bottom(8)
+        # ---- Fixed bottom section ----
+        # Code preview
+        bottom_layout.addWidget(QLabel("Generated code:"))
+        self.code_preview = QTextEdit()
+        self.code_preview.setReadOnly(True)
+        self.code_preview.setMaximumHeight(100)
+        self.code_preview.setFont(QFont("Consolas", 10))
+        self.code_preview.setStyleSheet(
+            """
+            QTextEdit {
+                background-color: #1E1E1E;
+                color: #A9B7C6;
+                border: 1px solid #3C3F41;
+                border-radius: 4px;
+                padding: 6px;
+            }
+        """
+        )
+        self.update_code_preview()
+        bottom_layout.addWidget(self.code_preview)
 
-        cancel_btn = Gtk.Button(label="Cancel")
-        cancel_btn.connect("clicked", self.reject)
-        btn_row.append(cancel_btn)
+        # MNE doc links
+        if self.action_def and self.action_def.mne_doc_urls:
+            doc_links = []
+            bottom_layout.addWidget(QLabel("MNE documentation:"))
+            for func, url in self.action_def.mne_doc_urls.items():
+                link = f'<a href="{url}" style="color: #569CD6;">{func} docs</a>'
+                doc_links.append(link)
+            doc_label = QLabel(" • ".join(doc_links))
+            doc_label.setOpenExternalLinks(True)
+            bottom_layout.addWidget(doc_label)
 
-        ok_btn = Gtk.Button(label="OK")
-        ok_btn.add_css_class("suggested-action")
-        ok_btn.connect("clicked", self.accept)
-        btn_row.append(ok_btn)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        bottom_layout.addWidget(buttons)
 
-        toolbar_view.add_bottom_bar(btn_row)
+    def build_advanced_section(self, parent_layout: QVBoxLayout):
+        """Build the collapsible advanced params section."""
 
-        self.setup_modal(parent_window)
-
-    def build_advanced_section(self, parent_box: Gtk.Box):
         if not self.action_def or not self.action_def.advanced_schema:
             return
 
         all_advanced = self.action_def.advanced_schema
 
-        expander = Gtk.Expander(label="Advanced")
-        has_advanced = bool(self.action.advanced_params)
-        expander.set_expanded(has_advanced)
-        self.advanced_expander = expander
+        self.advanced_toggle_btn = QPushButton("Show Advanced")
+        self.advanced_toggle_btn.setCheckable(True)
+        parent_layout.addWidget(self.advanced_toggle_btn)
 
-        adv_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        adv_box.set_margin_start(12)
-        self.advanced_group = adv_box
+        group_box = QGroupBox("Advanced")
+        self.advanced_group_box = group_box
+        adv_layout = QVBoxLayout(group_box)
 
         for group_name, adv_params in all_advanced.items():
             if len(all_advanced) > 1:
-                lbl = Gtk.Label(label=f"<b>{group_name}</b>")
-                lbl.set_use_markup(True)
-                lbl.set_xalign(0.0)
-                adv_box.append(lbl)
+                func_label = QLabel(f"<b>{group_name}</b>")
+                adv_layout.addWidget(func_label)
 
+            func_form = QFormLayout()
             self.advanced_widgets[group_name] = {}
             self.advanced_specs[group_name] = {}
+
             existing_advanced = self.action.advanced_params.get(group_name, {})
 
             for pname, pdef in adv_params.items():
@@ -403,14 +404,32 @@ class ActionEditor(ModalDialog):
                 widget = create_widget_for_param(pdef, current)
                 self.advanced_widgets[group_name][pname] = widget
                 self.advanced_specs[group_name][pname] = pdef
-                row = make_form_row(pdef.get("label", pname), widget)
-                adv_box.append(row)
+                func_form.addRow(pdef.get("label", pname) + ":", widget)
                 connect_widget_signal(widget, self.update_code_preview)
 
-        expander.set_child(adv_box)
-        parent_box.append(expander)
+            adv_layout.addLayout(func_form)
 
-    def on_reset_custom(self, _btn):
+        parent_layout.addWidget(group_box)
+
+        has_advanced = bool(self.action.advanced_params)
+        group_box.setVisible(has_advanced)
+        self.advanced_toggle_btn.setChecked(has_advanced)
+        self.advanced_toggle_btn.setText("Hide Advanced" if has_advanced else "Show Advanced")
+        self.advanced_toggle_btn.toggled.connect(self.on_toggle_advanced)
+
+    def on_toggle_advanced(self, checked: bool):
+        """Show or hide the advanced params group box.
+
+        Args:
+            checked: True when the section should be visible.
+        """
+        if self.advanced_group_box is None or self.advanced_toggle_btn is None:
+            return
+        self.advanced_group_box.setVisible(checked)
+        self.advanced_toggle_btn.setText("Hide Advanced" if checked else "Show Advanced")
+
+    def reset_custom(self):
+        """Clear the action's custom code and restore generated-code mode."""
         if self.action.action_id == CUSTOM_ACTION_ID:
             return
         self.custom_was_reset = True
@@ -418,18 +437,25 @@ class ActionEditor(ModalDialog):
         self.action.is_custom = False
         self.action.status = ActionStatus.PENDING
         self.update_code_preview()
-        if self.warning_label:
-            self.warning_label.set_visible(False)
-        if self.reset_btn:
-            self.reset_btn.set_sensitive(False)
+        if self.custom_warning:
+            self.custom_warning.hide()
+        if self.btn_reset_custom:
+            self.btn_reset_custom.setDisabled(True)
 
     def get_current_params(self) -> dict:
+        """Read the current value of every primary param widget.
+
+        Returns:
+            Dict mapping param names to their current widget values.
+        """
         params = {}
         for param_name, widget in self.param_widgets.items():
             params[param_name] = get_widget_value(widget)
         return params
 
-    def get_current_advanced_params(self) -> dict:
+    def get_advanced_params(self) -> dict:
+        """Return advanced params grouped by group name, only non-default values."""
+
         kwargs_targets = self.action_def.kwargs_targets if self.action_def else {}
         if not kwargs_targets:
             return {}
@@ -439,10 +465,12 @@ class ActionEditor(ModalDialog):
             group_params: dict = {}
             for pname, widget in widgets.items():
                 value = get_widget_value(widget)
+
                 pdef = self.advanced_specs.get(group_name, {}).get(pname, {})
                 default = pdef.get("default")
 
-                if isinstance(widget, Gtk.Entry):
+                # For nullable text params, keep empty input as None so that untouched fields won't get emitted as kwargs
+                if isinstance(widget, QLineEdit):
                     if value == "" and (pdef.get("nullable") or default is None):
                         value = None
 
@@ -455,49 +483,46 @@ class ActionEditor(ModalDialog):
         return result
 
     def update_code_preview(self):
+        """Regenerate the code preview from current widget values."""
         if self.action.is_custom and self.action.custom_code:
             code = self.action.custom_code
         else:
             temp_action = ActionConfig(
                 self.action.action_id,
                 self.get_current_params(),
-                advanced_params=self.get_current_advanced_params(),
+                advanced_params=self.get_advanced_params(),
             )
             code = generate_action_code(temp_action, self.context_type)
-        self.code_buf.set_text(code, -1)
+        self.code_preview.setPlainText(code)
+
+    def get_params(self) -> dict:
+        """Return the accepted primary parameter values.
+
+        Returns:
+            Dict of param name -> value for all primary params.
+        """
+        return self.get_current_params()
+
+    def should_clear_custom(self) -> bool:
+        """Return True if the user chose to reset custom code during this session."""
+        return self.custom_was_reset
 
     def update_visibility(self):
+        """Apply per-parameter visible_when rules to primary form rows."""
         current = self.get_current_params()
+
         for param_name, param_def in self.visible_params.items():
             visible_when = param_def.get("visible_when")
             should_show = True
+
             if visible_when:
                 for controller_name, allowed_values in visible_when.items():
                     if current.get(controller_name) not in allowed_values:
                         should_show = False
                         break
-            row_widget = self.param_rows.get(param_name)
-            if row_widget is not None:
-                row_widget.set_visible(should_show)
 
-    # -------- Public exec-style interface --------
+            row = self.param_rows.get(param_name)
+            if row is None:
+                continue
 
-    def get_params(self) -> dict:
-        return self.get_current_params()
-
-    def get_advanced_params(self) -> dict:
-        return self.get_current_advanced_params()
-
-    def should_clear_custom(self) -> bool:
-        return self.custom_was_reset
-
-def make_form_row(label_text: str, widget: Gtk.Widget) -> Gtk.Box:
-    """Create a horizontal label+widget form row."""
-    row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-    lbl = Gtk.Label(label=label_text + ":")
-    lbl.set_size_request(160, -1)
-    lbl.set_xalign(1.0)
-    row.append(lbl)
-    widget.set_hexpand(True)
-    row.append(widget)
-    return row
+            self.form.setRowVisible(row, should_show)
