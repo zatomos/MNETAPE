@@ -7,8 +7,8 @@ Exports:
         step expansion and an inline run button.
 """
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QToolBar
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtWidgets import QAbstractItemView, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QListWidget, QToolBar
+from PyQt6.QtCore import pyqtSignal, QSize, Qt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 
@@ -167,19 +167,17 @@ class ActionListItem(QWidget):
         self.action = action
         self.type_mismatch = type_mismatch
 
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(8, 8, 8, 8)
-        main_layout.setSpacing(4)
+        self.setObjectName("action_item_widget")
 
-        top_row = QHBoxLayout()
-        top_row.setSpacing(4)
-        top_row.setContentsMargins(0, 0, 0, 0)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 0, 8, 0)
+        layout.setSpacing(6)
 
         # Status icon
         self.status_label = QLabel()
         self.status_label.setFixedWidth(20)
         self.update_status_icon()
-        top_row.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
         # Action name with custom/edited badge
         name = get_action_title(action)
@@ -187,22 +185,24 @@ class ActionListItem(QWidget):
             name += " [CUSTOM]" if action.action_id == CUSTOM_ACTION_ID else " [EDITED]"
         self.name_label = QLabel(f"{index}. {name}")
         self.name_label.setStyleSheet("font-weight: bold;")
-        top_row.addWidget(self.name_label, 1, Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self.name_label, 1, Qt.AlignmentFlag.AlignVCenter)
 
         # Run button
         self.run_btn = QPushButton("▶")
-        self.run_btn.setFixedSize(35, 25)
+        self.run_btn.setFixedSize(35, 26)
         self.run_btn.setStyleSheet(
-            "QPushButton { background-color:#2E7D32; color:white; border:none; border-radius:4px; }"
+            "QPushButton { background-color:#2E7D32; color:white; border:none; border-radius:4px;"
+            " padding: 8; min-height: 0; }"
             "QPushButton:hover { background-color:#388E3C; }"
             "QPushButton:disabled { background-color:#BDBDBD; color:#757575; }"
         )
         self.run_btn.clicked.connect(lambda _, r=self.row: self.run_clicked.emit(r))
         if type_mismatch:
             self.run_btn.setEnabled(False)
-        top_row.addWidget(self.run_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self.run_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        main_layout.addLayout(top_row)
+    def sizeHint(self) -> QSize:
+        return QSize(super().sizeHint().width(), 46)
 
     def update_status_icon(self):
         """Update the status icon label color to match the action's current status."""
@@ -221,3 +221,45 @@ class ActionListItem(QWidget):
         """
         self.action.status = status
         self.update_status_icon()
+
+
+class ActionListWidget(QListWidget):
+    """QListWidget with drag-and-drop reordering for action items.
+
+    Emits items_reordered(from_row, to_row) when an action item is dragged to a new
+    position. Header items (UserRole == -1) cannot be dragged or used as drop targets.
+    """
+
+    items_reordered = pyqtSignal(int, int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+
+    def dropEvent(self, event):
+        source_item = self.currentItem()
+        if source_item is None:
+            event.ignore()
+            return
+
+        source_row = source_item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(source_row, int) or source_row < 0:
+            event.ignore()
+            return
+
+        target_item = self.itemAt(event.position().toPoint())
+        if target_item is None:
+            event.ignore()
+            return
+
+        target_row = target_item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(target_row, int) or target_row < 0:
+            event.ignore()
+            return
+
+        if source_row != target_row:
+            self.items_reordered.emit(source_row, target_row)
+        event.ignore()

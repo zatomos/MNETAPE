@@ -13,7 +13,6 @@ _annotations = ParamMeta(
     default=[],
 )
 
-
 @builder
 def set_annotations_raw(
     raw: mne.io.Raw,
@@ -24,7 +23,6 @@ def set_annotations_raw(
     descriptions = [a["description"] for a in (annotations or [])]
     raw.set_annotations(mne.Annotations(onset=onsets, duration=durations, description=descriptions))
     return raw
-
 
 @builder
 def set_annotations_epochs(

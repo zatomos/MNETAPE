@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 
-
 def value_to_ast(value: object) -> ast.expr:
     """Convert a Python value to an AST expression node."""
     if value is None:
@@ -21,7 +20,6 @@ def value_to_ast(value: object) -> ast.expr:
             values=[value_to_ast(v) for v in value.values()],
         )
     return ast.Constant(value=str(value))
-
 
 def get_dotted_name(node: ast.expr) -> str | None:
     """Return 'a.b.c' string for an AST Name or Attribute chain, or None."""

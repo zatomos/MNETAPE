@@ -12,10 +12,7 @@ from typing import Callable
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
-    QComboBox,
-    QHBoxLayout,
     QLabel,
-    QPushButton,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -52,7 +49,7 @@ class PlotWorker(QThread):
             self.finished.emit(None)
 
 # Tab indices for each mode
-RAW_TAB_NAMES = ["PSD", "Time Series", "Sensors", "Topomap"]
+RAW_TAB_NAMES = ["Time Series", "PSD", "Sensors", "Topomap"]
 EPOCHS_TAB_NAMES = ["PSD", "Epochs Browser", "Sensors", "Topomap", "Epochs Image"]
 EVOKED_TAB_NAMES = ["Evoked", "Topomap", "Sensors"]
 
@@ -102,30 +99,13 @@ class VisualizationPanel(QWidget):
         self.slot_workers: dict[str, PlotWorker] = {}
         self.orphaned_workers: set[PlotWorker] = set()
         self.loading_count = 0
+        self.current_step = 0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        step_layout = QHBoxLayout()
-        step_layout.addWidget(QLabel("Viewing after:"))
-
-        self.step_combo = QComboBox()
-        self.step_combo.addItem("Original (no processing)")
-        step_layout.addWidget(self.step_combo, 1)
-
-        self.btn_prev = QPushButton("◀")
-        self.btn_prev.setFixedWidth(35)
-        step_layout.addWidget(self.btn_prev)
-
-        self.btn_next = QPushButton("▶")
-        self.btn_next.setFixedWidth(35)
-        step_layout.addWidget(self.btn_next)
-
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color: orange; font-weight: bold;")
-        step_layout.addWidget(self.status_label)
-
-        layout.addLayout(step_layout)
+        self.status_label.setStyleSheet("color: orange; font-weight: bold; padding: 2px 4px;")
 
         self.tabs = QTabWidget()
 
@@ -155,6 +135,7 @@ class VisualizationPanel(QWidget):
         )
         self.epochs_layout.addWidget(self.epochs_placeholder)
 
+        layout.addWidget(self.status_label)
         self.build_raw_tabs()
         layout.addWidget(self.tabs)
         self.show_placeholder()
@@ -165,8 +146,8 @@ class VisualizationPanel(QWidget):
     def build_raw_tabs(self):
         """Populate the tab widget with Raw mode tabs."""
         self.tabs.clear()
-        self.tabs.addTab(self.plot_psd, "PSD")
         self.tabs.addTab(self.time_container, "Time Series")
+        self.tabs.addTab(self.plot_psd, "PSD")
         self.tabs.addTab(self.plot_sensors, "Sensors")
         self.tabs.addTab(self.plot_topomap, "Topomap")
         self.mode = "raw"
@@ -256,26 +237,14 @@ class VisualizationPanel(QWidget):
         self.epochs_placeholder.setVisible(True)
 
     def update_step_list(self, actions: list[ActionConfig]):
-        """Repopulate the step combo box to reflect the current action list.
-
-        Preserves the current combo index when possible.
+        """Clamp current_step to the valid range when the action list changes.
 
         Args:
             actions: The ordered list of pipeline actions.
         """
-        old_index = self.step_combo.currentIndex()
-        self.step_combo.blockSignals(True)
-        self.step_combo.clear()
-        self.step_combo.addItem("Original (no processing)")
-        for i, action in enumerate(actions, 1):
-            status = STATUS_ICONS.get(action.status, "○")
-            name = get_action_title(action)
-            if action.is_custom:
-                name += " [CUSTOM]"
-            self.step_combo.addItem(f"{status} {i}. {name}")
-        new_index = old_index if 0 <= old_index < self.step_combo.count() else 0
-        self.step_combo.setCurrentIndex(new_index)
-        self.step_combo.blockSignals(False)
+        max_step = len(actions)
+        if self.current_step > max_step:
+            self.current_step = max_step
 
     def update_plots(
         self,
@@ -436,11 +405,11 @@ class VisualizationPanel(QWidget):
             self.render_raw_tab(index)
 
     def render_raw_tab(self, index: int):
-        """Render tab by index (0=PSD, 1=Time, 2=Sensors, 3=Topomap) for Raw mode."""
+        """Render tab by index (0=Time, 1=PSD, 2=Sensors, 3=Topomap) for Raw mode."""
         if index == 0:
-            self.update_psd_plot()
-        elif index == 1:
             self.update_time_plot()
+        elif index == 1:
+            self.update_psd_plot()
         elif index == 2:
             self.update_sensors_plot()
         elif index == 3:

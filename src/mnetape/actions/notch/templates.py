@@ -24,7 +24,6 @@ _harmonics = ParamMeta(
     max=10,
 )
 
-
 @builder
 def notch_raw(
     raw: mne.io.Raw,
@@ -36,7 +35,6 @@ def notch_raw(
     raw.notch_filter(freqs=freqs_list, **kwargs)
     return raw
 
-
 @builder
 def notch_epochs(
     epochs: mne.BaseEpochs,
@@ -47,7 +45,6 @@ def notch_epochs(
     freqs_list = [freqs * (i + 1) for i in range(harmonics)]
     epochs.notch_filter(freqs=freqs_list, **kwargs)
     return epochs
-
 
 @builder
 def notch_evoked(

@@ -20,7 +20,6 @@ SCOPE_VAR: dict[DataType, str | None] = {
     DataType.ICA: None,  # ICA is handled via structured unpacking
 }
 
-
 def exec_action(
     call_site: str,
     func_defs: str,

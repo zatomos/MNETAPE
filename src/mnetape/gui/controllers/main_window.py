@@ -1,7 +1,7 @@
 """Main application window for the EEG preprocessing pipeline.
 
-MainWindow is the top-level QMainWindow. It owns the shared AppState and instantiates the four controller objects
-(FileHandler, PipelineRunner, ActionController, NavController) that implement all user-facing operations.
+MainWindow is the top-level QMainWindow. It owns the shared AppState and instantiates the controller objects
+that implement all user-facing operations.
 The window itself only builds the menu, sets up the layout widgets, and provides update helpers that keep
 the action list, code panel, and visualization panel in sync.
 """
@@ -11,7 +11,6 @@ from PyQt6.QtGui import QAction, QBrush, QColor, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
-    QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMenu,
@@ -34,7 +33,7 @@ from mnetape.gui.controllers.pipeline_runner import PipelineRunner
 from mnetape.gui.controllers.state import AppState
 from mnetape.gui.dialogs.action_result_dialog import ActionResultDialog
 from mnetape.gui.panels import CodePanel, VisualizationPanel
-from mnetape.gui.widgets import ActionListItem
+from mnetape.gui.widgets import ActionListItem, ActionListWidget
 
 
 def make_type_header(data_type: DataType) -> QListWidgetItem:
@@ -177,14 +176,6 @@ class MainWindow(QMainWindow):
         run_all_action.triggered.connect(self.runner.run_all)
         pipeline_menu.addAction(run_all_action)
 
-        view_menu = menubar.addMenu("View")
-
-        browser_action = QAction("Open MNE Browser", self)
-        browser_action.setShortcut(QKeySequence("Ctrl+B"))
-        browser_action.triggered.connect(self.nav.open_browser)
-        view_menu.addAction(browser_action)
-
-
     # -------- UI setup --------
 
     def setup_ui(self):
@@ -204,11 +195,12 @@ class MainWindow(QMainWindow):
         self.btn_add_action.clicked.connect(self.action_ctrl.add_action)
         left_layout.addWidget(self.btn_add_action)
 
-        self.action_list = QListWidget()
+        self.action_list = ActionListWidget()
         self.action_list.itemClicked.connect(self.action_ctrl.on_action_clicked)
         self.action_list.itemDoubleClicked.connect(self.action_ctrl.on_action_double_clicked)
         self.action_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.action_list.customContextMenuRequested.connect(self.action_ctrl.show_action_context_menu)
+        self.action_list.items_reordered.connect(self.action_ctrl.move_action_to)
         left_layout.addWidget(self.action_list)
 
         move_btns = QHBoxLayout()
@@ -276,9 +268,6 @@ class MainWindow(QMainWindow):
         self.view_stack = QStackedWidget()
 
         self.viz_panel = VisualizationPanel()
-        self.viz_panel.step_combo.currentIndexChanged.connect(self.nav.on_step_changed)
-        self.viz_panel.btn_prev.clicked.connect(self.nav.prev_step)
-        self.viz_panel.btn_next.clicked.connect(self.nav.next_step)
         self.view_stack.addWidget(self.viz_panel)
 
         self.code_panel = CodePanel()
@@ -391,7 +380,7 @@ class MainWindow(QMainWindow):
         """Refresh the visualization panel for the currently selected pipeline step."""
         from mnetape.core.models import ICASolution
 
-        step = self.viz_panel.step_combo.currentIndex()
+        step = self.viz_panel.current_step
 
         if step == 0:
             data_to_show = self.state.raw_original

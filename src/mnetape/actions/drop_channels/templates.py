@@ -20,7 +20,6 @@ _mode = ParamMeta(
     default="mark_bad",
 )
 
-
 @builder
 def drop_channels_raw(
     raw: mne.io.Raw,
@@ -33,7 +32,6 @@ def drop_channels_raw(
         raw.drop_channels(ch_names=channels or [])
     return raw
 
-
 @builder
 def drop_channels_epochs(
     epochs: mne.BaseEpochs,
@@ -45,7 +43,6 @@ def drop_channels_epochs(
     else:
         epochs.drop_channels(ch_names=channels or [])
     return epochs
-
 
 @builder
 def drop_channels_evoked(

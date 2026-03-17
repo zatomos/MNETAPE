@@ -6,22 +6,25 @@ and a live code-preview panel. It supports both full-action editing and step-lev
 
 import logging
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGraphicsOpacityEffect,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTextEdit,
     QVBoxLayout,
@@ -227,9 +230,37 @@ class ActionEditor(QDialog):
         self.setWindowTitle(f"Edit: {get_action_title(action)}")
         visible_params = self.action_def.params_schema if self.action_def else {}
 
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(420)
 
-        layout = QVBoxLayout(self)
+        # Cap dialog height at 85% of available screen height so "Show Advanced"
+        # never grows the dialog off-screen; the scroll area handles overflow.
+        if screen := QApplication.primaryScreen():
+            self.setMaximumHeight(int(screen.availableGeometry().height() * 0.85))
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # Scrollable params section
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Always reserve scrollbar space so its appearance never reflows content.
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        scroll_inner = QWidget()
+        layout = QVBoxLayout(scroll_inner)
+        layout.setContentsMargins(12, 10, 12, 8)
+        layout.setSpacing(6)
+        scroll.setWidget(scroll_inner)
+        outer.addWidget(scroll, 1)
+
+        # Fixed bottom: code preview + doc links + buttons
+        bottom = QWidget()
+        bottom_layout = QVBoxLayout(bottom)
+        bottom_layout.setContentsMargins(12, 4, 12, 10)
+        bottom_layout.setSpacing(6)
+        outer.addWidget(bottom)
 
         # Warn about custom code if present
         self.custom_warning = None
@@ -296,9 +327,15 @@ class ActionEditor(QDialog):
         self.advanced_group_box: QGroupBox | None = None
         self.advanced_toggle_btn: QPushButton | None = None
         self.build_advanced_section(layout)
+        layout.addStretch()
 
+        # Connect primary param signals
+        for widget in self.param_widgets.values():
+            connect_widget_signal(widget, self.update_code_preview)
+
+        # ---- Fixed bottom section ----
         # Code preview
-        layout.addWidget(QLabel("Generated code:"))
+        bottom_layout.addWidget(QLabel("Generated code:"))
         self.code_preview = QTextEdit()
         self.code_preview.setReadOnly(True)
         self.code_preview.setMaximumHeight(100)
@@ -315,30 +352,25 @@ class ActionEditor(QDialog):
         """
         )
         self.update_code_preview()
-        layout.addWidget(self.code_preview)
+        bottom_layout.addWidget(self.code_preview)
 
         # MNE doc links
         if self.action_def and self.action_def.mne_doc_urls:
             doc_links = []
-            # Add title
-            layout.addWidget(QLabel("MNE documentation:"))
+            bottom_layout.addWidget(QLabel("MNE documentation:"))
             for func, url in self.action_def.mne_doc_urls.items():
                 link = f'<a href="{url}" style="color: #569CD6;">{func} docs</a>'
                 doc_links.append(link)
             doc_label = QLabel(" • ".join(doc_links))
             doc_label.setOpenExternalLinks(True)
-            layout.addWidget(doc_label)
-
-        # Connect primary param signals
-        for widget in self.param_widgets.values():
-            connect_widget_signal(widget, self.update_code_preview)
+            bottom_layout.addWidget(doc_label)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        bottom_layout.addWidget(buttons)
 
     def build_advanced_section(self, parent_layout: QVBoxLayout):
         """Build the collapsible advanced params section."""
@@ -386,7 +418,7 @@ class ActionEditor(QDialog):
         self.advanced_toggle_btn.toggled.connect(self.on_toggle_advanced)
 
     def on_toggle_advanced(self, checked: bool):
-        """Show or hide the advanced params group box and resize the dialog.
+        """Show or hide the advanced params group box.
 
         Args:
             checked: True when the section should be visible.
@@ -395,9 +427,6 @@ class ActionEditor(QDialog):
             return
         self.advanced_group_box.setVisible(checked)
         self.advanced_toggle_btn.setText("Hide Advanced" if checked else "Show Advanced")
-        if not checked:
-            self.resize(self.width(), self.minimumSizeHint().height())
-        self.adjustSize()
 
     def reset_custom(self):
         """Clear the action's custom code and restore generated-code mode."""

@@ -389,6 +389,6 @@ class PipelineRunner:
 
             self.w.update_action_list()
 
-        self.w.viz_panel.step_combo.setCurrentIndex(min(end_idx, len(self.state.data_states)))
+        self.w.viz_panel.current_step = min(end_idx, len(self.state.data_states))
         self.w.update_visualization()
         self.w.status.showMessage(final_status)

@@ -12,7 +12,6 @@ from typing import Annotated
 import mne
 from mnetape.actions.base import ParamMeta, builder, result_builder
 
-
 @builder
 def template_builder(
     epochs: mne.BaseEpochs,
@@ -53,7 +52,6 @@ def template_builder(
     else:
         epochs.drop_bad(reject=reject, flat=flat, **kwargs)
     return epochs
-
 
 @result_builder
 def build_result(data):
@@ -136,7 +134,7 @@ def build_result(data):
         ax.set_yticks(range(n_rows))
         ax.set_yticklabels(row_order, fontsize=7)
         ax.set_xlabel("Epoch index")
-        ax.set_title(f"Rejection matrix — {n_dropped} of {n_total} epochs dropped")
+        ax.set_title(f"Rejection matrix - {n_dropped} of {n_total} epochs dropped")
 
         used_cats = sorted(set(matrix.flat) - {kept})
         cat_to_color = {reject: "#EF5350", flat: "#42A5F5", both: "#AB47BC", auto: "#FFA726"}

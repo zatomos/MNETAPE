@@ -3,12 +3,13 @@
 Configures matplotlib to use the QtAgg backend and applies a light color scheme.
 Loads the QSS stylesheet from the assets directory and launches the main window.
 
-Entry point: main(), called by the eeg-ui console script.
+Entry point: main(), called by the mnetape console script.
 """
 
 import logging
 import os
 import platform
+import signal
 import sys
 from pathlib import Path
 
@@ -77,6 +78,8 @@ def main():
     app.setApplicationName("MNETAPE")
     app.setStyle("Fusion")
     app.setStyleSheet(load_stylesheet())
+
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     window = MainWindow()
     window.show()

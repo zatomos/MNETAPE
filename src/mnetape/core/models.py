@@ -14,7 +14,6 @@ if TYPE_CHECKING:
     import mne
     from matplotlib.figure import Figure
 
-
 CUSTOM_ACTION_ID = "custom"
 
 # Variables always available in the exec scope, excluded from action param schemas.
@@ -29,7 +28,6 @@ class ActionStatus(Enum):
     COMPLETE = auto()
     ERROR = auto()
 
-
 # Unicode icon characters keyed by ActionStatus, used in action list widgets.
 STATUS_ICONS = {
     ActionStatus.PENDING: "\u25cb",   # ○
@@ -43,7 +41,6 @@ STATUS_COLORS = {
     ActionStatus.COMPLETE: "green",
     ActionStatus.ERROR: "red",
 }
-
 
 #-------- Data types --------
 
@@ -61,7 +58,6 @@ class DataType(Enum):
         """Display name for use in UI headers and messages."""
         return {"RAW": "Raw", "EPOCHS": "Epochs", "EVOKED": "Evoked", "ANY": "Any", "ICA": "ICA"}[self.name]
 
-
 ANNOTATION_TO_DATATYPE: dict[str, DataType] = {
     "mne.io.Raw": DataType.RAW,
     "mne.BaseEpochs": DataType.EPOCHS,
@@ -71,7 +67,6 @@ ANNOTATION_TO_DATATYPE: dict[str, DataType] = {
 }
 """Maps supported builder annotation names to pipeline DataType values."""
 
-
 RETURN_VARS: dict[DataType, str] = {
     DataType.RAW: "raw",
     DataType.EPOCHS: "epochs",
@@ -80,14 +75,12 @@ RETURN_VARS: dict[DataType, str] = {
 }
 """Assignment targets used when generating action call sites."""
 
-
 TYPE_TO_SCOPE_VAR: dict[DataType, str] = {
     DataType.RAW: "raw",
     DataType.EPOCHS: "epochs",
     DataType.EVOKED: "evoked",
 }
 """Maps concrete DataType values to their pipeline scope variable names."""
-
 
 @dataclass
 class ICASolution:
@@ -123,7 +116,6 @@ class ICASolution:
             ic_labels=self.ic_labels,
         )
 
-
 # ------- Action result --------
 
 @dataclass
@@ -139,7 +131,6 @@ class ActionResult:
     summary: str
     fig: Figure | None = None
     details: dict = field(default_factory=dict)
-
 
 # ------- Action configuration --------
 

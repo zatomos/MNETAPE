@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 ParamsSchema = dict[str, dict]
 
-
 # -------- Parameter metadata type --------
 
 @dataclass
@@ -61,7 +60,6 @@ class ParamMeta:
             d["visible_when"] = self.visible_when
         return d
 
-
 # -------- Schema extraction from Annotated signatures --------
 
 def infer_param_type(annotation: type | None) -> str:
@@ -81,7 +79,6 @@ def infer_param_type(annotation: type | None) -> str:
     if annotation is str:
         return "text"
     return "text"
-
 
 def extract_schema_from_signature(fn: Callable) -> dict[str, dict]:
     """Extract a params_schema dict from a builder function signature.
@@ -142,7 +139,6 @@ def extract_schema_from_signature(fn: Callable) -> dict[str, dict]:
 
     return result
 
-
 # -------- Type inference from AST annotations --------
 
 def infer_input_from_ast(func_def: ast.FunctionDef) -> DataType:
@@ -155,7 +151,6 @@ def infer_input_from_ast(func_def: ast.FunctionDef) -> DataType:
         if dt is not None:
             return dt
     raise TypeError(f"Builder '{func_def.name}' must annotate its first scope argument with a recognized MNE type.")
-
 
 def infer_output_from_ast(func_def: ast.FunctionDef) -> DataType:
     """Infer output DataType from the function return annotation."""
@@ -183,7 +178,6 @@ def infer_output_from_ast(func_def: ast.FunctionDef) -> DataType:
         f"Supported: mne.io.Raw, mne.BaseEpochs, mne.Evoked, tuple[mne.preprocessing.ICA, ...]."
     )
 
-
 # -------- Result builder --------
 
 @dataclass
@@ -191,14 +185,12 @@ class ResultBuilder:
     """Holds a result-builder callable registered via @result_builder."""
     fn: Callable
 
-
 def result_builder(fn: Callable) -> ResultBuilder:
     """Mark a function as the result builder for an action.
 
     The function receives the output data object after execution and returns an ActionResult.
     """
     return ResultBuilder(fn=fn)
-
 
 # -------- Builder --------
 
@@ -214,7 +206,6 @@ class ActionBuilder:
     output_type: DataType = field(default_factory=lambda: DataType.RAW)
     kwargs_groups: list = field(default_factory=list)
     kwargs_targets: dict = field(default_factory=dict)  # group_name -> dotted call name
-
 
 def builder(fn: Callable) -> ActionBuilder:
     """Mark a function as the body template for an action.
@@ -281,7 +272,6 @@ def builder(fn: Callable) -> ActionBuilder:
 
     return ab
 
-
 # -------- Action definitions --------
 
 @dataclass(frozen=True)
@@ -291,14 +281,12 @@ class Prerequisite:
     action_id: str
     message: str
 
-
 @dataclass(frozen=True)
 class ParamWidgetBinding:
     """Binds a custom widget factory to a specific parameter by name."""
 
     param_name: str
-    factory: Callable  # (current_value, raw, parent) -> (container, value_widget)
-
+    factory: Callable  # (current_value, raw, [param_widgets]) -> (container, value_widget)
 
 @dataclass(frozen=True)
 class ActionDefinition:
@@ -436,7 +424,6 @@ class ActionDefinition:
 
         return f"{return_var} = {func_name}({', '.join(call_parts)})"
 
-
 # -------- action_from_templates factory --------
 
 def action_from_templates(
@@ -518,9 +505,16 @@ def action_from_templates(
             if w_spec is None or w_spec.loader is None:
                 logger.warning("Cannot load widgets from %s", widgets_path)
             else:
-                w_module = importlib.util.module_from_spec(w_spec)
-                sys.modules[w_module_name] = w_module
-                w_spec.loader.exec_module(w_module)
+                try:
+                    w_module = importlib.util.module_from_spec(w_spec)
+                    sys.modules[w_module_name] = w_module
+                    w_spec.loader.exec_module(w_module)
+                except Exception as _widget_err:
+                    logger.warning(
+                        "Failed to load widgets from %s: %s", widgets_path, _widget_err
+                    )
+                    sys.modules.pop(w_module_name, None)
+                    w_module = None
         if w_module is not None:
             bindings = getattr(w_module, "WIDGET_BINDINGS", None)
             if bindings:

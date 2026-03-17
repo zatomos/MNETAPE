@@ -14,7 +14,7 @@ The `gui` package contains all Qt6 interface code. It is organized into four lay
 
 ## Application bootstrap - `app.py`
 
-`main()` is the console-script entry point (`eeg-ui`).
+`main()` is the console-script entry point (`mnetape`).
 
 ---
 

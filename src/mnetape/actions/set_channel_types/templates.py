@@ -13,7 +13,6 @@ _channel_mapping = ParamMeta(
     default=None,
 )
 
-
 @builder
 def set_channel_types_raw(
     raw: mne.io.Raw,
@@ -22,7 +21,6 @@ def set_channel_types_raw(
     raw.set_channel_types(mapping=channel_mapping or {})
     return raw
 
-
 @builder
 def set_channel_types_epochs(
     epochs: mne.BaseEpochs,
@@ -30,7 +28,6 @@ def set_channel_types_epochs(
 ) -> mne.BaseEpochs:
     epochs.set_channel_types(mapping=channel_mapping or {})
     return epochs
-
 
 @builder
 def set_channel_types_evoked(

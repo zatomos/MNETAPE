@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 import os
 
-
 def setup_logging(level: str | None = None) -> None:
     """Configure the root logger for the application.
 

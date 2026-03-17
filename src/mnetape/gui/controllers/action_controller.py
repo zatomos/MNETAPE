@@ -63,6 +63,27 @@ class ActionController:
                     action.reset()
             self.w.update_action_list()
 
+    def move_action_to(self, from_row: int, to_row: int):
+        """Move an action from from_row to to_row (drag-and-drop reorder).
+
+        Args:
+            from_row: Source action index.
+            to_row: Destination action index.
+        """
+        actions = self.state.actions
+        if from_row < 0 or from_row >= len(actions) or to_row < 0 or to_row >= len(actions):
+            return
+        action = actions.pop(from_row)
+        actions.insert(to_row, action)
+        first_changed = min(from_row, to_row)
+        self.state.data_states.truncate(first_changed)
+        for a in self.state.actions[first_changed:]:
+            if not a.is_custom:
+                a.reset()
+        self.w.update_action_list()
+        self.w.set_selected_action_row(to_row)
+        self.w.update_button_states()
+
     def move_action(self, direction: int):
         """Move the currently selected action up or down in the pipeline.
 
@@ -87,7 +108,8 @@ class ActionController:
         if row < 0:
             return
         self.w.update_button_states()
-        self.w.viz_panel.step_combo.setCurrentIndex(row + 1)
+        self.w.viz_panel.current_step = row + 1
+        self.w.update_visualization()
 
     def show_action_context_menu(self, pos):
         """Show a right-click context menu for the action item at the given position.

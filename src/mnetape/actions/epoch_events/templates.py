@@ -7,7 +7,6 @@ from typing import Annotated
 import mne
 from mnetape.actions.base import ParamMeta, builder, result_builder
 
-
 @builder
 def template_builder(
     raw: mne.io.Raw,
@@ -173,7 +172,6 @@ def template_builder(
         **kwargs,
     )
     return epochs
-
 
 @result_builder
 def build_result(data):

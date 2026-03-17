@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 # Parameters to always exclude from advanced params (scope vars are excluded too)
 EXCLUDED_PARAMS = frozenset({"self", "return", "inst", "verbose", "n_jobs"}) | SCOPE_VARS
 
-
 def resolve_method(dotted_name: str) -> Callable | None:
     """Resolve a dotted name string to a callable MNE object.
 
@@ -67,7 +66,6 @@ def resolve_method(dotted_name: str) -> Callable | None:
     # If function or method
     return obj if callable(obj) else None
 
-
 def get_advanced_params(
     dotted_name: str,
     primary_param_names: frozenset[str],
@@ -108,7 +106,6 @@ def get_advanced_params(
             result[name] = spec
 
     return result
-
 
 def infer_param_spec(name: str, param: inspect.Parameter) -> dict[str, Any] | None:
     """Infer a params_schema-compatible spec dict from an inspect.Parameter.

@@ -23,7 +23,6 @@ READERS: dict[str, tuple[Callable, str]] = {
     ".mff": (mne.io.read_raw_egi, "*.mff"),
 }
 
-
 def detect_extension(path: str | Path) -> str:
     """Return the normalized file extension for path.
 
@@ -44,7 +43,6 @@ def detect_extension(path: str | Path) -> str:
 
     return p.suffix.lower()
 
-
 def open_file_dialog_filter() -> str:
     """Return a file dialog filter string for supported EEG formats."""
 
@@ -60,7 +58,6 @@ def open_file_dialog_filter() -> str:
         "EGI (*.mff);;"
         "All Files (*)"
     )
-
 
 def load_raw_data(path: str | Path, *, preload: bool = True, verbose=False) -> mne.io.Raw:
     """Load EEG data from any supported file format.

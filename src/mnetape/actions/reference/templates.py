@@ -21,7 +21,6 @@ _projection = ParamMeta(
     default=False,
 )
 
-
 @builder
 def reference_raw(
     raw: mne.io.Raw,
@@ -32,7 +31,6 @@ def reference_raw(
     raw.set_eeg_reference(ref_channels=ref_channels, projection=projection, **kwargs)
     return raw
 
-
 @builder
 def reference_epochs(
     epochs: mne.BaseEpochs,
@@ -42,7 +40,6 @@ def reference_epochs(
 ) -> mne.BaseEpochs:
     epochs.set_eeg_reference(ref_channels=ref_channels, projection=projection, **kwargs)
     return epochs
-
 
 @builder
 def reference_evoked(

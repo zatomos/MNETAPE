@@ -11,7 +11,6 @@ from typing import Annotated
 import mne
 from mnetape.actions.base import ParamMeta, builder, result_builder
 
-
 @builder
 def template_builder(
     ica: mne.preprocessing.ICA, raw: mne.io.Raw, ic_labels: dict | None,
@@ -121,7 +120,6 @@ def template_builder(
         detected.extend(list(muscle_indices))
     ic_labels["detected_artifacts"] = sorted(set(detected))
     return ica, raw, ic_labels
-
 
 @result_builder
 def build_result(data):

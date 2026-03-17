@@ -61,7 +61,6 @@ def template_builder(
         epochs.apply_baseline(baseline=(baseline_tmin, baseline_tmax))
     return epochs
 
-
 @result_builder
 def build_result(data):
     from mnetape.core.models import ActionResult

@@ -15,12 +15,15 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable
 
+import threading
+
 import numpy as np
 import mne
 from mnetape.core.models import ICASolution
-from PyQt6.QtCore import QCoreApplication, QThread
 
 logger = logging.getLogger(__name__)
+
+MAIN_THREAD = threading.main_thread()
 
 # -------- Serialization helpers --------
 
@@ -29,18 +32,15 @@ EPOCHS = "epochs"
 EVOKED = "evoked"
 ICA = "ica"
 
-
 class NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, np.ndarray):
             return obj.tolist()
         return super().default(obj)
 
-
 def p(base: Path, suffix: str) -> Path:
     """Construct a slot file path by appending a suffix to the base name."""
     return base.parent / (base.name + suffix)
-
 
 def write_to_disk(data: Any, base: Path) -> str:
     """Serialize a pipeline data object to disk under paths derived from base.
@@ -71,7 +71,6 @@ def write_to_disk(data: Any, base: Path) -> str:
 
     raise TypeError(f"Unsupported data type for DataStore serialization: {type(data)}")
 
-
 def read_from_disk(type_tag: str, base: Path) -> Any:
     """Deserialize a pipeline data object from disk."""
 
@@ -97,7 +96,6 @@ def read_from_disk(type_tag: str, base: Path) -> Any:
 
     raise ValueError(f"Unknown DataStore type tag: {type_tag!r}")
 
-
 def delete_slot_files(base: Path) -> None:
     """Remove all files belonging to a checkpoint slot (handles FIF split files too)."""
     try:
@@ -107,15 +105,9 @@ def delete_slot_files(base: Path) -> None:
     except Exception as e:
         logger.debug("Failed to delete checkpoint files for %s: %s", base, e)
 
-
 def is_main_thread() -> bool:
-    """Return True when called from the Qt main/GUI thread."""
-    try:
-        app = QCoreApplication.instance()
-        return app is not None and QThread.currentThread() is app.thread()
-    except Exception:
-        return False
-
+    """Return True when called from the main (GUI) thread."""
+    return threading.current_thread() is MAIN_THREAD
 
 # -------- DataStore --------
 

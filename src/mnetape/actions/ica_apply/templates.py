@@ -11,7 +11,6 @@ from typing import Annotated
 import mne
 from mnetape.actions.base import ParamMeta, builder
 
-
 @builder
 def template_builder(
     ica: mne.preprocessing.ICA, raw: mne.io.Raw, ic_labels: dict | None,
