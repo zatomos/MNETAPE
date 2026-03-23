@@ -6,6 +6,9 @@ The window itself only builds the menu, sets up the layout widgets, and provides
 the action list, code panel, and visualization panel in sync.
 """
 
+import logging
+
+import mne
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QBrush, QColor, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
@@ -14,6 +17,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QStatusBar,
@@ -21,19 +25,21 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from mnetape.actions.registry import get_action_by_id
-from mnetape.core.codegen import (
-    generate_full_script,
-)
-from mnetape.core.models import CUSTOM_ACTION_ID, DataType
-from mnetape.gui.controllers.action_controller import ActionController
+from mnetape.actions.registry import get_action_by_id, get_action_title
+from mnetape.core.codegen import generate_full_script, parse_script_to_actions
+from mnetape.core.models import CUSTOM_ACTION_ID, DataType, ICASolution
+from mnetape.core.project import ProjectContext
+from mnetape.gui.controllers.action_controller import ActionController, PROTECTED_ACTION_IDS
 from mnetape.gui.controllers.file_handler import FileHandler
 from mnetape.gui.controllers.nav_controller import NavController
-from mnetape.gui.controllers.pipeline_runner import PipelineRunner
+from mnetape.gui.controllers.pipeline_runner import OperationCancelled, PipelineRunner
 from mnetape.gui.controllers.state import AppState
 from mnetape.gui.dialogs.action_result_dialog import ActionResultDialog
+from mnetape.gui.dialogs.preferences_dialog import PreferencesDialog
 from mnetape.gui.panels import CodePanel, VisualizationPanel
 from mnetape.gui.widgets import ActionListItem, ActionListWidget
+
+logger = logging.getLogger(__name__)
 
 
 def make_type_header(data_type: DataType) -> QListWidgetItem:
@@ -64,9 +70,10 @@ class MainWindow(QMainWindow):
         action_list: Pipeline action list.
         status: QStatusBar for transient messages.
         recent_menu: The File > Open Recent sub-menu.
+        project_context: Optional project context when opened from ProjectWindow.
     """
 
-    def __init__(self):
+    def __init__(self, project_context: ProjectContext | None = None):
         super().__init__()
         self.code_panel = None
         self.viz_panel = None
@@ -79,6 +86,8 @@ class MainWindow(QMainWindow):
         self.btn_add_action = None
         self.recent_menu = None
         self.btn_viz = None
+
+        self.project_context: ProjectContext | None = project_context
 
         # Basic window setup
         self.setWindowTitle("MNETAPE")
@@ -219,10 +228,14 @@ class MainWindow(QMainWindow):
 
         move_btns.addStretch()
 
+        self.btn_run = QPushButton("\u25b6 Run All")
+        self.btn_run.clicked.connect(self.runner.run_all)
+        move_btns.addWidget(self.btn_run)
+
         left_layout.addLayout(move_btns)
 
-        self.btn_run = QPushButton("\u25b6  Run All")
-        self.btn_run.setStyleSheet(
+        self.btn_finish = QPushButton("\u25b6\u25b6  Run Preprocessing")
+        self.btn_finish.setStyleSheet(
             """
             QPushButton {
                 background-color: #2E7D32;
@@ -233,16 +246,13 @@ class MainWindow(QMainWindow):
                 border-radius: 5px;
                 font-size: 13px;
             }
-            QPushButton:hover {
-                background-color: #388E3C;
-            }
-            QPushButton:pressed {
-                background-color: #1B5E20;
-            }
+            QPushButton:hover { background-color: #388E3C; }
+            QPushButton:pressed { background-color: #1B5E20; }
         """
         )
-        self.btn_run.clicked.connect(self.runner.run_all)
-        left_layout.addWidget(self.btn_run)
+        self.btn_finish.clicked.connect(self.run_and_save)
+        self.btn_finish.setVisible(self.project_context is not None)
+        left_layout.addWidget(self.btn_finish)
 
         main_layout.addWidget(left_panel)
 
@@ -316,23 +326,28 @@ class MainWindow(QMainWindow):
             current state to avoid a feedback loop (e.g. after a manual code edit).
         """
         self.action_list.clear()
-        pipeline_type = DataType.RAW
 
-        if self.state.actions:
-            self.action_list.addItem(make_type_header(DataType.RAW))
+        pipeline_type = DataType.RAW
+        self.action_list.addItem(make_type_header(pipeline_type))
 
         for i, action in enumerate(self.state.actions):
             action_def = get_action_by_id(action.action_id)
             input_type = action_def.input_type if action_def else DataType.RAW
             output_type = action_def.output_type if action_def else DataType.RAW
-            is_mismatch = input_type != DataType.ANY and input_type != pipeline_type
+            is_mismatch = (
+                action.action_id not in PROTECTED_ACTION_IDS
+                and input_type != DataType.ANY
+                and input_type != pipeline_type
+            )
 
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, i)
             widget = ActionListItem(i + 1, action, type_mismatch=is_mismatch)
+            if action.action_id == "load_file":
+                widget.run_btn.setVisible(False)
             item.setSizeHint(widget.sizeHint())
             widget.size_changed.connect(lambda it=item, w=widget: it.setSizeHint(w.sizeHint()))
-            widget.run_clicked.connect(self.runner.run_action_at)
+            widget.run_clicked.connect(lambda _row, actual_row=i: self.runner.run_action_at(actual_row))
             self.action_list.addItem(item)
             self.action_list.setItemWidget(item, widget)
 
@@ -367,19 +382,22 @@ class MainWindow(QMainWindow):
         """Enable or disable the move-up and move-down buttons based on selection."""
         row = self.get_selected_action_row()
         has_selection = row >= 0
-        self.btn_move_up.setEnabled(has_selection and row > 0)
-        self.btn_move_down.setEnabled(has_selection and row < len(self.state.actions) - 1)
+        is_protected = has_selection and self.state.actions[row].action_id in PROTECTED_ACTION_IDS
+        above_protected = (
+            has_selection and row > 0
+            and self.state.actions[row - 1].action_id in PROTECTED_ACTION_IDS
+        )
+        self.btn_move_up.setEnabled(has_selection and not is_protected and not above_protected and row > 0)
+        self.btn_move_down.setEnabled(has_selection and not is_protected and row < len(self.state.actions) - 1)
 
     def update_code(self):
         """Regenerate the full pipeline script and push it to the code panel."""
-        code = generate_full_script(self.state.data_filepath, self.state.actions)
+        code = generate_full_script(self.state.actions)
         self.code_panel.set_code(code)
         self.files.auto_save()
 
     def update_visualization(self):
         """Refresh the visualization panel for the currently selected pipeline step."""
-        from mnetape.core.models import ICASolution
-
         step = self.viz_panel.current_step
 
         if step == 0:
@@ -398,8 +416,6 @@ class MainWindow(QMainWindow):
         self.update_raw_info(data_to_show)
 
     def update_raw_info(self, data):
-        import mne
-
         if data is None:
             self.raw_info_label.setText("")
             return
@@ -434,8 +450,6 @@ class MainWindow(QMainWindow):
         Returns:
             Tuple of (call_site_str, func_defs_str).
         """
-        from mnetape.actions.registry import get_action_by_id
-
         if action.action_id == CUSTOM_ACTION_ID:
             return action.custom_code or "", ""
 
@@ -467,7 +481,6 @@ class MainWindow(QMainWindow):
         action = self.state.actions[row]
         if action.result is None:
             return
-        from mnetape.actions.registry import get_action_title
         self.show_action_result(action.result, get_action_title(action))
 
     def show_action_result(self, result, title: str):
@@ -480,10 +493,230 @@ class MainWindow(QMainWindow):
         dlg.raise_()
 
     def open_preferences(self):
-        from mnetape.gui.dialogs.preferences_dialog import PreferencesDialog
         dlg = PreferencesDialog(self.state, parent=self)
         dlg.exec()
 
-    def closeEvent(self, event):
+    def showEvent(self, event):
+        """Autoload project data on first show (standalone mode)."""
+        super().showEvent(event)
+        self.auto_load()
+
+    def auto_load(self):
+        """Load participant data files and pipeline from project context, if not already loaded."""
+        if not self.project_context or self.state.raw_original:
+            return
+        ctx = self.project_context
+
+        # Parse pipeline first so that set_montage is in state.actions before load_data_path triggers check_montage.
+        participant_pipeline = ctx.project.participant_pipeline_path(
+            ctx.project_dir, ctx.participant, ctx.session
+        )
+        project_default = ctx.project.pipeline_path(ctx.project_dir)
+        pipeline_source = participant_pipeline if participant_pipeline.exists() else project_default
+        if pipeline_source.exists():
+            try:
+                code = pipeline_source.read_text()
+                self.state.actions = parse_script_to_actions(code)
+                self.state.pipeline_filepath = participant_pipeline
+                if participant_pipeline.exists():
+                    self.code_panel.set_file(participant_pipeline)
+                else:
+                    self.code_panel.set_code(code)
+            except Exception as e:
+                logger.warning("Failed to load project pipeline: %s", e)
+
+        # Load data after pipeline is parsed so check_montage sees set_montage in state.actions
+        existing = [p for p in ctx.data_files if p.exists()]
+        if len(existing) == 1:
+            self.files.load_data_path(str(existing[0]))
+        elif len(existing) > 1:
+            self.load_and_concatenate(existing)
+
+        # Update load_file params with actual file path
+        if self.state.data_filepath and self.state.actions and self.state.actions[0].action_id == "load_file":
+            self.state.actions[0].params["file_path"] = str(self.state.data_filepath)
+
+        # Apply stored montage to raw_original so visualization reflects it without needing
+        # to run the pipeline first (set_montage is already parsed into state.actions above).
+        self.files.apply_stored_montage_if_present()
+
+        if pipeline_source.exists():
+            self.update_action_list()
+            self.status.showMessage(f"Loaded pipeline: {pipeline_source.name}")
+
+    def load_and_concatenate(self, paths: list):
+        """Load multiple run files and concatenate them into a single Raw object.
+
+        Uses mne.concatenate_raws which inserts BAD_boundary / EDGE annotations at run boundaries
+        so downstream filters and epoch rejection handle them correctly.
+        """
+        n = len(paths)
+        try:
+            raw = self.runner.run_in_thread(
+                lambda: self.concatenate_raws(paths),
+                f"Loading {n} runs...",
+            )
+        except OperationCancelled:
+            self.status.showMessage("Load cancelled")
+            return
+        except Exception as e:
+            logger.exception("Failed to load/concatenate run files")
+            QMessageBox.critical(self, "Error", f"Failed to load runs:\n{e}")
+            return
+
+        self.state.raw_original = raw
+        self.state.data_filepath = paths[0]
+        self.state.data_states.clear()
+        for action in self.state.actions:
+            action.reset()
+        self.files.mark_load_file_complete(raw)
+        self.update_action_list()
+        self.update_visualization()
+        self.status.showMessage(f"Loaded {n} runs - concatenated ({raw.times[-1]:.1f} s total)")
+
+    @staticmethod
+    def concatenate_raws(paths: list):
+        raws = [mne.io.read_raw(str(p), preload=True, verbose=False) for p in paths]
+        return mne.concatenate_raws(raws)
+
+    def run_and_save(self):
+        """Run all pipeline actions, export the final output, then mark the session preprocessed."""
+        self.runner.run_all()
+
+        ctx = self.project_context
+        if not ctx:
+            return
+        if not (self.state.actions and all(a.status.name == "COMPLETE" for a in self.state.actions)):
+            return
+
+        last_data = self.state.data_states[-1] if self.state.data_states else None
+        if last_data is None:
+            ctx.on_status_update("done")
+            return
+
+        if isinstance(last_data, mne.BaseEpochs):
+            file_type = "epochs"
+            data_to_save = last_data
+        elif isinstance(last_data, mne.Evoked):
+            file_type = "evoked"
+            data_to_save = last_data
+        else:
+            file_type = "preprocessed"
+            data_to_save = last_data.raw if isinstance(last_data, ICASolution) else last_data
+
+        # When the pipeline ends at epochs or evoked, also save the last raw intermediate.
+        last_raw: mne.io.BaseRaw | None = None
+        if file_type in ("epochs", "evoked"):
+            for state in reversed(self.state.data_states):
+                if isinstance(state, mne.io.BaseRaw):
+                    last_raw = state
+                    break
+
+        # Ensure raw data is fully loaded into memory before saving.
+        if isinstance(data_to_save, mne.io.BaseRaw) and not data_to_save.preload:
+            logger.warning("data_to_save is not preloaded - forcing load_data() before save")
+            try:
+                data_to_save.load_data()
+            except Exception as e:
+                logger.error("Failed to preload data before save: %s", e)
+
+        if isinstance(data_to_save, mne.BaseEpochs):
+            n_samples = len(data_to_save)
+        elif isinstance(data_to_save, mne.Evoked):
+            n_samples = data_to_save.data.shape[1] if data_to_save.data is not None else 0
+        else:
+            n_samples = getattr(data_to_save, "n_times", 0)
+        logger.info(
+            "Auto-export: type=%s file_type=%s n_samples=%s preload=%s",
+            type(data_to_save).__name__, file_type, n_samples,
+            getattr(data_to_save, "preload", "N/A"),
+        )
+        if n_samples == 0:
+            logger.error("data_to_save has 0 samples - aborting save to avoid creating an empty file")
+            QMessageBox.warning(self, "Export Failed", "Pipeline output contains no data (0 samples).\nCheck your pipeline for actions that may have produced empty output.")
+            ctx.on_status_update("error")
+            return
+
+        out_path = ctx.project.session_output_file(
+            ctx.project_dir, ctx.participant, ctx.session, file_type, ctx.run_index
+        )
+
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            self.runner.run_in_thread(
+                lambda: data_to_save.save(str(out_path), overwrite=True),
+                f"Saving {file_type}...",
+            )
+            logger.info(
+                "Saved %s: %s bytes",
+                out_path.name,
+                out_path.stat().st_size if out_path.exists() else "file missing!",
+            )
+        except Exception as e:
+            logger.exception("Auto-export failed: %s", out_path)
+            QMessageBox.warning(self, "Export Failed", f"Could not save output:\n{e}")
+            ctx.on_status_update("error")
+            return
+
+        # Also save the last raw intermediate when output is epochs/evoked.
+        if last_raw is not None:
+            raw_path = ctx.project.session_output_file(
+                ctx.project_dir, ctx.participant, ctx.session, "preprocessed", ctx.run_index
+            )
+            try:
+                if not last_raw.preload:
+                    last_raw.load_data()
+                raw_path.parent.mkdir(parents=True, exist_ok=True)
+                self.runner.run_in_thread(
+                    lambda: last_raw.save(str(raw_path), overwrite=True),
+                    "Saving preprocessed raw...",
+                )
+                logger.info("Saved raw intermediate: %s", raw_path.name)
+            except Exception as e:
+                logger.warning("Could not save raw intermediate: %s", e)
+
+        # Track exported path(s) in processed_files before notifying project window.
+        s = ctx.session
+        paths_to_track = [str(out_path)]
+        if last_raw is not None:
+            raw_path_str = str(ctx.project.session_output_file(
+                ctx.project_dir, ctx.participant, ctx.session, "preprocessed", ctx.run_index
+            ))
+            if raw_path_str not in paths_to_track:
+                paths_to_track.append(raw_path_str)
+
+        for out_str in paths_to_track:
+            if ctx.run_index is not None and not s.merge_runs:
+                while len(s.processed_files) <= ctx.run_index:
+                    s.processed_files.append("")
+                s.processed_files[ctx.run_index] = out_str
+            elif out_str not in s.processed_files:
+                s.processed_files.append(out_str)
+
+        ctx.on_status_update("done")
+
+    def on_pipeline_complete(self):
+        """Called by PipelineRunner when all pipeline actions complete successfully."""
+
+    def cleanup(self):
+        """Release resources. Called by ProjectWindow when the embedded session ends,
+        or automatically from closeEvent in standalone mode."""
         self.state.data_states.close()
+
+    def closeEvent(self, event):
+        """Handle close for standalone mode. In embedded mode, ProjectWindow calls cleanup()."""
+        self.cleanup()
+        # Notify project context when used as a standalone window (not embedded)
+        if self.project_context:
+            actions = self.state.actions
+            if any(a.status.name == "ERROR" for a in actions):
+                final_status = "error"
+            elif actions and all(a.status.name == "COMPLETE" for a in actions):
+                final_status = "done"
+            else:
+                final_status = "pending"
+            try:
+                self.project_context.on_status_update(final_status)
+            except Exception as e:
+                logger.warning("Failed to update participant status on close: %s", e)
         super().closeEvent(event)

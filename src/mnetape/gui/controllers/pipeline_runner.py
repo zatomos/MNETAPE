@@ -7,6 +7,7 @@ and handles cancellation.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import mne
 from typing import TYPE_CHECKING
@@ -16,7 +17,8 @@ from PyQt6.QtWidgets import QApplication, QMessageBox, QProgressDialog
 
 from mnetape.actions.registry import get_action_by_id, get_action_title
 from mnetape.core.executor import exec_action
-from mnetape.core.models import ActionStatus, DataType, ICASolution
+from mnetape.core.models import ActionResult, ActionStatus, DataType, ICASolution
+from mnetape.gui.widgets.toast_notification import ToastNotification
 
 if TYPE_CHECKING:
     from mnetape.gui.controllers.main_window import MainWindow
@@ -43,8 +45,6 @@ class PipelineRunner:
 
     def show_toast(self, action, title: str) -> None:
         """Show a toast notification for a completed action, replacing any existing one."""
-        from mnetape.gui.widgets.toast_notification import ToastNotification
-        from mnetape.core.models import ActionResult
         if self.current_toast is not None:
             self.current_toast.close()
         on_results = None
@@ -53,9 +53,10 @@ class PipelineRunner:
         elif action.result is not None:
             logger.warning("Unexpected action.result type: %s (value=%r)",
                            type(action.result).__name__, action.result)
+        toast_parent = getattr(self.w, "host_window", None) or self.w
         toast = ToastNotification(
             f'"{title}" complete',
-            parent=self.w,
+            parent=toast_parent,
             on_view_results=on_results,
         )
         toast.destroyed.connect(lambda: setattr(self, "current_toast", None))
@@ -288,8 +289,19 @@ class PipelineRunner:
 
     def run_all(self):
         """Run all actions that have not yet been executed."""
-        if self.require_data():
-            self.run_actions(len(self.state.data_states), len(self.state.actions))
+        first_action = self.state.actions[0] if self.state.actions else None
+        starts_with_load_file = (
+            first_action is not None and first_action.action_id == "load_file"
+        )
+        if starts_with_load_file:
+            fp = first_action.params.get("file_path", "")
+            if not fp:
+                QMessageBox.warning(self.w, "No File Path",
+                                    "No file path set in the Load File action. Edit it first.")
+                return
+        elif not self.require_data():
+            return
+        self.run_actions(len(self.state.data_states), len(self.state.actions))
 
     def run_actions(self, start_idx, end_idx):
         """Run a contiguous range of pipeline actions.
@@ -301,9 +313,6 @@ class PipelineRunner:
             start_idx: Index of the first action to run.
             end_idx: Index one past the last action to run.
         """
-        if not self.require_data():
-            return
-
         final_status = "Pipeline complete"
         self.w.status.showMessage("Running pipeline...")
         logger.info("======== Running actions %d to %d ========", start_idx, end_idx)
@@ -318,8 +327,10 @@ class PipelineRunner:
             del stored  # release the DataStore reference, only copy is needed
             # Pop from LRU cache
             self.state.data_states.cache.pop(start_idx - 1, None)
-        else:
+        elif self.state.raw_original is not None:
             data = self.state.raw_original.copy()
+        else:
+            data = None  # load_file at index 0 will populate this
 
         QApplication.processEvents()
 
@@ -340,31 +351,49 @@ class PipelineRunner:
             action_def = get_action_by_id(action.action_id)
             in_type = action_def.input_type if action_def else DataType.RAW
             out_type = action_def.output_type if action_def else DataType.RAW
-            pipeline_type = self.infer_data_type(data)
-            logger.debug("Action %d: data class=%s pipeline_type=%s",
-                         i + 1, type(data).__name__, pipeline_type)
-            # For ANY actions, use the actual pipeline type for execution
-            if in_type == DataType.ANY:
-                in_type = pipeline_type
-            if out_type == DataType.ANY:
-                out_type = pipeline_type
 
-            if in_type != pipeline_type:
-                action.status = ActionStatus.ERROR
-                action.error_msg = (
-                    f"Type mismatch: pipeline produces {pipeline_type.label} data, "
-                    f"but this action expects {in_type.label}"
-                )
-                logger.error("Type mismatch at action %d: pipeline=%s action_input=%s",
-                             i + 1, pipeline_type, in_type)
-                self.w.update_action_list(sync_code=False)
-                final_status = f"Pipeline stopped: type mismatch at action {i + 1}"
-                break
+            # Skip type-mismatch check when data is None
+            is_load_file = action.action_id == "load_file"
+            if not is_load_file:
+                if data is None:
+                    action.status = ActionStatus.ERROR
+                    action.error_msg = "No input data available."
+                    self.w.update_action_list(sync_code=False)
+                    final_status = f"Pipeline stopped: no data for action {i + 1}"
+                    break
+
+                pipeline_type = self.infer_data_type(data)
+                logger.debug("Action %d: data class=%s pipeline_type=%s",
+                             i + 1, type(data).__name__, pipeline_type)
+                # For ANY actions, use the actual pipeline type for execution
+                if in_type == DataType.ANY:
+                    in_type = pipeline_type
+                if out_type == DataType.ANY:
+                    out_type = pipeline_type
+
+                if in_type != pipeline_type:
+                    action.status = ActionStatus.ERROR
+                    action.error_msg = (
+                        f"Type mismatch: pipeline produces {pipeline_type.label} data, "
+                        f"but this action expects {in_type.label}"
+                    )
+                    logger.error("Type mismatch at action %d: pipeline=%s action_input=%s",
+                                 i + 1, pipeline_type, in_type)
+                    self.w.update_action_list(sync_code=False)
+                    final_status = f"Pipeline stopped: type mismatch at action {i + 1}"
+                    break
 
             try:
                 call_site, func_defs = self.w.get_execution_code(i, action)
                 data = self.execute_action(action, action_def, call_site, func_defs, data,
                                            input_type=in_type, output_type=out_type)
+                if is_load_file:
+                    # Sync state so subsequent actions and visualization see the loaded data
+                    self.state.raw_original = data
+                    fp = action.params.get("file_path", "")
+                    if fp:
+                        self.state.data_filepath = Path(fp)
+                    self.w.files.apply_stored_montage_if_present()
                 self.store_action_result(i, data)
                 action.status = ActionStatus.COMPLETE
                 if action_def.result_builder_fn:
@@ -392,3 +421,11 @@ class PipelineRunner:
         self.w.viz_panel.current_step = min(end_idx, len(self.state.data_states))
         self.w.update_visualization()
         self.w.status.showMessage(final_status)
+
+        # Notify project context when the full pipeline completes without error
+        if (
+            final_status == "Pipeline complete"
+            and end_idx >= len(self.state.actions)
+            and hasattr(self.w, "on_pipeline_complete")
+        ):
+            self.w.on_pipeline_complete()

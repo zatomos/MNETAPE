@@ -142,7 +142,49 @@ class PlotCanvas(QWidget):
         self.canvas = FigureCanvasQTAgg(fig)
         self.toolbar = Toolbar(self.canvas, self)
         layout.addWidget(self.toolbar)
-        layout.addWidget(self.canvas)
+        layout.addWidget(self.canvas, 1)
+        self.canvas.draw()
+
+
+class PinnedActionItem(QWidget):
+    """Non-moveable, non-selectable action row for implicit pipeline steps.
+
+    Used for the Load File step (always present) and Set Montage step.
+    Left-clicking emits ``clicked``; right-clicking emits ``right_clicked``.
+    """
+
+    clicked = pyqtSignal()
+    right_clicked = pyqtSignal()
+
+    def __init__(self, label: str, detail: str = "", warning: bool = False, parent=None):
+        super().__init__(parent)
+        self.setObjectName("pinned_action_item")
+        self._warning = warning
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 0, 8, 0)
+        layout.setSpacing(6)
+
+        icon = QLabel("🔒")
+        icon.setFixedWidth(20)
+        icon.setStyleSheet("color: #AAAAAA;")
+        layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        text = f"{label}  ·  {detail}" if detail else label
+        self.name_label = QLabel(text)
+        color = "#C62828" if warning else "#888888"
+        self.name_label.setStyleSheet(f"color: {color}; font-style: italic;")
+        layout.addWidget(self.name_label, 1, Qt.AlignmentFlag.AlignVCenter)
+
+    def sizeHint(self) -> QSize:
+        return QSize(super().sizeHint().width(), 46)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton:
+            self.right_clicked.emit()
+        else:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
 
 class ActionListItem(QWidget):

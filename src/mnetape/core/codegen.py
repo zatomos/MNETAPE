@@ -2,8 +2,8 @@
 
 Bidirectional translation between ActionConfig objects and Python source code.
 
-New script format (two-section):
-  - Imports + load line at the top
+Script format:
+  - Imports at the top
   - # --- Functions --- section with one def per unique action body
   - # --- Pipeline --- section with # [N] Title comments + call-site lines
   - Custom actions use # --inline-- / # --end-- blocks instead of a call site
@@ -12,10 +12,8 @@ New script format (two-section):
 import ast
 import logging
 import re
-from pathlib import Path
 
 from mnetape.actions.registry import get_action_by_id, get_action_title
-from mnetape.core.data_io import detect_extension
 from mnetape.core.models import CUSTOM_ACTION_ID, ActionConfig, ActionStatus, DataType
 
 logger = logging.getLogger(__name__)
@@ -25,19 +23,6 @@ BASE_IMPORTS = [
     "import mne",
     "import numpy as np",
 ]
-
-# Maps file extensions to the standalone MNE reader function
-EXT_TO_READER: dict[str, str] = {
-    ".fif":    "mne.io.read_raw_fif",
-    ".fif.gz": "mne.io.read_raw_fif",
-    ".edf":    "mne.io.read_raw_edf",
-    ".bdf":    "mne.io.read_raw_bdf",
-    ".gdf":    "mne.io.read_raw_gdf",
-    ".vhdr":   "mne.io.read_raw_brainvision",
-    ".set":    "mne.io.read_raw_eeglab",
-    ".cnt":    "mne.io.read_raw_cnt",
-    ".mff":    "mne.io.read_raw_egi",
-}
 
 # -------- Function name deduplication --------
 
@@ -156,17 +141,16 @@ def collect_func_defs(actions: list[ActionConfig], func_names: list[str], types:
             emitted[func_name] = action_def.build_function_def(func_name, context_type)
     return emitted
 
-def generate_full_script(filepath: Path | None, actions: list[ActionConfig]) -> str:
+def generate_full_script(actions: list[ActionConfig]) -> str:
     """Generate a complete Python pipeline script from an action list.
 
-    Produces the new two-section format:
-      - imports + load line
+    Produces the two-section format:
+      - Imports
       - # --- Functions --- section with one def per unique body
       - # --- Pipeline --- section with # [N] Title + call site per action
 
     Args:
-        filepath: Path to the loaded EEG file, injected into the load line.
-        actions: Ordered list of pipeline actions to serialize.
+        actions: Ordered list of pipeline actions (including load_file and set_montage if present).
 
     Returns:
         The complete Python script as a string.
@@ -175,11 +159,8 @@ def generate_full_script(filepath: Path | None, actions: list[ActionConfig]) -> 
 
     types = get_types_for_actions(actions)
     func_names = assign_func_names(actions, types)
-
-    # Collect unique function defs, preserving order of first occurrence
     emitted_funcs = collect_func_defs(actions, func_names, types)
 
-    # Collect imports: base set + any extra imports declared by the actions in this pipeline
     all_imports: list[str] = list(BASE_IMPORTS)
     seen_imports: set[str] = set(BASE_IMPORTS)
     for action in actions:
@@ -191,14 +172,6 @@ def generate_full_script(filepath: Path | None, actions: list[ActionConfig]) -> 
                     seen_imports.add(imp)
     merged_imports = "\n".join(all_imports)
 
-    if filepath:
-        ext = detect_extension(filepath)
-        reader = EXT_TO_READER.get(ext, "mne.io.read_raw_fif")
-        load_line = f'raw = {reader}("{filepath}", preload=True)'
-    else:
-        load_line = "# raw = mne.io.read_raw_fif('your_file.fif', preload=True)"
-
-    # Build pipeline section
     pipeline_lines: list[str] = []
     for i, (action, func_name, context_type) in enumerate(zip(actions, func_names, types), 1):
         title = get_action_title(action)
@@ -218,14 +191,12 @@ def generate_full_script(filepath: Path | None, actions: list[ActionConfig]) -> 
 
         pipeline_lines.append("")
 
-    # Assemble script
     lines: list[str] = [
         "# EEG Preprocessing Pipeline",
         "# Auto-generated - edit here or in the GUI.",
         "",
         merged_imports,
         "",
-        load_line,
     ]
 
     if emitted_funcs:

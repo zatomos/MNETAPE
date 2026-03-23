@@ -325,6 +325,7 @@ class ActionDefinition:
     variants: dict = field(default_factory=dict)
     input_type: DataType = field(default_factory=lambda: DataType.RAW)
     output_type: DataType = field(default_factory=lambda: DataType.RAW)
+    hidden: bool = False
     result_builder_fn: Callable | None = None
 
     def default_params(self) -> dict:
@@ -433,6 +434,7 @@ def action_from_templates(
     doc: str,
     extra_imports: tuple[str, ...] = (),
     mne_doc_urls: dict[str, str] | None = None,
+    hidden: bool = False,
     prerequisites: tuple = (),
 ) -> ActionDefinition:
     """Build an ActionDefinition by loading and introspecting a templates.py module.
@@ -541,6 +543,7 @@ def action_from_templates(
             variants={},
             input_type=ab.input_type,
             output_type=ab.output_type,
+            hidden=hidden,
             result_builder_fn=rb_fn,
         )
     else:
@@ -565,6 +568,7 @@ def action_from_templates(
                 variants={},
                 input_type=ab.input_type,
                 output_type=ab.output_type,
+                hidden=hidden,
             )
             variants[ab.input_type] = variant
 
@@ -586,5 +590,6 @@ def action_from_templates(
             variants=variants,
             input_type=DataType.ANY,
             output_type=DataType.ANY,
+            hidden=hidden,
             result_builder_fn=rb_fn,
         )

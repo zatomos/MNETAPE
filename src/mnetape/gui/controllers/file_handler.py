@@ -15,8 +15,11 @@ from typing import TYPE_CHECKING
 
 from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
+import mne
+
 from mnetape.core.codegen import generate_full_script, parse_script_to_actions
 from mnetape.core.data_io import load_raw_data, open_file_dialog_filter
+from mnetape.core.models import ActionConfig, ActionStatus
 from mnetape.gui.controllers.pipeline_runner import OperationCancelled
 
 if TYPE_CHECKING:
@@ -41,6 +44,8 @@ class FileHandler:
         self.state.raw_original = None
         self.state.data_states.clear()
         self.state.data_filepath = None
+        if self.state.actions and self.state.actions[0].action_id == "load_file":
+            self.state.actions[0].params = {"file_path": "", "preload": True}
 
         for action in self.state.actions:
             action.reset()
@@ -80,6 +85,68 @@ class FileHandler:
             act = self.w.recent_menu.addAction(path)
             act.triggered.connect(lambda _, p=path: self.load_data_path(p))
 
+    def ensure_load_file_action(self, file_path: str) -> None:
+        """Ensure state.actions[0] is a load_file ActionConfig with the given path.
+
+        Updates params in-place if load_file already occupies index 0; otherwise inserts it.
+        """
+        params = {"file_path": file_path, "preload": True}
+        if self.state.actions and self.state.actions[0].action_id == "load_file":
+            self.state.actions[0].params = params
+            self.state.actions[0].reset()
+        else:
+            self.state.actions.insert(0, ActionConfig("load_file", params))
+
+    def mark_load_file_complete(self, raw) -> None:
+        """Mark the load_file action as complete and store raw in data_states[0].
+
+        Called after data is loaded externally (load_data_path, concatenate) so the UI
+        shows load_file as already run without requiring an explicit pipeline execution.
+        """
+        if not self.state.actions or self.state.actions[0].action_id != "load_file":
+            return
+        action = self.state.actions[0]
+        action.status = ActionStatus.COMPLETE
+        if not self.state.data_states:
+            self.state.data_states.append(raw.copy())
+        else:
+            self.state.data_states[0] = raw.copy()
+
+    def apply_stored_montage_if_present(self) -> None:
+        """Apply set_montage action params to raw_original in-place, if set_montage is in state.actions.
+
+        Called after loading data when a pipeline with a set_montage step was already parsed.
+        Ensures raw_original reflects the montage without needing to run the full pipeline.
+        """
+        if self.state.raw_original is None:
+            return
+        montage_action = next(
+            (a for a in self.state.actions if a.action_id == "set_montage"), None
+        )
+        if montage_action is None:
+            return
+        params = montage_action.params
+        renames = params.get("renames")
+        montage_name = params.get("montage_name", "")
+        montage_file = params.get("montage_file", "")
+        try:
+            raw = self.state.raw_original
+            if renames:
+                raw.rename_channels(renames)
+            if montage_file:
+                if montage_file.lower().endswith(".bvct"):
+                    montage = mne.channels.read_dig_captrak(montage_file)
+                else:
+                    montage = mne.channels.read_custom_montage(montage_file)
+            elif montage_name:
+                montage = mne.channels.make_standard_montage(montage_name)
+            else:
+                return
+            raw.set_montage(montage, on_missing="warn")
+            logger.info("Applied stored montage '%s' to raw_original", montage_name or montage_file)
+        except Exception as e:
+            logger.warning("Failed to apply stored montage to raw_original: %s", e)
+
     def load_data_path(self, path: str):
         """Load an EEG file from a known path without opening a dialog.
 
@@ -109,45 +176,19 @@ class FileHandler:
 
         self.state.raw_original = raw
         self.state.data_filepath = Path(path)
+        self.ensure_load_file_action(path)
         self.state.data_states.clear()
 
         for action in self.state.actions:
             action.reset()
 
+        self.mark_load_file_complete(raw)
         self.w.update_action_list()
         self.w.update_visualization()
 
-        info = self.state.raw_original.info
         self.w.status.showMessage(f"Loaded {self.state.data_filepath.name}")
-        self.check_montage(self.state.raw_original)
         self.add_recent_file(path)
         logger.info("Loaded data file: %s", path)
-
-    def check_montage(self, raw):
-        """Prompt the user to set a montage if none is found in the raw object.
-
-        Opens MontageDialog when the raw object contains neither digitization points nor a channel montage
-        with positions.
-
-        Args:
-            raw: The loaded MNE Raw object to inspect.
-        """
-        try:
-            montage = raw.get_montage()
-        except Exception as e:
-            logger.warning("Could not get montage from raw: %s", e)
-            montage = None
-
-        dig = raw.info.get("dig")
-        has_dig = bool(dig)
-        has_montage = montage is not None and getattr(montage, "ch_names", None)
-
-        if not has_montage and not has_dig:
-            from mnetape.gui.dialogs.montage_dialog import MontageDialog
-
-            dialog = MontageDialog(raw, parent=self.w)
-            dialog.exec()
-            logger.warning("Loaded file without montage/digitization: %s", raw.filenames)
 
     def open_file(self):
         """Open a file-picker dialog and load the selected EEG file."""
@@ -169,7 +210,6 @@ class FileHandler:
                 return
             raw_to_export = self.state.data_states[-1]
         else:
-            print(row, len(self.state.data_states))
             if row >= len(self.state.data_states):
                 QMessageBox.warning(self.w, "No Data", "Selected action has not been computed yet.")
                 return
@@ -186,6 +226,17 @@ class FileHandler:
             raw_to_export.save(path, overwrite=True)
             self.w.status.showMessage(f"Exported: {Path(path).name}")
             logger.info("Exported processed FIF: %s", path)
+            # In project mode, track this exported file for analysis
+            if self.w.project_context:
+                ctx = self.w.project_context
+                pf = ctx.session.processed_files
+                if ctx.run_index is not None and not ctx.session.merge_runs:
+                    while len(pf) <= ctx.run_index:
+                        pf.append("")
+                    pf[ctx.run_index] = path
+                elif path not in pf:
+                    pf.append(path)
+                ctx.project.save(ctx.project_dir)
         except Exception as e:
             logger.exception("Export failed: %s", path)
             QMessageBox.critical(self.w, "Error", f"Export failed:\n{e}")
@@ -208,7 +259,7 @@ class FileHandler:
             path += ".py"
 
         try:
-            code = generate_full_script(self.state.data_filepath, self.state.actions)
+            code = generate_full_script(self.state.actions)
             Path(path).write_text(code)
         except Exception as exc:
             logger.exception("Failed to save pipeline")
@@ -241,11 +292,18 @@ class FileHandler:
             QMessageBox.critical(self.w, "Error", f"Failed to load pipeline:\n{e}")
 
     def auto_save(self):
-        """Write current editor code to disk if a pipeline file is open."""
-        fp = self.state.pipeline_filepath
-        if not fp or not fp.exists():
-            return
+        """Write current editor code to disk. In project mode, always writes to the participant pipeline."""
         code = self.w.code_panel.get_code()
+        if not code:
+            return
+        if self.w.project_context:
+            ctx = self.w.project_context
+            fp = ctx.project.participant_pipeline_path(ctx.project_dir, ctx.participant, ctx.session)
+            fp.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            fp = self.state.pipeline_filepath
+            if not fp or not fp.exists():
+                return
         fp.write_text(code)
         self.w.code_panel.file_hash = hashlib.md5(code.encode()).hexdigest()
 

@@ -61,12 +61,12 @@ def get_action_registry() -> dict[str, ActionDefinition]:
     return ACTION_REGISTRY
 
 def list_actions() -> list[ActionDefinition]:
-    """Return all registered ActionDefinition objects.
+    """Return all registered ActionDefinition objects, excluding hidden actions.
 
     Returns:
-        List of all loaded ActionDefinition instances.
+        List of all loaded ActionDefinition instances that are not hidden.
     """
-    return list(get_action_registry().values())
+    return [a for a in get_action_registry().values() if not a.hidden]
 
 def get_action_by_id(action_id: str) -> ActionDefinition | None:
     """Look up an action by its unique identifier.

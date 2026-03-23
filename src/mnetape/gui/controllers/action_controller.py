@@ -15,8 +15,10 @@ from typing import TYPE_CHECKING
 
 from mnetape.actions.registry import get_action_by_id, get_action_title
 from mnetape.core.codegen import parse_script_to_actions
-from mnetape.core.models import ActionConfig
+from mnetape.core.models import ActionConfig, ICASolution
 from mnetape.gui.dialogs import ActionEditor, AddActionDialog
+
+PROTECTED_ACTION_IDS = frozenset({"load_file", "set_montage"})
 
 if TYPE_CHECKING:
     from mnetape.gui.controllers.main_window import MainWindow
@@ -56,6 +58,8 @@ class ActionController:
         """Remove the currently selected action from the pipeline."""
         row = self.w.get_selected_action_row()
         if row >= 0:
+            if self.state.actions[row].action_id in PROTECTED_ACTION_IDS:
+                return
             self.state.actions.pop(row)
             self.state.data_states.truncate(row)
             for action in self.state.actions[row:]:
@@ -72,6 +76,10 @@ class ActionController:
         """
         actions = self.state.actions
         if from_row < 0 or from_row >= len(actions) or to_row < 0 or to_row >= len(actions):
+            return
+        if actions[from_row].action_id in PROTECTED_ACTION_IDS:
+            return
+        if actions[to_row].action_id in PROTECTED_ACTION_IDS:
             return
         action = actions.pop(from_row)
         actions.insert(to_row, action)
@@ -93,6 +101,8 @@ class ActionController:
         row = self.w.get_selected_action_row()
         new_row = row + direction
         if 0 <= new_row < len(self.state.actions):
+            if self.state.actions[new_row].action_id in PROTECTED_ACTION_IDS:
+                return
             self.state.actions[row], self.state.actions[new_row] = self.state.actions[new_row], self.state.actions[row]
             self.state.data_states.truncate(min(row, new_row))
             for action in self.state.actions[min(row, new_row) :]:
@@ -250,7 +260,6 @@ class ActionController:
         action = self.state.actions[row]
         # Pass the most relevant data object for channel-aware and ICA-aware widgets.
         # ICASolution is passed as-is so ica_apply's Browse widget can open the dialog.
-        from mnetape.core.models import ICASolution
         if row == 0:
             current_raw = self.state.raw_original
         elif row <= len(self.state.data_states):

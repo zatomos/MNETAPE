@@ -28,7 +28,7 @@ class ActionResultDialog(QDialog):
     def __init__(self, result: ActionResult, title: str, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        self.setWindowTitle(f"Results — {title}")
+        self.setWindowTitle(f"Results - {title}")
         self.setMinimumWidth(560)
 
         layout = QVBoxLayout(self)
