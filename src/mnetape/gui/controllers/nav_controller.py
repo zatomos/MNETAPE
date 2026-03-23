@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import logging
 
+import mne
 from PyQt6.QtWidgets import QMessageBox
 from typing import TYPE_CHECKING
 
+from mnetape.core.models import ICASolution
 from mnetape.gui.widgets.common import (
     disable_mne_browser_channel_clicks,
     sanitize_mne_browser_toolbar,
@@ -30,9 +32,6 @@ class NavController:
 
     def open_browser(self):
         """Open MNE's interactive browser for the currently selected step."""
-        import mne
-        from mnetape.core.models import ICASolution
-
         step = self.w.viz_panel.current_step
         if step == 0 and self.state.raw_original:
             browser = self.state.raw_original.plot(block=False, title="Original")

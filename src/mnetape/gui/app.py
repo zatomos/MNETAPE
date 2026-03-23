@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 from PyQt6.QtWidgets import QApplication
 
 from mnetape.core.logging_config import setup_logging
-from mnetape.gui.controllers import MainWindow
+from mnetape.gui.controllers import ProjectWindow
 
 matplotlib.use("QtAgg")
 logger = logging.getLogger(__name__)
@@ -81,7 +81,7 @@ def main():
 
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-    window = MainWindow()
+    window = ProjectWindow()
     window.show()
 
     sys.exit(app.exec())

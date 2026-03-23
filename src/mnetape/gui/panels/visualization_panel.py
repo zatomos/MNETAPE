@@ -20,7 +20,6 @@ from PyQt6.QtWidgets import (
 from matplotlib.figure import Figure
 import mne
 
-from mnetape.actions.registry import get_action_title
 from mnetape.core.models import ActionConfig, STATUS_ICONS
 from mnetape.gui.widgets import PlotCanvas
 from mnetape.gui.widgets.common import (
@@ -33,9 +32,13 @@ logger = logging.getLogger(__name__)
 
 
 class PlotWorker(QThread):
-    """Background thread for the compute phase of a plot update."""
+    """Background thread for the compute phase of a plot update.
 
-    finished = pyqtSignal(object)
+    Uses result_ready (not finished) to avoid shadowing QThread.finished,
+    which Qt uses internally for OS-thread cleanup.
+    """
+
+    result_ready = pyqtSignal(object)
 
     def __init__(self, fn: Callable):
         super().__init__()
@@ -43,10 +46,10 @@ class PlotWorker(QThread):
 
     def run(self):
         try:
-            self.finished.emit(self.fn())
+            self.result_ready.emit(self.fn())
         except Exception as e:
             logger.warning("Background plot computation failed: %s", e)
-            self.finished.emit(None)
+            self.result_ready.emit(None)
 
 # Tab indices for each mode
 RAW_TAB_NAMES = ["Time Series", "PSD", "Sensors", "Topomap"]
@@ -94,6 +97,7 @@ class VisualizationPanel(QWidget):
         self.psd_data_id = None
         self.topomap_data_id = None
         self.browser = None
+        self.browser_data_id = None
         self.mode = "raw"
         # Worker management
         self.slot_workers: dict[str, PlotWorker] = {}
@@ -181,6 +185,7 @@ class VisualizationPanel(QWidget):
             self.browser.close()
             self.browser.deleteLater()
             self.browser = None
+            self.browser_data_id = None
 
     def sanitize_browser_toolbar(self):
         """Hide unsupported toolbar controls in embedded MNE browsers."""
@@ -196,15 +201,21 @@ class VisualizationPanel(QWidget):
         """Render the time-series tab by embedding an MNE browser widget."""
         if self.current_data is None or isinstance(self.current_data, (mne.Epochs, mne.Evoked)):
             return
+        data_id = id(self.current_data)
+        if self.browser is not None and self.browser_data_id == data_id:
+            return
         self.show_browser_loading(self.time_placeholder)
         try:
             self.close_browser()
             self.time_placeholder.setVisible(False)
             self.browser = self.current_data.plot(show=False)
+            self.browser_data_id = data_id
             self.sanitize_browser_toolbar()
             self.time_layout.addWidget(self.browser)
+            self.browser.setVisible(True)
         except Exception as e:
             logger.warning("Time-series plot update failed: %s", e)
+            self.time_placeholder.setVisible(True)
             self.time_placeholder.setText("Load data to view")
         finally:
             self.clear_browser_loading()
@@ -213,15 +224,21 @@ class VisualizationPanel(QWidget):
         """Render the epochs browser tab by embedding an MNE Epochs browser widget."""
         if self.current_data is None or not isinstance(self.current_data, mne.Epochs):
             return
+        data_id = id(self.current_data)
+        if self.browser is not None and self.browser_data_id == data_id:
+            return
         self.show_browser_loading(self.epochs_placeholder)
         try:
             self.close_browser()
             self.epochs_placeholder.setVisible(False)
             self.browser = self.current_data.plot(show=False)
+            self.browser_data_id = data_id
             self.sanitize_browser_toolbar()
             self.epochs_layout.addWidget(self.browser)
+            self.browser.setVisible(True)
         except Exception as e:
             logger.warning("Epochs browser update failed: %s", e)
+            self.epochs_placeholder.setVisible(True)
             self.epochs_placeholder.setText("Run epoching to view")
         finally:
             self.clear_browser_loading()
@@ -230,6 +247,7 @@ class VisualizationPanel(QWidget):
         """Show placeholder text when no data is loaded."""
         self.psd_data_id = None
         self.topomap_data_id = None
+        self.browser_data_id = None
         for plot in [self.plot_psd, self.plot_evoked, self.plot_sensors, self.plot_topomap, self.plot_image]:
             plot.update_figure(make_loading_fig("Load data to view", color="#999999", fontstyle="normal"))
         self.close_browser()
@@ -336,23 +354,28 @@ class VisualizationPanel(QWidget):
         If a worker for the same slot is already running, its result is discarded.
 
         Args:
-            slot_key: Unique name for this plot slot (e.g. "psd", "topomap").
+            slot_key: Unique name for this plot slot.
             canvas: The PlotCanvas to update when done.
-            compute_fn: Runs in background; returns intermediate data (e.g. a Spectrum object).
+            compute_fn: Runs in background; returns intermediate data.
                         Return None to skip rendering.
             render_fn: Runs on the main thread; receives the compute_fn result; returns a Figure.
             message: Text shown in the loading placeholder.
         """
         # Discard result from any previous worker for this slot.
-        # Keep a live reference in orphaned_workers until the thread exits.
+        # Keep a strong reference in orphaned_workers until the OS thread exits.
         old = self.slot_workers.pop(slot_key, None)
         if old is not None:
+            try:
+                old.result_ready.disconnect()
+            except TypeError:
+                pass
             try:
                 old.finished.disconnect()
             except TypeError:
                 pass
+            self.finish_loading()  # balance the start_loading() that was called for the old worker
             self.orphaned_workers.add(old)
-            old.finished.connect(lambda _: self.orphaned_workers.discard(old),
+            old.finished.connect(lambda: self.orphaned_workers.discard(old),
                                  Qt.ConnectionType.QueuedConnection)
 
         self.start_loading(canvas, message)
@@ -360,8 +383,7 @@ class VisualizationPanel(QWidget):
         worker = PlotWorker(compute_fn)
         self.slot_workers[slot_key] = worker
 
-        def on_worker_done(result):
-            self.slot_workers.pop(slot_key, None)
+        def on_result(result):
             self.finish_loading()
             if result is not None:
                 try:
@@ -371,7 +393,12 @@ class VisualizationPanel(QWidget):
                 except Exception as e:
                     logger.warning("Plot render failed for %s: %s", slot_key, e)
 
-        worker.finished.connect(on_worker_done, Qt.ConnectionType.QueuedConnection)
+        def on_thread_exit():
+            # Native QThread.finished: OS thread has fully exited, safe to drop reference.
+            self.slot_workers.pop(slot_key, None)
+
+        worker.result_ready.connect(on_result, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(on_thread_exit, Qt.ConnectionType.QueuedConnection)
         worker.start()
 
     def show_browser_loading(self, label: QLabel) -> None:
@@ -381,7 +408,7 @@ class VisualizationPanel(QWidget):
         self.loading_count += 1
         if self.loading_count == 1:
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        QApplication.processEvents()  # browser loads are synchronous — flush now so label is visible
+        QApplication.processEvents()
 
     def clear_browser_loading(self) -> None:
         """Pop the wait cursor after a synchronous browser-load operation."""
@@ -467,22 +494,47 @@ class VisualizationPanel(QWidget):
             "Rendering evoked...",
         )
 
+    @staticmethod
+    def has_electrode_positions(data) -> bool:
+        """Return True if the data has usable electrode position information."""
+        try:
+            info = data.info if hasattr(data, "info") else None
+            if info is None:
+                return False
+            if bool(info.get("dig")):
+                return True
+            import mne.io.constants as C
+            eeg_chs = [ch for ch in info["chs"] if ch["kind"] == C.FIFF.FIFFV_EEG_CH]
+            return any(ch["loc"][:3].any() for ch in eeg_chs)
+        except Exception:
+            return False
+
     def update_sensors_plot(self):
         """Render a sensor map plot on the main thread."""
         if self.current_data is None:
+            return
+        if not self.has_electrode_positions(self.current_data):
+            self.plot_sensors.update_figure(
+                make_loading_fig("No electrode positions available", color="#aaaaaa", fontstyle="normal")
+            )
             return
         data = self.current_data
 
         def render(d):
             if isinstance(d, mne.Evoked):
-                return mne.viz.plot_sensors(d.info, show=False, show_names=True, kind="3d")
-            return d.plot_sensors(show=False, show_names=True, kind="3d")
+                return mne.viz.plot_sensors(d.info, show=False, show_names=True, kind="topomap")
+            return d.plot_sensors(show=False, show_names=True, kind="topomap")
 
         self.run_plot_worker("sensors", self.plot_sensors, lambda: data, render, "Rendering sensor map...")
 
     def update_topomap_plot(self):
         """Compute PSD in a background thread, then render the topomap on the main thread."""
         if self.current_data is None:
+            return
+        if not self.has_electrode_positions(self.current_data):
+            self.plot_topomap.update_figure(
+                make_loading_fig("No electrode positions available", color="#aaaaaa", fontstyle="normal")
+            )
             return
         data_id = id(self.current_data)
         if data_id == self.topomap_data_id:

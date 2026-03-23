@@ -9,6 +9,7 @@ import json
 import logging
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -19,6 +20,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -292,6 +294,13 @@ def channel_types_widget_factory(current_value, raw, parent):
         dlg = ChannelTypeDialog(raw, current_mapping, parent)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             line_edit.setText(dlg.get_mapping_string())
+
+    # Trailing dropdown arrow
+    drop_icon = line_edit.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
+    drop_action = QAction(drop_icon, "Edit channel types...", line_edit)
+    drop_action.setEnabled(raw is not None)
+    drop_action.triggered.connect(_edit)
+    line_edit.addAction(drop_action, QLineEdit.ActionPosition.TrailingPosition)
 
     btn_edit.clicked.connect(_edit)
     layout.addWidget(btn_edit)

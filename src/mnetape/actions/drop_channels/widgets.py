@@ -14,6 +14,7 @@ import numpy as np
 from mnetape.gui.utils import refresh_mne_browser_bads
 
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -26,6 +27,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSplitter,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -297,8 +299,20 @@ class ChannelPickerDialog(QDialog):
         self.sync_selection()
 
     def build_sensor_panel(self, parent_layout: QVBoxLayout) -> None:
-        # Plot sensors
-        self.sensor_figure, _ = self.raw.plot_sensors(kind="select", show=False, show_names=True)
+        # Falls back to a plain label when no channel positions are available.
+        try:
+            self.sensor_figure, _ = self.raw.plot_sensors(kind="select", show=False, show_names=True)
+        except (RuntimeError, ValueError) as e:
+            logger.warning("Sensor map unavailable: %s", e)
+            lbl = QLabel("No channel positions available.\nSelect channels from the list below.")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet("color: gray; font-size: 11px;")
+            parent_layout.addWidget(lbl, 1)
+            self.sensor_figure = None
+            self.sensor_canvas = None
+            self.lasso = None
+            return
+
         self.sensor_canvas = self.sensor_figure.canvas
         parent_layout.addWidget(self.sensor_canvas, 1)
 
@@ -557,6 +571,7 @@ def channels_widget_factory(current_value, raw, parent):
     layout.setContentsMargins(0, 0, 0, 0)
 
     line_edit = QLineEdit(str(current_value) if current_value is not None else "")
+    line_edit.setPlaceholderText("channel names, comma-separated")
     layout.addWidget(line_edit, 1)
 
     btn_pick = QPushButton("Pick...")
@@ -569,6 +584,12 @@ def channels_widget_factory(current_value, raw, parent):
         dlg = ChannelPickerDialog(raw, selected, parent)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             line_edit.setText(", ".join(dlg.get_selected()))
+
+    drop_icon = line_edit.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
+    drop_action = QAction(drop_icon, "Pick channels…", line_edit)
+    drop_action.setEnabled(raw is not None)
+    drop_action.triggered.connect(pick)
+    line_edit.addAction(drop_action, QLineEdit.ActionPosition.TrailingPosition)
 
     btn_pick.clicked.connect(pick)
     layout.addWidget(btn_pick)

@@ -1,8 +1,3 @@
-/* ================================================================
-   MNETAPE — Polished Light Theme (Fusion base)
-   Accent: #3C7EDB  Surface: #F5F5F7  Text: #1A1A1A
-   ================================================================ */
-
 /* ---- Global defaults ------------------------------------------ */
 QWidget {
     background-color: #F5F5F7;
@@ -264,9 +259,9 @@ QComboBox::drop-down {
     border-bottom-right-radius: 5px;
 }
 QComboBox::down-arrow {
-    width: 10px;
-    height: 10px;
-    image: none;
+    width: 8px;
+    height: 8px;
+    image: url({assets}/chevron-down.svg);
 }
 QComboBox QAbstractItemView {
     background-color: #FFFFFF;
@@ -631,6 +626,12 @@ QWidget#action_item_widget {
     border-radius: 6px;
 }
 
+QWidget#pinned_action_item {
+    background-color: #F5F5F5;
+    border-radius: 6px;
+    border: 1px solid #E0E0E0;
+}
+
 /* Sidebar header / title area */
 QLabel#sidebar_title {
     font-size: 15px;
@@ -695,4 +696,124 @@ QPushButton#btn_add_action:hover {
 }
 QPushButton#btn_add_action:pressed {
     background-color: #3270C8;
+}
+
+/* ================================================================
+   Project window
+   ================================================================ */
+
+/* Project left sidebar */
+QWidget#project_left_panel {
+    background-color: #FAFAFA;
+    border-right: 1.5px solid #D5D5D8;
+}
+
+/* Participant list */
+QListWidget#participant_list {
+    background-color: #FAFAFA;
+    border: none;
+    border-radius: 0;
+    padding: 4px 2px;
+}
+QListWidget#participant_list::item {
+    padding: 6px 12px;
+    margin: 1px 4px;
+    border-radius: 7px;
+    font-size: 13px;
+}
+QListWidget#participant_list::item:selected {
+    background-color: #E4EDFF;
+    border: 1px solid #AECBF5;
+    color: #1A1A1A;
+}
+QListWidget#participant_list::item:hover:!selected {
+    background-color: #F0F3FA;
+    border: 1px solid transparent;
+}
+
+/* Participant detail scroll area */
+QScrollArea#participant_detail_scroll {
+    border: none;
+    background-color: #FFFFFF;
+}
+QScrollArea#participant_detail_scroll > QWidget > QWidget {
+    background-color: #FFFFFF;
+}
+
+/* Preprocessing header bar */
+QWidget#prep_header {
+    background-color: #ECECEE;
+    border-bottom: 1px solid #D5D5D8;
+    min-height: 36px;
+    max-height: 44px;
+}
+
+/* Back button */
+QPushButton#btn_back_to_project {
+    background-color: transparent;
+    border: 1px solid #C8C8CE;
+    border-radius: 5px;
+    padding: 4px 10px;
+    font-size: 12px;
+    color: #444444;
+}
+QPushButton#btn_back_to_project:hover {
+    background-color: #E5E5EA;
+    border-color: #B5B5BC;
+    color: #1A1A1A;
+}
+QPushButton#btn_back_to_project:pressed {
+    background-color: #DCDCE2;
+}
+
+/* Participant label in preprocessing header */
+QLabel#prep_participant_label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #1A1A1A;
+}
+
+/* Preprocessing content area */
+QWidget#prep_content {
+    background-color: #F5F5F7;
+}
+
+/* ================================================================
+   Participant/Session tree (replaces participant_list)
+   ================================================================ */
+
+QTreeWidget#participant_tree {
+    background-color: #FAFAFA;
+    border: none;
+    border-radius: 0;
+    padding: 4px 2px;
+}
+QTreeWidget#participant_tree::item {
+    padding: 5px 8px;
+    margin: 1px 2px;
+    border-radius: 6px;
+    font-size: 13px;
+}
+QTreeWidget#participant_tree::item:selected {
+    background-color: #E4EDFF;
+    border: 1px solid #AECBF5;
+    color: #1A1A1A;
+}
+QTreeWidget#participant_tree::item:hover:!selected {
+    background-color: #F0F3FA;
+    border: 1px solid transparent;
+}
+QTreeWidget#participant_tree::branch {
+    background-color: #FAFAFA;
+}
+
+/* ================================================================
+   Session detail and participant detail content panels
+   ================================================================ */
+
+QWidget#session_detail {
+    background-color: #FFFFFF;
+}
+QWidget#participant_detail_content {
+    background-color: #FFFFFF;
 }
