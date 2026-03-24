@@ -459,10 +459,6 @@ class ProjectWindow(QMainWindow):
         status_label = QLabel()
         form.addRow("Status:", status_label)
 
-        pipeline_label = QLabel()
-        pipeline_label.setStyleSheet("color: gray; font-size: 11px;")
-        form.addRow("Pipeline:", pipeline_label)
-
         layout.addLayout(form)
 
         # Run files section
@@ -517,7 +513,6 @@ class ProjectWindow(QMainWindow):
             "runs_button_group": runs_button_group,
             "merge_runs_check": merge_runs_check,
             "status_label": status_label,
-            "pipeline_label": pipeline_label,
         }
         return scroll, refs
 
@@ -899,12 +894,6 @@ class ProjectWindow(QMainWindow):
         if s.error_msg:
             msg += f"<br><small style='color:#C62828;'>{s.error_msg}</small>"
         refs["status_label"].setText(msg)
-
-        if self.project_dir and self.project:
-            pp = self.project.pipeline_path(self.project_dir)
-            refs["pipeline_label"].setText(
-                self.project.pipeline_file + ("  ✓" if pp.exists() else "  (not found)")
-            )
 
         refs["merge_runs_check"].blockSignals(True)
         refs["merge_runs_check"].setChecked(s.merge_runs)
