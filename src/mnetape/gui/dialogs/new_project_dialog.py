@@ -36,7 +36,7 @@ class NewProjectDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("New Project")
-        self.setFixedSize(500, 230)
+        self.setFixedSize(500, 160)
 
         layout = QVBoxLayout(self)
 
@@ -54,7 +54,7 @@ class NewProjectDialog(QDialog):
         self.dir_edit.setReadOnly(True)
         self.dir_edit.setPlaceholderText("Choose parent folder...")
         btn_browse = QPushButton("Browse...")
-        btn_browse.setFixedWidth(80)
+        btn_browse.setFixedWidth(90)
         btn_browse.clicked.connect(self.browse)
         dir_row.addWidget(self.dir_edit)
         dir_row.addWidget(btn_browse)
@@ -71,13 +71,6 @@ class NewProjectDialog(QDialog):
         self.path_preview.setStyleSheet("color: #3C7EDB; font-size: 11px;")
         layout.addWidget(self.path_preview)
 
-        hint = QLabel(
-            "A <b>project.json</b> and <b>pipeline.py</b> will be created inside the new subfolder."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: gray; font-size: 11px;")
-        layout.addWidget(hint)
-
         layout.addStretch()
 
         buttons = QDialogButtonBox(
@@ -87,20 +80,20 @@ class NewProjectDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-        self._parent_dir: Path | None = None
+        self.parent_dir: Path | None = None
 
     def browse(self):
         path = QFileDialog.getExistingDirectory(self, "Select Parent Folder")
         if path:
-            self._parent_dir = Path(path)
+            self.parent_dir = Path(path)
             self.dir_edit.setText(str(path))
             self.update_path_preview()
 
     def update_path_preview(self):
         name = self.name_edit.text().strip()
-        if self._parent_dir and name:
+        if self.parent_dir and name:
             sanitized = sanitize_name(name)
-            full_path = self._parent_dir / sanitized
+            full_path = self.parent_dir / sanitized
             self.path_preview.setText(f"Project directory: {full_path}")
         else:
             self.path_preview.setText("")
@@ -109,7 +102,7 @@ class NewProjectDialog(QDialog):
         if not self.name_edit.text().strip():
             QMessageBox.warning(self, "Missing name", "Please enter a project name.")
             return
-        if not self._parent_dir:
+        if not self.parent_dir:
             QMessageBox.warning(self, "Missing folder", "Please select a parent folder.")
             return
         self.accept()
@@ -119,6 +112,6 @@ class NewProjectDialog(QDialog):
 
     def get_project_dir(self) -> Path | None:
         """Return the full project directory (parent / sanitized_name)."""
-        if not self._parent_dir:
+        if not self.parent_dir:
             return None
-        return self._parent_dir / sanitize_name(self.name_edit.text().strip())
+        return self.parent_dir / sanitize_name(self.name_edit.text().strip())
