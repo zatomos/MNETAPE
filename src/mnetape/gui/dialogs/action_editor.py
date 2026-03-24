@@ -4,6 +4,7 @@ ActionEditor is a QDialog that builds a form from an action's params_schema, an 
 and a live code-preview panel. It supports both full-action editing and step-level editing.
 """
 
+import json
 import logging
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -92,6 +93,26 @@ class NullableWidget(QWidget):
         return get_widget_value(self.inner)
 
 
+class ListLineEdit(QLineEdit):
+    """QLineEdit that returns a parsed list from get_value()."""
+
+    def get_value(self) -> list:
+        return [v.strip() for v in self.text().split(",") if v.strip()]
+
+
+class DictLineEdit(QLineEdit):
+    """QLineEdit that returns a parsed dict from get_value()."""
+
+    def get_value(self) -> dict:
+        text = self.text().strip()
+        if not text:
+            return {}
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return {}
+
+
 def create_widget_for_param(param_def: dict, current_value):
     """Create an appropriate Qt widget for a single parameter definition.
 
@@ -140,6 +161,16 @@ def create_widget_for_param(param_def: dict, current_value):
     elif ptype == "bool":
         widget = QCheckBox()
         widget.setChecked(bool(display_value))
+        inner = widget
+
+    elif ptype == "list":
+        text = ", ".join(str(v) for v in display_value) if isinstance(display_value, list) else (str(display_value) if display_value is not None else "")
+        widget = ListLineEdit(text)
+        inner = widget
+
+    elif ptype == "dict":
+        text = json.dumps(display_value) if isinstance(display_value, dict) else (str(display_value) if display_value is not None else "")
+        widget = DictLineEdit(text)
         inner = widget
 
     else:

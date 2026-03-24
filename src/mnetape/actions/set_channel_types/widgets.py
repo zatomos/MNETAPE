@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
 import mne
 
 from mnetape.actions.base import ParamWidgetBinding
+from mnetape.gui.dialogs.action_editor import DictLineEdit
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +268,8 @@ def channel_types_widget_factory(current_value, raw, parent):
     layout = QHBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
 
-    line_edit = QLineEdit(str(current_value or ""))
+    text = json.dumps(current_value) if isinstance(current_value, dict) else (str(current_value) if current_value else "")
+    line_edit = DictLineEdit(text)
     line_edit.setReadOnly(True)
     line_edit.setPlaceholderText("Click 'Edit...' to set channel types")
     layout.addWidget(line_edit, 1)

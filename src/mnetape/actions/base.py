@@ -78,6 +78,10 @@ def infer_param_type(annotation: type | None) -> str:
         return "bool"
     if annotation is str:
         return "text"
+    if annotation is list:
+        return "list"
+    if annotation is dict:
+        return "dict"
     return "text"
 
 def extract_schema_from_signature(fn: Callable) -> dict[str, dict]:

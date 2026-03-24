@@ -35,6 +35,7 @@ from matplotlib.path import Path as MplPath
 import mne
 
 from mnetape.actions.base import ParamWidgetBinding
+from mnetape.gui.dialogs.action_editor import ListLineEdit
 from mnetape.gui.widgets.common import sanitize_mne_browser_toolbar
 
 logger = logging.getLogger(__name__)
@@ -570,7 +571,8 @@ def channels_widget_factory(current_value, raw, parent):
     layout = QHBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
 
-    line_edit = QLineEdit(str(current_value) if current_value is not None else "")
+    text = ", ".join(current_value) if isinstance(current_value, list) else (str(current_value) if current_value is not None else "")
+    line_edit = ListLineEdit(text)
     line_edit.setPlaceholderText("channel names, comma-separated")
     layout.addWidget(line_edit, 1)
 
