@@ -285,6 +285,26 @@ class Prerequisite:
     action_id: str
     message: str
 
+@dataclass
+class InteractiveRunner:
+    """Hooks for actions that require user interaction at runtime.
+
+    run: Called before exec_action for this action during pipeline execution.
+         Signature: (action, data, parent_widget) -> data.
+         Should mutate or replace the data object in preparation for exec_action.
+    needs_inspection: Optional, returns True when manual review is required.
+         Signature: (action) -> bool.
+    build_editor_widget: Optional, returns a QWidget to embed at the top of ActionEditor.
+         Signature: (data, action, parent, param_widgets) -> QWidget | None.
+    managed_params: Param names reset to schema defaults when saving as default pipeline.
+    """
+
+    run: Callable
+    needs_inspection: Callable | None = None
+    build_editor_widget: Callable | None = None
+    managed_params: tuple[str, ...] = ()
+
+
 @dataclass(frozen=True)
 class ParamWidgetBinding:
     """Binds a custom widget factory to a specific parameter by name."""
@@ -331,6 +351,7 @@ class ActionDefinition:
     output_type: DataType = field(default_factory=lambda: DataType.RAW)
     hidden: bool = False
     result_builder_fn: Callable | None = None
+    interactive_runner: InteractiveRunner | None = None
 
     def default_params(self) -> dict:
         """Return a dict of parameter defaults taken from params_schema."""
@@ -502,6 +523,7 @@ def action_from_templates(
 
     # Autoload widgets.py for widget bindings
     widget_bindings: tuple[ParamWidgetBinding, ...] = ()
+    w_module = None
     widgets_path = here / "widgets.py"
     if widgets_path.exists():
         w_module_name = f"mnetape.actions.{action_id}._widgets"
@@ -516,7 +538,7 @@ def action_from_templates(
                     sys.modules[w_module_name] = w_module
                     w_spec.loader.exec_module(w_module)
                 except Exception as _widget_err:
-                    logger.warning(
+                    logger.exception(
                         "Failed to load widgets from %s: %s", widgets_path, _widget_err
                     )
                     sys.modules.pop(w_module_name, None)
@@ -525,6 +547,12 @@ def action_from_templates(
             bindings = getattr(w_module, "WIDGET_BINDINGS", None)
             if bindings:
                 widget_bindings = tuple(bindings)
+
+    interactive_runner: InteractiveRunner | None = None
+    if w_module is not None:
+        ir = getattr(w_module, "INTERACTIVE_RUNNER", None)
+        if isinstance(ir, InteractiveRunner):
+            interactive_runner = ir
 
     if len(action_builders) == 1:
         # Single-type action
@@ -549,6 +577,7 @@ def action_from_templates(
             output_type=ab.output_type,
             hidden=hidden,
             result_builder_fn=rb_fn,
+            interactive_runner=interactive_runner,
         )
     else:
         # Multi-type action. Build a variant ActionDefinition for each builder
@@ -596,4 +625,5 @@ def action_from_templates(
             output_type=DataType.ANY,
             hidden=hidden,
             result_builder_fn=rb_fn,
+            interactive_runner=interactive_runner,
         )

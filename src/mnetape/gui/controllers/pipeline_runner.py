@@ -40,10 +40,11 @@ class PipelineRunner:
         self.w = window
         self.state = window.state
         self.current_toast = None
+        self.last_warnings: list[str] = []
 
     # -------- Helpers --------
 
-    def show_toast(self, action, title: str) -> None:
+    def show_toast(self, action, title: str, warnings: list[str] | None = None) -> None:
         """Show a toast notification for a completed action, replacing any existing one."""
         if self.current_toast is not None:
             self.current_toast.close()
@@ -58,6 +59,7 @@ class PipelineRunner:
             f'"{title}" complete',
             parent=toast_parent,
             on_view_results=on_results,
+            warnings=warnings or None,
         )
         toast.destroyed.connect(lambda: setattr(self, "current_toast", None))
         self.current_toast = toast
@@ -256,13 +258,24 @@ class PipelineRunner:
         Raises:
             OperationCancelled: When the user cancels a threaded action.
         """
+        import warnings
+        caught: list = []
+
+        def fn():
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                result = exec_action(call_site, func_defs, data, action, input_type=input_type, output_type=output_type)
+            caught.extend(w)
+            return result
+
         title = get_action_title(action)
-        return self.run_in_thread(
-            lambda cs=call_site, fd=func_defs, d=data: exec_action(
-                cs, fd, d, action, input_type=input_type, output_type=output_type
-            ),
-            f"Running: {title}...",
-        )
+        result = self.run_in_thread(fn, f"Running: {title}...")
+        self.last_warnings = list(dict.fromkeys(
+            str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)
+        ))
+        for msg in self.last_warnings:
+            logger.warning("RuntimeWarning from '%s': %s", title, msg)
+        return result
 
     # -------- Action-level execution --------
 
@@ -301,6 +314,30 @@ class PipelineRunner:
                 return
         elif not self.require_data():
             return
+
+        # Warn if any upcoming action requires manual inspection
+        start = len(self.state.data_states)
+        for i in range(start, len(self.state.actions)):
+            action = self.state.actions[i]
+            action_def = get_action_by_id(action.action_id)
+            if not action_def or not action_def.interactive_runner:
+                continue
+            ir = action_def.interactive_runner
+            if not ir.needs_inspection or not ir.needs_inspection(action):
+                continue
+            title = get_action_title(action)
+            reply = QMessageBox.warning(
+                self.w,
+                "Manual Inspection Required",
+                f'"{title}" (step {i + 1}) requires manual component inspection.\n\n'
+                "The inspection dialog will open during execution. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            break   # warn once
+
         self.run_actions(len(self.state.data_states), len(self.state.actions))
 
     def run_actions(self, start_idx, end_idx):
@@ -383,6 +420,22 @@ class PipelineRunner:
                     final_status = f"Pipeline stopped: type mismatch at action {i + 1}"
                     break
 
+            # Interactive runner hook
+            if action_def and action_def.interactive_runner:
+                try:
+                    data = action_def.interactive_runner.run(action, data, self.w)
+                except OperationCancelled:
+                    action.status = ActionStatus.PENDING
+                    final_status = "Pipeline cancelled"
+                    break
+                except Exception as e:
+                    action.status = ActionStatus.ERROR
+                    action.error_msg = str(e)
+                    logger.exception("Interactive runner failed at index %d: %s", i, title)
+                    QMessageBox.critical(self.w, "Error", f"{title} failed:\n{e}")
+                    final_status = f"Pipeline failed at action {i + 1}: {title}"
+                    break
+
             try:
                 call_site, func_defs = self.w.get_execution_code(i, action)
                 data = self.execute_action(action, action_def, call_site, func_defs, data,
@@ -401,7 +454,7 @@ class PipelineRunner:
                         action.result = action_def.result_builder_fn(data)
                     except Exception as e:
                         logger.warning("Result builder failed for %s: %s", title, e, exc_info=True)
-                self.show_toast(action, title)
+                self.show_toast(action, title, warnings=self.last_warnings or None)
                 logger.info("Completed action %d: %s", i + 1, title)
             except OperationCancelled:
                 action.status = ActionStatus.PENDING

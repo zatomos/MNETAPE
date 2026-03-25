@@ -340,9 +340,17 @@ class MainWindow(QMainWindow):
                 and input_type != pipeline_type
             )
 
+            needs_inspection = (
+                action_def is not None
+                and action_def.interactive_runner is not None
+                and action_def.interactive_runner.needs_inspection is not None
+                and action_def.interactive_runner.needs_inspection(action)
+            )
+
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, i)
-            widget = ActionListItem(i + 1, action, type_mismatch=is_mismatch)
+            widget = ActionListItem(i + 1, action, type_mismatch=is_mismatch,
+                                    needs_inspection=needs_inspection)
             if action.action_id == "load_file":
                 widget.run_btn.setVisible(False)
             item.setSizeHint(widget.sizeHint())

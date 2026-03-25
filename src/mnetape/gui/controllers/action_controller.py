@@ -274,7 +274,9 @@ class ActionController:
             current_raw = self.state.raw_original
 
         context_type = self.w.runner.get_data_type_at(row)
-        dialog = ActionEditor(action, current_raw, self.w, context_type=context_type)
+        dialog = ActionEditor(
+            action, current_raw, self.w, context_type=context_type, data=current_raw,
+        )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             action.params = dialog.get_params()
             action.advanced_params = dialog.get_advanced_params()

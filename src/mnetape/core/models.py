@@ -92,9 +92,9 @@ class ICASolution:
         ica: The fitted MNE ICA object.
         raw: The raw data the ICA was fitted on; used by ica_apply for source
             plotting and applying the decomposition.
-        ic_labels: Optional dict produced by ica_classify. Contains keys such as
-            "labels", "y_pred_proba", and "detected_artifacts" (a sorted list of
-            component indices flagged as artifacts).
+        ic_labels: Transient classification cache populated by ica_apply before opening the inspection
+            dialog. Contains keys such as "labels", "y_pred_proba", and "detected_artifacts" (a sorted
+            list of component indices flagged as artifacts). Not persisted to the pipeline script.
     """
 
     ica: mne.preprocessing.ICA

@@ -251,6 +251,7 @@ class ActionEditor(QDialog):
         raw: mne.io.Raw | None = None,
         parent=None,
         context_type: DataType | None = None,
+        data=None,
     ):
         super().__init__(parent)
         self.action = action
@@ -259,7 +260,15 @@ class ActionEditor(QDialog):
         self.action_def = get_action_by_id(action.action_id)
 
         self.setWindowTitle(f"Edit: {get_action_title(action)}")
-        visible_params = self.action_def.params_schema if self.action_def else {}
+        _managed = (
+            set(self.action_def.interactive_runner.managed_params)
+            if self.action_def and self.action_def.interactive_runner
+            else set()
+        )
+        visible_params = {
+            k: v for k, v in (self.action_def.params_schema if self.action_def else {}).items()
+            if k not in _managed
+        }
 
         self.setMinimumWidth(420)
 
@@ -293,6 +302,20 @@ class ActionEditor(QDialog):
         bottom_layout.setSpacing(6)
         outer.addWidget(bottom)
 
+        self.param_widgets: dict[str, QWidget] = {}
+
+        # Interactive runner widget
+        if (
+            self.action_def is not None
+            and self.action_def.interactive_runner is not None
+            and self.action_def.interactive_runner.build_editor_widget is not None
+        ):
+            runner_widget = self.action_def.interactive_runner.build_editor_widget(
+                data, self.action, self, self.param_widgets
+            )
+            if runner_widget is not None:
+                layout.addWidget(runner_widget)
+
         # Warn about custom code if present
         self.custom_warning = None
         self.btn_reset_custom = None
@@ -316,7 +339,6 @@ class ActionEditor(QDialog):
         self.form = QFormLayout()
         self.visible_params = visible_params
         self.param_rows: dict[str, int] = {}
-        self.param_widgets: dict[str, QWidget] = {}
         row_idx = 0
 
         for param_name, param_def in visible_params.items():
@@ -520,19 +542,24 @@ class ActionEditor(QDialog):
         else:
             temp_action = ActionConfig(
                 self.action.action_id,
-                self.get_current_params(),
+                self.get_params(),
                 advanced_params=self.get_advanced_params(),
             )
             code = generate_action_code(temp_action, self.context_type)
         self.code_preview.setPlainText(code)
 
     def get_params(self) -> dict:
-        """Return the accepted primary parameter values.
+        """Return primary parameter values, including managed params preserved from action.params.
 
         Returns:
             Dict of param name -> value for all primary params.
         """
-        return self.get_current_params()
+        params = self.get_current_params()
+        if self.action_def and self.action_def.interactive_runner:
+            for p in self.action_def.interactive_runner.managed_params:
+                if p in self.action.params:
+                    params[p] = self.action.params[p]
+        return params
 
     def should_clear_custom(self) -> bool:
         """Return True if the user chose to reset custom code during this session."""
