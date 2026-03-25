@@ -25,7 +25,7 @@ CATEGORIES: dict[str, list[str]] = {
     "Channels": ["set_channel_types", "drop_channels", "interpolate"],
     "Annotations & Events": ["set_annotations", "detect_events"],
     "Epochs": ["epoch_fixed", "epoch_events", "drop_bad_epochs", "average_epochs"],
-    "ICA": ["ica_fit", "ica_classify", "ica_apply"],
+    "ICA": ["ica_fit", "ica_apply"],
 }
 
 

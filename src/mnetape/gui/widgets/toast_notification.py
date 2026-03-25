@@ -19,21 +19,29 @@ class ToastNotification(QWidget):
     """Overlay widget shown in the bottom-right corner of the parent window.
 
     Closes automatically after a few seconds. An optional callable can be wired to a "View Results" button.
+    If warnings are provided they are shown as orange text below the main message.
 
     Args:
         message: Main notification text.
         parent: Parent window used for positioning.
         on_view_results: If provided, a "View Results" button is added that calls this callable
             and then closes the toast.
+        warnings: Optional list of warning strings displayed in orange below the message.
     """
 
-    DURATION_MS = 5000
+    DURATION_MS = 10_000
 
-    def __init__(self, message: str, parent=None, on_view_results: Callable | None = None):
+    def __init__(
+        self,
+        message: str,
+        parent=None,
+        on_view_results: Callable | None = None,
+        warnings: list[str] | None = None,
+    ):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
-        self._build_ui(message, on_view_results)
+        self.build_ui(message, on_view_results, warnings)
         self.setFixedWidth(320)
 
         if parent is not None:
@@ -44,7 +52,7 @@ class ToastNotification(QWidget):
         self._timer.timeout.connect(self.close)
         self._timer.start(self.DURATION_MS)
 
-    def _build_ui(self, message: str, on_view_results: Callable | None) -> None:
+    def build_ui(self, message: str, on_view_results: Callable | None, runtime_warnings: list[str] | None) -> None:
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
@@ -78,6 +86,12 @@ class ToastNotification(QWidget):
         top_row.addWidget(close_btn, 0, Qt.AlignmentFlag.AlignTop)
         frame_layout.addLayout(top_row)
 
+        if runtime_warnings:
+            warn_label = QLabel("\n".join(runtime_warnings))
+            warn_label.setStyleSheet("color: #E65100; font-size: 11px; border: none;")
+            warn_label.setWordWrap(True)
+            frame_layout.addWidget(warn_label)
+
         if on_view_results is not None:
             results_btn = QPushButton("View Results")
             results_btn.setStyleSheet("""
@@ -97,7 +111,7 @@ class ToastNotification(QWidget):
 
         outer.addWidget(frame)
 
-    def _reposition(self) -> None:
+    def reposition(self) -> None:
         parent = self.parent()
         if parent is None:
             return
@@ -109,11 +123,11 @@ class ToastNotification(QWidget):
 
     def show(self) -> None:
         super().show()
-        self._reposition()
+        self.reposition()
 
     def eventFilter(self, obj, event: QEvent) -> bool:
         if event.type() == QEvent.Type.Resize:
-            self._reposition()
+            self.reposition()
         return False
 
     def closeEvent(self, event) -> None:

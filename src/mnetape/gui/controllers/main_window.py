@@ -344,7 +344,7 @@ class MainWindow(QMainWindow):
                 action_def is not None
                 and action_def.interactive_runner is not None
                 and action_def.interactive_runner.needs_inspection is not None
-                and action_def.interactive_runner.needs_inspection(self.state.actions[:i], i, action)
+                and action_def.interactive_runner.needs_inspection(action)
             )
 
             item = QListWidgetItem()

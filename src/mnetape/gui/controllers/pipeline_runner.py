@@ -40,10 +40,11 @@ class PipelineRunner:
         self.w = window
         self.state = window.state
         self.current_toast = None
+        self.last_warnings: list[str] = []
 
     # -------- Helpers --------
 
-    def show_toast(self, action, title: str) -> None:
+    def show_toast(self, action, title: str, warnings: list[str] | None = None) -> None:
         """Show a toast notification for a completed action, replacing any existing one."""
         if self.current_toast is not None:
             self.current_toast.close()
@@ -58,6 +59,7 @@ class PipelineRunner:
             f'"{title}" complete',
             parent=toast_parent,
             on_view_results=on_results,
+            warnings=warnings or None,
         )
         toast.destroyed.connect(lambda: setattr(self, "current_toast", None))
         self.current_toast = toast
@@ -256,13 +258,24 @@ class PipelineRunner:
         Raises:
             OperationCancelled: When the user cancels a threaded action.
         """
+        import warnings
+        caught: list = []
+
+        def fn():
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                result = exec_action(call_site, func_defs, data, action, input_type=input_type, output_type=output_type)
+            caught.extend(w)
+            return result
+
         title = get_action_title(action)
-        return self.run_in_thread(
-            lambda cs=call_site, fd=func_defs, d=data: exec_action(
-                cs, fd, d, action, input_type=input_type, output_type=output_type
-            ),
-            f"Running: {title}...",
-        )
+        result = self.run_in_thread(fn, f"Running: {title}...")
+        self.last_warnings = list(dict.fromkeys(
+            str(w.message) for w in caught if issubclass(w.category, RuntimeWarning)
+        ))
+        for msg in self.last_warnings:
+            logger.warning("RuntimeWarning from '%s': %s", title, msg)
+        return result
 
     # -------- Action-level execution --------
 
@@ -310,7 +323,7 @@ class PipelineRunner:
             if not action_def or not action_def.interactive_runner:
                 continue
             ir = action_def.interactive_runner
-            if not ir.needs_inspection or not ir.needs_inspection(self.state.actions[:i], i, action):
+            if not ir.needs_inspection or not ir.needs_inspection(action):
                 continue
             title = get_action_title(action)
             reply = QMessageBox.warning(
@@ -410,9 +423,7 @@ class PipelineRunner:
             # Interactive runner hook
             if action_def and action_def.interactive_runner:
                 try:
-                    data = action_def.interactive_runner.run(
-                        action, data, self.w, self.state.actions[:i]
-                    )
+                    data = action_def.interactive_runner.run(action, data, self.w)
                 except OperationCancelled:
                     action.status = ActionStatus.PENDING
                     final_status = "Pipeline cancelled"
@@ -443,7 +454,7 @@ class PipelineRunner:
                         action.result = action_def.result_builder_fn(data)
                     except Exception as e:
                         logger.warning("Result builder failed for %s: %s", title, e, exc_info=True)
-                self.show_toast(action, title)
+                self.show_toast(action, title, warnings=self.last_warnings or None)
                 logger.info("Completed action %d: %s", i + 1, title)
             except OperationCancelled:
                 action.status = ActionStatus.PENDING

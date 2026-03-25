@@ -45,7 +45,7 @@ def format_component_labels(
 
     Args:
         ic_labels: Dict returned by ICLabel containing "labels" and "y_pred_proba", or None.
-        detected_artifacts: Sorted list of artifact component indices from ica_classify, or None.
+        detected_artifacts: Sorted list of artifact component indices from background detection, or None.
         n_components: Total number of ICA components.
 
     Returns:
@@ -538,27 +538,67 @@ def get_auto_exclude(ic_labels: dict | None) -> list[int]:
     return list(ic_labels.get("detected_artifacts", [])) if ic_labels else []
 
 
-def ica_apply_run(action, data, parent, preceding_actions):
-    """Open the ICA inspection dialog (manual mode) or apply auto-exclusions directly."""
+def run_background_classification(ica, raw) -> dict:
+    """Run ICLabel (if available), EOG, and ECG detection in-process.
+
+    Results are for display only — not written to the pipeline script.
+
+    Returns:
+        ic_labels dict with "detected_artifacts" key (and ICLabel keys if available).
+    """
+    ic_labels = {}
+    detected = []
+
+    try:
+        import numpy as np
+        from mne_icalabel import label_components
+        label_result = label_components(raw, ica, method="iclabel")
+        ic_labels.update(label_result)
+        detected.extend(
+            i for i, (lbl, prob) in enumerate(zip(label_result["labels"], label_result["y_pred_proba"]))
+            if lbl != "brain" and np.max(prob) >= 0.5
+        )
+        logger.debug("ICLabel classification completed (%d components flagged)", len(detected))
+    except Exception as e:
+        logger.debug("ICLabel not available or failed, skipping: %s", e)
+
+    import mne
+    if mne.pick_types(raw.info, eog=True).size > 0:
+        try:
+            eog_indices, _ = ica.find_bads_eog(raw, threshold=3.0, verbose=False)
+            detected.extend(list(eog_indices))
+            logger.debug("EOG detection: %d components flagged", len(eog_indices))
+        except Exception as e:
+            logger.debug("EOG detection failed: %s", e)
+
+    if mne.pick_types(raw.info, ecg=True).size > 0:
+        try:
+            ecg_indices, _ = ica.find_bads_ecg(raw, method="correlation", threshold=0.25, verbose=False)
+            detected.extend(list(ecg_indices))
+            logger.debug("ECG detection: %d components flagged", len(ecg_indices))
+        except Exception as e:
+            logger.debug("ECG detection failed: %s", e)
+
+    ic_labels["detected_artifacts"] = sorted(set(detected))
+    return ic_labels
+
+
+def ica_apply_run(action, data, parent):
+    """Run background classification then open the ICA inspection dialog."""
     from mnetape.core.models import ICASolution
 
     ica_solution: ICASolution = data
-    auto_exclude = get_auto_exclude(ica_solution.ic_labels)
 
-    # Auto mode: ica_classify already ran
-    if any(a.action_id == "ica_classify" for a in preceding_actions):
-        ica_solution.ica.exclude = auto_exclude
-        action.params["exclude"] = auto_exclude
-        return ica_solution
+    ic_labels = run_background_classification(ica_solution.ica, ica_solution.raw)
+    ica_solution.ic_labels = ic_labels
 
-    # Manual mode: pre-populate from previously saved params
-    initial_exclude = action.params.get("exclude") or auto_exclude
+    initial_exclude = action.params.get("exclude") or get_auto_exclude(ic_labels)
 
     dialog = ICAInspectionDialog(
         ica=ica_solution.ica,
         raw=ica_solution.raw,
         auto_exclude=initial_exclude,
-        ic_labels=ica_solution.ic_labels,
+        ic_labels=ic_labels,
         parent=parent,
     )
     accepted = dialog.exec() == QDialog.DialogCode.Accepted
@@ -574,10 +614,7 @@ def ica_apply_run(action, data, parent, preceding_actions):
     return ica_solution
 
 
-def ica_apply_needs_inspection(preceding_actions, action_index, action):
-    if any(a.action_id == "ica_classify" for a in preceding_actions):
-        return False
-    # Manual mode: badge shows until user explicitly reviews
+def ica_apply_needs_inspection(action):
     return action.params.get("exclude") is None
 
 
@@ -627,6 +664,8 @@ def ica_apply_build_editor_widget(data, action, parent, param_widgets=None):
     def open_dialog():
         if ica_solution is None:
             return
+        if ica_solution.ic_labels is None:
+            ica_solution.ic_labels = run_background_classification(ica_solution.ica, ica_solution.raw)
         auto_exclude = get_auto_exclude(ica_solution.ic_labels)
         current = action.params.get("exclude")
         initial = list(current) if current else auto_exclude

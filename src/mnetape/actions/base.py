@@ -290,10 +290,10 @@ class InteractiveRunner:
     """Hooks for actions that require user interaction at runtime.
 
     run: Called before exec_action for this action during pipeline execution.
-         Signature: (action, data, parent_widget, preceding_actions) -> data.
+         Signature: (action, data, parent_widget) -> data.
          Should mutate or replace the data object in preparation for exec_action.
     needs_inspection: Optional, returns True when manual review is required.
-         Signature: (preceding_actions, action_index, action) -> bool.
+         Signature: (action) -> bool.
     build_editor_widget: Optional, returns a QWidget to embed at the top of ActionEditor.
          Signature: (data, action, parent, param_widgets) -> QWidget | None.
     managed_params: Param names reset to schema defaults when saving as default pipeline.
