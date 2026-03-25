@@ -159,7 +159,7 @@ class PinnedActionItem(QWidget):
     def __init__(self, label: str, detail: str = "", warning: bool = False, parent=None):
         super().__init__(parent)
         self.setObjectName("pinned_action_item")
-        self._warning = warning
+        self.warning = warning
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 0, 8, 0)
@@ -202,7 +202,8 @@ class ActionListItem(QWidget):
     size_changed = pyqtSignal()
     run_clicked = pyqtSignal(int)
 
-    def __init__(self, index: int, action: ActionConfig, parent=None, type_mismatch: bool = False):
+    def __init__(self, index: int, action: ActionConfig, parent=None,
+                 type_mismatch: bool = False, needs_inspection: bool = False):
         super().__init__(parent)
         self.index = index
         self.row = index - 1
@@ -228,6 +229,13 @@ class ActionListItem(QWidget):
         self.name_label = QLabel(f"{index}. {name}")
         self.name_label.setStyleSheet("font-weight: bold;")
         layout.addWidget(self.name_label, 1, Qt.AlignmentFlag.AlignVCenter)
+
+        # Inspection badge
+        if needs_inspection:
+            inspect_label = QLabel("[!]")
+            inspect_label.setToolTip("Requires manual inspection before running")
+            inspect_label.setStyleSheet("color: #E65100; font-weight: bold;")
+            layout.addWidget(inspect_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
         # Run button
         self.run_btn = QPushButton("▶")

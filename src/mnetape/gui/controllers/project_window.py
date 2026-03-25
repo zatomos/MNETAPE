@@ -34,6 +34,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+import dataclasses
+
+from mnetape.actions.registry import get_action_by_id
+from mnetape.core.codegen import generate_full_script
 from mnetape.core.project import (
     Participant,
     ParticipantStatus,
@@ -122,6 +126,26 @@ def _open_standalone():
     from mnetape.gui.controllers.main_window import MainWindow
     w = MainWindow()
     w.show()
+
+
+def _strip_managed_params(actions) -> str:
+    """Generate pipeline code with run-specific params reset to their schema defaults.
+
+    Used when saving a default pipeline template so that per-run values (e.g. ICA exclusions)
+    don't bleed across participants.
+    """
+    clean = []
+    for action in actions:
+        action_def = get_action_by_id(action.action_id)
+        ir = action_def.interactive_runner if action_def else None
+        if ir and ir.managed_params:
+            clean_params = dict(action.params)
+            for param in ir.managed_params:
+                clean_params[param] = action_def.params_schema.get(param, {}).get("default")
+            clean.append(dataclasses.replace(action, params=clean_params))
+        else:
+            clean.append(action)
+    return generate_full_script(clean)
 
 
 class ProjectWindow(QMainWindow):
@@ -263,14 +287,14 @@ class ProjectWindow(QMainWindow):
         self.btn_analysis.clicked.connect(self.open_analysis)
         left_layout.addWidget(self.btn_analysis)
 
-        self._left_panel = left_panel
+        self.left_panel = left_panel
         main_layout.addWidget(left_panel)
 
         # Vertical separator
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.VLine)
         sep.setStyleSheet("color: #D5D5D8;")
-        self._left_sep = sep
+        self.left_sep = sep
         main_layout.addWidget(sep)
 
         # ---- Right: stacked panel ----
@@ -286,19 +310,19 @@ class ProjectWindow(QMainWindow):
         self.right_stack.addWidget(self.no_selection_widget)
 
         # Page 2: participant detail
-        self.participant_detail_widget, self._participant_detail_refs = self.make_participant_detail_widget()
+        self.participant_detail_widget, self.participant_detail_refs = self.make_participant_detail_widget()
         self.right_stack.addWidget(self.participant_detail_widget)
 
         # Page 3: session detail
-        self.session_detail_widget, self._session_detail_refs = self.make_session_detail_widget()
+        self.session_detail_widget, self.session_detail_refs = self.make_session_detail_widget()
         self.right_stack.addWidget(self.session_detail_widget)
 
         # Page 4: preprocessing
-        self.prep_page, self._prep_refs = self.make_preprocessing_page()
+        self.prep_page, self.prep_refs = self.make_preprocessing_page()
         self.right_stack.addWidget(self.prep_page)
 
         # Page 5: analysis
-        self.analysis_page, self._analysis_refs = self.make_analysis_page()
+        self.analysis_page, self.analysis_refs = self.make_analysis_page()
         self.right_stack.addWidget(self.analysis_page)
 
         self.right_stack.setCurrentWidget(self.welcome_widget)
@@ -536,7 +560,7 @@ class ProjectWindow(QMainWindow):
         btn_back = QPushButton("← Back")
         btn_back.setObjectName("btn_back_to_project")
         btn_back.setFixedWidth(90)
-        btn_back.clicked.connect(self._close_preprocessing)
+        btn_back.clicked.connect(self.close_preprocessing)
         header_layout.addWidget(btn_back)
 
         v_sep = QFrame()
@@ -790,7 +814,7 @@ class ProjectWindow(QMainWindow):
     # Detail population
 
     def populate_participant_detail(self, p: Participant):
-        refs = self._participant_detail_refs
+        refs = self.participant_detail_refs
         refs["id_label"].setText(f"<b>{p.id}</b>")
 
         if p.excluded:
@@ -827,7 +851,7 @@ class ProjectWindow(QMainWindow):
         refs["sessions_list_label"].setText("\n".join(session_lines) if session_lines else "No sessions")
 
     def populate_session_detail(self, p: Participant, s: Session):
-        refs = self._session_detail_refs
+        refs = self.session_detail_refs
         refs["id_label"].setText(f"<b>{p.id}</b>  /  ses-{s.id}")
 
         # Rebuild button-like run items
@@ -929,7 +953,7 @@ class ProjectWindow(QMainWindow):
         p, s = self.get_selected_session()
         if not p or not s:
             return
-        button_group: QButtonGroup = self._session_detail_refs["runs_button_group"]
+        button_group: QButtonGroup = self.session_detail_refs["runs_button_group"]
         row = button_group.checkedId()
         if row < 0 or row >= len(s.data_files):
             return
@@ -959,9 +983,9 @@ class ProjectWindow(QMainWindow):
             )
             if reply == QMessageBox.StandardButton.Cancel:
                 # Revert checkbox without re-triggering signal
-                self._session_detail_refs["merge_runs_check"].blockSignals(True)
-                self._session_detail_refs["merge_runs_check"].setChecked(s.merge_runs)
-                self._session_detail_refs["merge_runs_check"].blockSignals(False)
+                self.session_detail_refs["merge_runs_check"].blockSignals(True)
+                self.session_detail_refs["merge_runs_check"].setChecked(s.merge_runs)
+                self.session_detail_refs["merge_runs_check"].blockSignals(False)
                 return
             pairs_to_update = all_sessions if reply == QMessageBox.StandardButton.Yes else p_sessions
         else:
@@ -983,7 +1007,7 @@ class ProjectWindow(QMainWindow):
     def on_notes_changed(self):
         p = self.get_selected_participant()
         if p:
-            p.notes = self._participant_detail_refs["notes_edit"].toPlainText()
+            p.notes = self.participant_detail_refs["notes_edit"].toPlainText()
             self.save_project()
 
     def on_excluded_toggled(self, checked: bool):
@@ -1056,15 +1080,15 @@ class ProjectWindow(QMainWindow):
             self.analysis_window.rebuild_tree()
 
         if self.project:
-            self._analysis_refs["title_label"].setText(f"Analysis - {self.project.name}")
+            self.analysis_refs["title_label"].setText(f"Analysis - {self.project.name}")
 
-        self._left_panel.setVisible(False)
-        self._left_sep.setVisible(False)
+        self.left_panel.setVisible(False)
+        self.left_sep.setVisible(False)
         self.right_stack.setCurrentWidget(self.analysis_page)
 
     def close_analysis(self):
-        self._left_panel.setVisible(True)
-        self._left_sep.setVisible(True)
+        self.left_panel.setVisible(True)
+        self.left_sep.setVisible(True)
         item_type, pid, sid = self.get_selected_item_data()
         if self.project and item_type == "session" and pid and sid:
             p = self.project.get_participant(pid)
@@ -1145,7 +1169,7 @@ class ProjectWindow(QMainWindow):
         if item_type == "participant":
             self.remove_participant()
         elif item_type == "session":
-            self._remove_session(pid, sid)
+            self.remove_session(pid, sid)
 
     def remove_participant(self):
         p = self.get_selected_participant()
@@ -1173,7 +1197,7 @@ class ProjectWindow(QMainWindow):
         if self.participant_tree.topLevelItemCount() == 0:
             self.right_stack.setCurrentWidget(self.no_selection_widget)
 
-    def _remove_session(self, participant_id: str, session_id: str):
+    def remove_session(self, participant_id: str, session_id: str):
         if not self.project:
             return
         p = self.project.get_participant(participant_id)
@@ -1297,7 +1321,7 @@ class ProjectWindow(QMainWindow):
             remove_action = menu.addAction("Remove Session")
             pid = item.data(0, ROLE_PID)
             sid = item.data(0, ROLE_SID)
-            remove_action.triggered.connect(lambda: self._remove_session(pid, sid))
+            remove_action.triggered.connect(lambda: self.remove_session(pid, sid))
 
         menu.exec(self.participant_tree.mapToGlobal(pos))
 
@@ -1328,7 +1352,7 @@ class ProjectWindow(QMainWindow):
 
         # Close any existing session (different participant/session)
         if self.prep_window is not None:
-            self._close_preprocessing(report_status=True)
+            self.close_preprocessing(report_status=True)
 
         # Resolve run files; merge_runs=True → all files, False → selected run button
         resolved = self.project.resolve_data_files(self.project_dir, s)
@@ -1336,7 +1360,7 @@ class ProjectWindow(QMainWindow):
             data_files = resolved
             run_index = None
         else:
-            bg: QButtonGroup = self._session_detail_refs["runs_button_group"]
+            bg: QButtonGroup = self.session_detail_refs["runs_button_group"]
             selected_idx = bg.checkedId()
             if selected_idx < 0 or selected_idx >= len(resolved):
                 selected_idx = 0
@@ -1371,20 +1395,21 @@ class ProjectWindow(QMainWindow):
         self.update_prep_status_label(s, run_index)
 
         # Update header participant label
-        self._prep_refs["participant_label"].setText(
-            f"<b>{p.id}</b>  /  ses-{s.id}  ·  {self.project.name}"
+        run_text = run_index + 1 if not s.merge_runs else "merged"
+        self.prep_refs["participant_label"].setText(
+            f"<b>{p.id}</b>  /  ses-{s.id}  /  run-{run_text}  ·  {self.project.name}"
         )
 
         # Hide sidebar
-        self._left_panel.setVisible(False)
-        self._left_sep.setVisible(False)
+        self.left_panel.setVisible(False)
+        self.left_sep.setVisible(False)
 
         # Switch to preprocessing view
         self.right_stack.setCurrentWidget(self.prep_page)
 
         self.prep_window.auto_load()
 
-    def _close_preprocessing(self, report_status: bool = True):
+    def close_preprocessing(self, report_status: bool = True):
         """Close the embedded preprocessing session and return to the detail view."""
         if self.prep_window is None:
             return
@@ -1416,11 +1441,11 @@ class ProjectWindow(QMainWindow):
         self.prep_window = None
 
         # Restore sidebar
-        self._left_panel.setVisible(True)
-        self._left_sep.setVisible(True)
+        self.left_panel.setVisible(True)
+        self.left_sep.setVisible(True)
 
         # Clear status label
-        self._prep_refs["status_label"].setText("")
+        self.prep_refs["status_label"].setText("")
 
         # Return to appropriate detail view
         item_type, pid, sid = self.get_selected_item_data()
@@ -1444,7 +1469,7 @@ class ProjectWindow(QMainWindow):
         """Save current pipeline as the project default; optionally reset participant overrides."""
         if not self.prep_window or not self.project or not self.project_dir:
             return
-        code = self.prep_window.code_panel.get_code()
+        code = _strip_managed_params(self.prep_window.state.actions)
         if not code:
             return
 
@@ -1549,7 +1574,7 @@ class ProjectWindow(QMainWindow):
                 "incomplete": ("Incomplete", "#E65100"),
             }
             text, color = _display.get(s.status, (s.status.title(), "#888888"))
-        label: QLabel = self._prep_refs["status_label"]
+        label: QLabel = self.prep_refs["status_label"]
         label.setText(f"Status: {text}")
         label.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: bold;")
 
@@ -1587,5 +1612,5 @@ class ProjectWindow(QMainWindow):
 
     def closeEvent(self, event):
         if self.prep_window is not None:
-            self._close_preprocessing(report_status=True)
+            self.close_preprocessing(report_status=True)
         super().closeEvent(event)

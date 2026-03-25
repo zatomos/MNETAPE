@@ -301,6 +301,30 @@ class PipelineRunner:
                 return
         elif not self.require_data():
             return
+
+        # Warn if any upcoming action requires manual inspection
+        start = len(self.state.data_states)
+        for i in range(start, len(self.state.actions)):
+            action = self.state.actions[i]
+            action_def = get_action_by_id(action.action_id)
+            if not action_def or not action_def.interactive_runner:
+                continue
+            ir = action_def.interactive_runner
+            if not ir.needs_inspection or not ir.needs_inspection(self.state.actions[:i], i, action):
+                continue
+            title = get_action_title(action)
+            reply = QMessageBox.warning(
+                self.w,
+                "Manual Inspection Required",
+                f'"{title}" (step {i + 1}) requires manual component inspection.\n\n'
+                "The inspection dialog will open during execution. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            break   # warn once
+
         self.run_actions(len(self.state.data_states), len(self.state.actions))
 
     def run_actions(self, start_idx, end_idx):
@@ -381,6 +405,24 @@ class PipelineRunner:
                                  i + 1, pipeline_type, in_type)
                     self.w.update_action_list(sync_code=False)
                     final_status = f"Pipeline stopped: type mismatch at action {i + 1}"
+                    break
+
+            # Interactive runner hook
+            if action_def and action_def.interactive_runner:
+                try:
+                    data = action_def.interactive_runner.run(
+                        action, data, self.w, self.state.actions[:i]
+                    )
+                except OperationCancelled:
+                    action.status = ActionStatus.PENDING
+                    final_status = "Pipeline cancelled"
+                    break
+                except Exception as e:
+                    action.status = ActionStatus.ERROR
+                    action.error_msg = str(e)
+                    logger.exception("Interactive runner failed at index %d: %s", i, title)
+                    QMessageBox.critical(self.w, "Error", f"{title} failed:\n{e}")
+                    final_status = f"Pipeline failed at action {i + 1}: {title}"
                     break
 
             try:

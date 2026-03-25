@@ -11,9 +11,8 @@ import logging
 import matplotlib.pyplot as plt
 from mnetape.gui.utils import refresh_mne_browser_bads
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
-    QCheckBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -25,7 +24,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFont
 
-from mnetape.actions.base import ParamWidgetBinding
+from mnetape.actions.base import InteractiveRunner
 from mnetape.gui.widgets import PlotCanvas
 
 logger = logging.getLogger(__name__)
@@ -522,115 +521,140 @@ class ICAInspectionDialog(QDialog):
             close_figure_safely(fig)
         self.extra_figs.clear()
 
-    def closeEvent(self, event):
+    def teardown(self):
+        """Stop the poll timer and close all matplotlib figures."""
         if self.poll_timer is not None:
             self.poll_timer.stop()
         self.cleanup_figures()
+
+    def closeEvent(self, event):
+        self.teardown()
         super().closeEvent(event)
 
 
-# -------- Param widget factory --------
+# -------- Interactive runner --------
 
-def format_exclude_label(exclude: list) -> str:
-    if not exclude:
-        return "No components excluded"
-    return f"{len(exclude)} excluded: {exclude}"
+def get_auto_exclude(ic_labels: dict | None) -> list[int]:
+    return list(ic_labels.get("detected_artifacts", [])) if ic_labels else []
 
 
-class ExcludeWidget(QWidget):
-    """Container widget for the ICA component exclusion param.
+def ica_apply_run(action, data, parent, preceding_actions):
+    """Open the ICA inspection dialog (manual mode) or apply auto-exclusions directly."""
+    from mnetape.core.models import ICASolution
 
-    Exposes get_value() and value_changed so the action editor can read and react to changes
-    without a direct reference to the parent dialog.
-    """
+    ica_solution: ICASolution = data
+    auto_exclude = get_auto_exclude(ica_solution.ic_labels)
 
-    value_changed = pyqtSignal()
+    # Auto mode: ica_classify already ran
+    if any(a.action_id == "ica_classify" for a in preceding_actions):
+        ica_solution.ica.exclude = auto_exclude
+        action.params["exclude"] = auto_exclude
+        return ica_solution
 
-    def get_value(self) -> list | None:
-        return self._state["exclude"] or None
+    # Manual mode: pre-populate from previously saved params
+    initial_exclude = action.params.get("exclude") or auto_exclude
+
+    dialog = ICAInspectionDialog(
+        ica=ica_solution.ica,
+        raw=ica_solution.raw,
+        auto_exclude=initial_exclude,
+        ic_labels=ica_solution.ic_labels,
+        parent=parent,
+    )
+    accepted = dialog.exec() == QDialog.DialogCode.Accepted
+    dialog.teardown()
+
+    if accepted:
+        ica_solution.ica.exclude = sorted(dialog.ica.exclude)
+        action.params["exclude"] = ica_solution.ica.exclude
+    else:
+        # Cancel: apply no exclusions but keep params as-is so badge stays
+        ica_solution.ica.exclude = []
+
+    return ica_solution
 
 
-def exclude_components_factory(current_value, raw, parent=None):
-    """Widget factory for the exclude components param.
+def ica_apply_needs_inspection(preceding_actions, action_index, action):
+    if any(a.action_id == "ica_classify" for a in preceding_actions):
+        return False
+    # Manual mode: badge shows until user explicitly reviews
+    return action.params.get("exclude") is None
 
-    Builds a row with an exclusion-list label, an optional 'Use auto' checkbox
-    (shown only when ica_classify has been run), and a 'Browse Components' button.
 
-    Args:
-        param_def: The param schema dict for this parameter.
-        current_value: The currently stored exclusion list, or None.
-        raw: The data context: an ICASolution when ica_fit has been run, else None.
-        parent: Optional parent QWidget.
+def ica_apply_build_editor_widget(data, action, parent, param_widgets=None):
+    """Widget shown in ActionEditor.
 
-    Returns:
-        A (container, container) tuple; container exposes get_value() and value_changed.
+    Shows saved exclusion status from action.params["exclude"]:
+      None  = not yet reviewed
+      []    = reviewed, nothing excluded
+      [...]  = reviewed, components excluded
+
+    Browse is enabled only when ICASolution is in memory (ICA has been run this session).
+    param_widgets: the ActionEditor's param_widgets dict used to sync the exclude field.
     """
     from mnetape.core.models import ICASolution
 
-    ica_solution = raw if isinstance(raw, ICASolution) else None
-    exclude = list(current_value) if current_value is not None else []
+    ica_solution = data if isinstance(data, ICASolution) else None
 
-    container = ExcludeWidget(parent)
-    container._state = {"exclude": exclude}
-    layout = QHBoxLayout(container)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(6)
+    container = QWidget(parent)
+    vbox = QVBoxLayout(container)
+    vbox.setContentsMargins(0, 0, 0, 8)
+    vbox.setSpacing(4)
 
-    has_classify = ica_solution is not None and ica_solution.ic_labels is not None
-    ic_labels_dict = ica_solution.ic_labels if has_classify else None
-    auto_exclude = list(ic_labels_dict.get("detected_artifacts", [])) if ic_labels_dict else []
+    status_label = QLabel()
 
-    label = QLabel(format_exclude_label(container._state["exclude"]))
-    label.setAlignment(Qt.AlignmentFlag.AlignVCenter)
-    layout.addWidget(label, 1)
+    def refresh_label():
+        current = action.params.get("exclude")
+        if current is None:
+            status_label.setText("Not yet reviewed. Click Browse to inspect components.")
+            status_label.setStyleSheet("color: #E65100;")
+        elif current:
+            names = ", ".join(f"IC{i:03d}" for i in sorted(current))
+            status_label.setText(f"Reviewed: excluding {names}")
+            status_label.setStyleSheet("color: #2E7D32;")
+        else:
+            status_label.setText("Reviewed: no components excluded.")
+            status_label.setStyleSheet("color: #2E7D32;")
 
-    def update_label():
-        label.setText(format_exclude_label(container._state["exclude"]))
+    refresh_label()
+    vbox.addWidget(status_label)
 
-    if ica_solution is not None:
-        btn = QPushButton("Browse Components...")
+    btn = QPushButton("Browse Components...")
+    btn.setEnabled(ica_solution is not None)
+    if ica_solution is None:
+        btn.setToolTip("Run ICA first to browse components")
 
-        if has_classify:
-            use_auto_cb = QCheckBox("Use auto")
-            use_auto_cb.setToolTip("Use the exclusion list computed by the Classify ICA Components step.")
-            layout.addWidget(use_auto_cb)
+    def open_dialog():
+        if ica_solution is None:
+            return
+        auto_exclude = get_auto_exclude(ica_solution.ic_labels)
+        current = action.params.get("exclude")
+        initial = list(current) if current else auto_exclude
+        dialog = ICAInspectionDialog(
+            ica=ica_solution.ica,
+            raw=ica_solution.raw,
+            auto_exclude=initial,
+            ic_labels=ica_solution.ic_labels,
+            parent=parent,
+        )
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        dialog.teardown()
+        if accepted:
+            action.params["exclude"] = sorted(dialog.ica.exclude)
+            if param_widgets is not None:
+                w = param_widgets.get("exclude")
+                if w is not None and hasattr(w, "setText"):
+                    w.setText(", ".join(str(i) for i in action.params["exclude"]))
+            refresh_label()
 
-            def on_use_auto_toggled(checked: bool):
-                container._state["exclude"] = auto_exclude if checked else []
-                update_label()
-                btn.setEnabled(not checked)
-                container.value_changed.emit()
-
-            use_auto_cb.toggled.connect(on_use_auto_toggled)
-
-        def on_browse():
-            dialog = ICAInspectionDialog(
-                ica=ica_solution.ica,
-                raw=ica_solution.raw,
-                auto_exclude=list(container._state["exclude"]),
-                ic_labels=ica_solution.ic_labels,
-                parent=parent,
-            )
-            if dialog.exec() == QDialog.DialogCode.Accepted:
-                container._state["exclude"] = sorted(dialog.ica.exclude)
-                update_label()
-                container.value_changed.emit()
-            if dialog.poll_timer is not None:
-                dialog.poll_timer.stop()
-            dialog.cleanup_figures()
-
-        btn.clicked.connect(on_browse)
-        layout.addWidget(btn)
-    else:
-        note = QLabel("(run Fit ICA first to browse)")
-        note.setStyleSheet("color: gray; font-style: italic;")
-        layout.addWidget(note)
-
-    return container, container     # container is both the widget and the value provider
+    btn.clicked.connect(open_dialog)
+    vbox.addWidget(btn)
+    return container
 
 
-# -------- Widget bindings --------
-
-WIDGET_BINDINGS = [
-    ParamWidgetBinding("exclude", exclude_components_factory),
-]
+INTERACTIVE_RUNNER = InteractiveRunner(
+    run=ica_apply_run,
+    needs_inspection=ica_apply_needs_inspection,
+    build_editor_widget=ica_apply_build_editor_widget,
+    managed_params=("exclude",),
+)
