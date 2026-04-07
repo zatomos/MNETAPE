@@ -210,6 +210,7 @@ class ProjectWindow(QMainWindow):
         self.setup_menu()
         self.setup_ui()
 
+
         # Restore last project
         settings = QSettings()
         last = settings.value(SETTINGS_LAST_PROJECT)
@@ -1302,7 +1303,6 @@ class ProjectWindow(QMainWindow):
         if added:
             self.save_project()
             self.rebuild_tree()
-            self.status_bar.showMessage(f"Imported {added} participant(s).")
         else:
             QMessageBox.information(self, "No New Participants", "All files already have entries.")
 
@@ -1343,7 +1343,6 @@ class ProjectWindow(QMainWindow):
         if added:
             self.save_project()
             self.rebuild_tree()
-            self.status_bar.showMessage(f"Imported {added} participant(s) from BIDS dataset.")
         else:
             QMessageBox.information(self, "No New Participants", "All BIDS subjects already exist.")
 
@@ -1669,7 +1668,6 @@ class ProjectWindow(QMainWindow):
         default_path = self.project.pipeline_path(self.project_dir)
         default_path.parent.mkdir(parents=True, exist_ok=True)
         default_path.write_text(code)
-        self.status_bar.showMessage(f"Saved as default pipeline: {default_path.name}")
         logger.info("Set default pipeline: %s", default_path)
 
     def use_default_pipeline(self):
@@ -1692,7 +1690,6 @@ class ProjectWindow(QMainWindow):
             self.prep_window.state.data_states.clear()
             self.prep_window.code_panel.set_code(code)
             self.prep_window.update_action_list()
-            self.status_bar.showMessage("Loaded default pipeline")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load default pipeline:\n{e}")
 
@@ -1710,7 +1707,6 @@ class ProjectWindow(QMainWindow):
             path.write_text(code)
             self.prep_window.state.pipeline_filepath = path
             self.prep_window.code_panel.set_file(path)
-            self.status_bar.showMessage(f"Saved participant pipeline: {path.name}")
             logger.info("Saved participant pipeline: %s", path)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save participant pipeline:\n{e}")
