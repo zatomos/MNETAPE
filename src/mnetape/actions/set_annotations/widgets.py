@@ -254,6 +254,7 @@ def annotations_factory(current_value, raw, parent):
 
     summary_label = QLabel(make_summary())
     btn = QPushButton("Open Browser…")
+    btn.setEnabled(raw is not None)
 
     def open_editor():
         dlg = AnnotationEditorDialog(

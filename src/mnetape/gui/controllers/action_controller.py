@@ -260,18 +260,19 @@ class ActionController:
         action = self.state.actions[row]
         # Pass the most relevant data object for channel-aware and ICA-aware widgets.
         # ICASolution is passed as-is so ica_apply's Browse widget can open the dialog.
+        # None is passed when the previous step hasn't been run, so interactive preview buttons are auto-disabled.
         if row == 0:
             current_raw = self.state.raw_original
         elif row <= len(self.state.data_states):
             stored = self.state.data_states[row - 1]
             if isinstance(stored, ICASolution):
                 current_raw = stored
-            elif hasattr(stored, "ch_names"):
+            elif stored is not None and hasattr(stored, "ch_names"):
                 current_raw = stored.copy()
             else:
-                current_raw = self.state.raw_original
+                current_raw = None
         else:
-            current_raw = self.state.raw_original
+            current_raw = None
 
         context_type = self.w.runner.get_data_type_at(row)
         dialog = ActionEditor(

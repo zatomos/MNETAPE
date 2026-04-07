@@ -697,6 +697,7 @@ dependencies = [
     { name = "pyprep" },
     { name = "pyqt6" },
     { name = "pyqt6-qscintilla" },
+    { name = "pyqt6-sip" },
     { name = "python-picard" },
     { name = "pyyaml" },
 ]
@@ -721,6 +722,7 @@ requires-dist = [
     { name = "pyprep" },
     { name = "pyqt6", specifier = ">=6.10.2" },
     { name = "pyqt6-qscintilla", specifier = ">=2.14" },
+    { name = "pyqt6-sip", specifier = ">=13.11.1" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
     { name = "python-picard", specifier = ">=0.8.1" },
