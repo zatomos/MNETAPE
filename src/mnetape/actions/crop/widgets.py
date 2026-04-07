@@ -404,27 +404,29 @@ def make_spinbox(min_val: float, max_val: float, value: float) -> QDoubleSpinBox
     return sb
 
 
-# -------- Param widget factory --------
+# -------- Param widget factories --------
 
-def crop_factory(current_value, raw, parent):
-    max_t = float(raw.times[-1]) if raw is not None else 999999.0
-    spinbox = make_spinbox(0.0, max_t, float(current_value) if current_value else max_t)
-
-    btn = QPushButton("Crop...")
-    btn.setEnabled(raw is not None)
-
-    # Layout: spinbox on the left, button on the right
+def make_crop_button_container(spinbox, btn):
+    """Return a container widget with spinbox on top and button row below."""
     btn_row = QHBoxLayout()
     btn_row.addStretch()
     btn_row.addWidget(btn)
-
-    # Spinbox on top, button row below
     container = QWidget()
     layout = QVBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(4)
     layout.addWidget(spinbox)
     layout.addLayout(btn_row)
+    return container
+
+
+def crop_factory(current_value, raw, parent):
+    """Factory for the 'tmax' param in absolute mode."""
+    max_t = float(raw.times[-1]) if raw is not None else 999999.0
+    spinbox = make_spinbox(0.0, max_t, float(current_value) if current_value else max_t)
+
+    btn = QPushButton("Crop...")
+    btn.setEnabled(raw is not None)
 
     def crop():
         tmin_widget = parent.param_widgets.get("tmin")
@@ -438,12 +440,38 @@ def crop_factory(current_value, raw, parent):
         tmax_widget.setValue(new_tmax)
 
     btn.clicked.connect(crop)
+    return make_crop_button_container(spinbox, btn), spinbox
 
-    return container, spinbox
+
+def trim_factory(current_value, raw, parent):
+    """Factory for the 'trim_end' param in trim mode."""
+    max_t = float(raw.times[-1]) if raw is not None else 999999.0
+    spinbox = make_spinbox(0.0, max_t, float(current_value) if current_value else 0.0)
+
+    btn = QPushButton("Crop...")
+    btn.setEnabled(raw is not None)
+
+    def crop():
+        trim_start_widget = parent.param_widgets.get("trim_start")
+        trim_end_widget = parent.param_widgets.get("trim_end")
+        ts = trim_start_widget.value() if trim_start_widget else 0.0
+        te = trim_end_widget.value() if trim_end_widget else 0.0
+        rec_end = float(raw.times[-1])
+        dlg = CropDialog(raw, tmin=ts, tmax=rec_end - te, parent=parent)
+        result = dlg.run()
+        if result is None:
+            return
+        new_tmin, new_tmax = result
+        trim_start_widget.setValue(new_tmin)
+        trim_end_widget.setValue(rec_end - new_tmax)
+
+    btn.clicked.connect(crop)
+    return make_crop_button_container(spinbox, btn), spinbox
 
 
 # -------- Widget bindings --------
 
 WIDGET_BINDINGS = [
     ParamWidgetBinding("tmax", crop_factory),
+    ParamWidgetBinding("trim_end", trim_factory),
 ]
