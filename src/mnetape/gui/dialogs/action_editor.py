@@ -355,7 +355,7 @@ class ActionEditor(QDialog):
                 if self.raw is None:
                     for btn in container.findChildren(QPushButton):
                         if not btn.isEnabled() and not btn.toolTip():
-                            btn.setToolTip("Run the previous step first to display preview.")
+                            btn.setToolTip("Run the previous steps first.")
                 self.form.addRow(param_def.get("label", param_name) + ":", container)
             else:
                 widget = create_widget_for_param(param_def, current_value)
