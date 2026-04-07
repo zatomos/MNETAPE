@@ -1489,10 +1489,91 @@ class ProjectWindow(QMainWindow):
 
         self.prep_window.auto_load()
 
+    @staticmethod
+    def normalize_actions_for_default(actions: list) -> list:
+        """Return a copy of actions with participant-specific data stripped.
+
+        - Skips load_file (participant-specific file path).
+        - Resets managed_params to schema defaults.
+        """
+        result = []
+        for action in actions:
+            if action.action_id == "load_file":
+                continue
+            action_def = get_action_by_id(action.action_id)
+            managed = (
+                action_def.interactive_runner.managed_params
+                if action_def and action_def.interactive_runner
+                else ()
+            )
+            if managed:
+                defaults = action_def.default_params() if action_def else {}
+                stripped = {k: v for k, v in action.params.items() if k not in managed}
+                for p in managed:
+                    if p in defaults:
+                        stripped[p] = defaults[p]
+                result.append(dataclasses.replace(action, params=stripped))
+            else:
+                result.append(action)
+        return result
+
+    def set_pipeline_as_default_popup(self):
+        """If the current pipeline structurally differs from the project default, ask to overwrite it."""
+        import difflib
+
+        if self.prep_window is None:
+            return
+        ctx = self.prep_window.project_context
+        if not ctx:
+            return
+
+        from mnetape.core.codegen import parse_script_to_actions
+
+        default_path = ctx.project.pipeline_path(ctx.project_dir)
+        current_code = generate_full_script(self.prep_window.state.actions)
+        existing_code = default_path.read_text() if default_path.exists() else ""
+
+        # Normalize both sides: strip load_file and managed_params (e.g. ICA exclusions)
+        normalized_current = generate_full_script(
+            self.normalize_actions_for_default(self.prep_window.state.actions)
+        )
+        try:
+            existing_actions = parse_script_to_actions(existing_code) if existing_code else []
+        except Exception:
+            existing_actions = []
+        normalized_existing = generate_full_script(
+            self.normalize_actions_for_default(existing_actions)
+        )
+
+        if normalized_current == normalized_existing:
+            return
+
+        diff_lines = list(difflib.unified_diff(
+            normalized_existing.splitlines(keepends=True),
+            normalized_current.splitlines(keepends=True),
+            fromfile="project default (current)",
+            tofile="this session",
+            lineterm="",
+        ))
+        logger.debug("Pipeline diff:\n%s", "".join(diff_lines))
+
+        reply = QMessageBox.question(
+            self,
+            "Update Project Pipeline",
+            "The pipeline has been modified.\n\nSet it as the default for the entire project?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            default_path.parent.mkdir(parents=True, exist_ok=True)
+            default_path.write_text(current_code)
+
     def close_preprocessing(self, report_status: bool = True):
         """Close the embedded preprocessing session and return to the detail view."""
         if self.prep_window is None:
             return
+
+        self.set_pipeline_as_default_popup()
 
         if report_status:
             ctx = self.prep_window.project_context
