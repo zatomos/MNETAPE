@@ -9,9 +9,10 @@ the action list, code panel, and visualization panel in sync.
 import logging
 
 import mne
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QEvent, Qt
 from PyQt6.QtGui import QAction, QBrush, QColor, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLabel,
     QListWidgetItem,
@@ -710,6 +711,14 @@ class MainWindow(QMainWindow):
         """Release resources. Called by ProjectWindow when the embedded session ends,
         or automatically from closeEvent in standalone mode."""
         self.state.data_states.close()
+
+    def event(self, event):
+        if event.type() == QEvent.Type.WindowActivate:
+            modal = QApplication.activeModalWidget()
+            if modal:
+                modal.raise_()
+                modal.activateWindow()
+        return super().event(event)
 
     def closeEvent(self, event):
         """Handle close for standalone mode. In embedded mode, ProjectWindow calls cleanup()."""

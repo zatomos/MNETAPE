@@ -9,9 +9,10 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import QEvent, Qt, QSettings
 from PyQt6.QtGui import QAction, QBrush, QColor, QKeySequence
 from PyQt6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QCheckBox,
     QFileDialog,
@@ -1608,7 +1609,15 @@ class ProjectWindow(QMainWindow):
                 self.update_prep_status_label(s, ctx.run_index)
         logger.info("Participant %s / ses-%s status → %s", participant_id, session_id, new_status)
 
-    # Window close
+    # Window events
+
+    def event(self, event):
+        if event.type() == QEvent.Type.WindowActivate:
+            modal = QApplication.activeModalWidget()
+            if modal:
+                modal.raise_()
+                modal.activateWindow()
+        return super().event(event)
 
     def closeEvent(self, event):
         if self.prep_window is not None:
