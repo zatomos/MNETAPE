@@ -211,6 +211,7 @@ def event_ids_factory(current_value, raw, parent):
 
     summary_label = QLabel(make_summary())
     btn = QPushButton("Pick…")
+    btn.setEnabled(raw is not None)
 
     def open_picker():
         source = "annotations"

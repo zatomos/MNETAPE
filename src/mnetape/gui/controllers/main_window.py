@@ -405,23 +405,46 @@ class MainWindow(QMainWindow):
         self.code_panel.set_code(code)
         self.files.auto_save()
 
+    def fallback_data(self, step: int):
+        """Walk backward from step-1 to find the last computed data state.
+
+        Returns:
+            Tuple of (data, label).
+        """
+        for i in range(step - 1, -1, -1):
+            if i == 0:
+                if self.state.raw_original is not None:
+                    return self.state.raw_original, "original"
+            elif 0 < i <= len(self.state.data_states):
+                stored = self.state.data_states[i - 1]
+                if stored is not None:
+                    data = stored.raw if isinstance(stored, ICASolution) else stored
+                    action = self.state.actions[i - 1]
+                    title = get_action_title(action)
+                    return data, f"step {i}. {title}"
+        return self.state.raw_original, "original"
+
     def update_visualization(self):
         """Refresh the visualization panel for the currently selected pipeline step."""
         step = self.viz_panel.current_step
 
         if step == 0:
             data_to_show = self.state.raw_original
+            fallback_label = None
         elif 0 < step <= len(self.state.data_states):
             stored = self.state.data_states[step - 1]
-            # ICASolution slots show the raw contained within; None slots fall back to original
-            if isinstance(stored, ICASolution):
+            if stored is None:
+                data_to_show, fallback_label = self.fallback_data(step)
+            elif isinstance(stored, ICASolution):
                 data_to_show = stored.raw
+                fallback_label = None
             else:
-                data_to_show = stored if stored is not None else self.state.raw_original
+                data_to_show = stored
+                fallback_label = None
         else:
-            data_to_show = self.state.raw_original
+            data_to_show, fallback_label = self.fallback_data(step)
 
-        self.viz_panel.update_plots(data_to_show, step, len(self.state.data_states))
+        self.viz_panel.update_plots(data_to_show, step, fallback_label)
         self.update_raw_info(data_to_show)
 
     def update_raw_info(self, data):

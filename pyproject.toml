@@ -14,6 +14,7 @@ dependencies = [
     "python-picard>=0.8.1",
     "pyqt6>=6.10.2",
     "pyqt6-qscintilla>=2.14",
+    "pyqt6-sip>=13.11.1",
     "pyyaml>=6.0.3",
     "pyprep",
     "autoreject",

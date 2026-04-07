@@ -352,6 +352,10 @@ class ActionEditor(QDialog):
             if custom is not None:
                 container, value_widget = custom
                 self.param_widgets[param_name] = value_widget
+                if self.raw is None:
+                    for btn in container.findChildren(QPushButton):
+                        if not btn.isEnabled() and not btn.toolTip():
+                            btn.setToolTip("Run the previous step first to display preview.")
                 self.form.addRow(param_def.get("label", param_name) + ":", container)
             else:
                 widget = create_widget_for_param(param_def, current_value)

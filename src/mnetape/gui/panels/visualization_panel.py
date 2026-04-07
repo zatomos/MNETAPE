@@ -268,7 +268,7 @@ class VisualizationPanel(QWidget):
         self,
         data: mne.io.Raw | mne.Epochs | mne.Evoked | None,
         current_step: int = 0,
-        computed_steps: int = 0,
+        fallback_label: str | None = None,
     ):
         """Update the active tab's plot for a new data object or step selection.
 
@@ -279,12 +279,13 @@ class VisualizationPanel(QWidget):
         Args:
             data: The MNE object to visualize, or None to show a placeholder.
             current_step: Index of the step combo selection (0 = original).
-            computed_steps: Number of actions whose results are available.
+            fallback_label: When not None, shows a warning that the step is not computed
+                and names the fallback step being shown instead.
         """
         self.current_data = data
 
-        if current_step > computed_steps and current_step > 0:
-            self.status_label.setText("(not computed - showing original)")
+        if fallback_label is not None and current_step > 0:
+            self.status_label.setText(f"not computed \u2014 showing {fallback_label}")
         else:
             self.status_label.setText("")
 
