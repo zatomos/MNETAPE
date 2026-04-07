@@ -344,6 +344,7 @@ class ActionEditor(QDialog):
 
         for param_name, param_def in visible_params.items():
             current_value = action.params.get(param_name, param_def.get("default"))
+            desc = param_def.get("description", "")
 
             # Look up a custom widget factory by param name
             binding = next((b for b in self.action_def.widget_bindings if b.param_name == param_name), None)
@@ -357,10 +358,18 @@ class ActionEditor(QDialog):
                         if not btn.isEnabled() and not btn.toolTip():
                             btn.setToolTip("Run the previous steps first.")
                 self.form.addRow(param_def.get("label", param_name) + ":", container)
+                field_widget = container
             else:
                 widget = create_widget_for_param(param_def, current_value)
                 self.param_widgets[param_name] = widget
                 self.form.addRow(param_def.get("label", param_name) + ":", widget)
+                field_widget = widget
+
+            if desc:
+                field_widget.setToolTip(desc)
+                label = self.form.labelForField(field_widget)
+                if label:
+                    label.setToolTip(desc)
 
             self.param_rows[param_name] = row_idx
             row_idx += 1
