@@ -301,6 +301,7 @@ class ProjectWindow(QMainWindow):
         self.participant_tree.setObjectName("participant_tree")
         self.participant_tree.setHeaderHidden(True)
         self.participant_tree.setColumnCount(1)
+        self.participant_tree.setUniformRowHeights(True)
         self.participant_tree.currentItemChanged.connect(self.on_item_selected)
         self.participant_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.participant_tree.customContextMenuRequested.connect(self.show_tree_context_menu)
@@ -1498,11 +1499,11 @@ class ProjectWindow(QMainWindow):
             if ctx:
                 actions = self.prep_window.state.actions
                 if any(a.status.name == "ERROR" for a in actions):
-                    final_status = "error"
+                    final_status = ParticipantStatus.ERROR
                 elif actions and all(a.status.name == "COMPLETE" for a in actions):
-                    final_status = "done"
+                    final_status = ParticipantStatus.DONE
                 else:
-                    final_status = "pending"
+                    final_status = ParticipantStatus.PENDING
                 try:
                     ctx.on_status_update(final_status)
                 except Exception as e:
@@ -1657,7 +1658,7 @@ class ProjectWindow(QMainWindow):
         label.setText(f"Status: {text}")
         label.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: bold;")
 
-    def on_session_status_update(self, participant_id: str, session_id: str, new_status: str):
+    def on_session_status_update(self, participant_id: str, session_id: str, new_status: ParticipantStatus):
         """Called when a preprocessing session reports its final status."""
         p = self.project.get_participant(participant_id)
         if not p:
@@ -1666,12 +1667,12 @@ class ProjectWindow(QMainWindow):
         if not s:
             return
 
-        # processed_files is already updated by run_and_save before this callback fires
-        if new_status == "done" and not s.merge_runs and s.processed_files:
-            done_count = sum(1 for pf in s.processed_files if pf)
-            s.status = "done" if done_count >= len(s.data_files) else "incomplete"
-        else:
+        # session_status derives DONE/INCOMPLETE/PENDING from processed_files automatically.
+        # Only persist ERROR and RUNNING so they survive across open/close cycles.
+        if new_status in (ParticipantStatus.ERROR, ParticipantStatus.RUNNING):
             s.status = new_status
+        else:
+            s.status = ParticipantStatus.PENDING
 
         self.save_project()
         self.refresh_participant_item(participant_id)

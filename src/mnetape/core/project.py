@@ -60,18 +60,28 @@ class Session:
 
     id: str
     data_files: list[str] = field(default_factory=list)
-    status: str = ParticipantStatus.PENDING
+    status: ParticipantStatus = ParticipantStatus.PENDING
     error_msg: str = ""
     merge_runs: bool = False
     processed_files: list[str] = field(default_factory=list)
 
     @property
     def session_status(self) -> ParticipantStatus:
-        """Return the status as a ParticipantStatus enum, defaulting to PENDING."""
-        try:
-            return ParticipantStatus(self.status)
-        except ValueError:
+        """Derive the effective status from processed_files, trusting stored status only for ERROR/RUNNING.
+
+        DONE/INCOMPLETE/PENDING are always computed from the actual processed run files so that
+        re-opening and closing a session without running anything cannot overwrite prior progress.
+        """
+        if self.status in (ParticipantStatus.ERROR, ParticipantStatus.RUNNING):
+            return self.status
+        if not self.data_files:
             return ParticipantStatus.PENDING
+        if self.merge_runs:
+            return ParticipantStatus.DONE if any(self.processed_files) else ParticipantStatus.PENDING
+        done_count = sum(1 for pf in self.processed_files if pf)
+        if done_count == 0:
+            return ParticipantStatus.PENDING
+        return ParticipantStatus.DONE if done_count >= len(self.data_files) else ParticipantStatus.INCOMPLETE
 
     def to_dict(self) -> dict:
         return {
@@ -85,10 +95,15 @@ class Session:
 
     @classmethod
     def from_dict(cls, d: dict) -> Session:
+        raw_status = d.get("status", ParticipantStatus.PENDING)
+        try:
+            status = ParticipantStatus(raw_status)
+        except ValueError:
+            status = ParticipantStatus.PENDING
         return cls(
             id=d.get("id", "01"),
             data_files=d.get("data_files") or [],
-            status=d.get("status", ParticipantStatus.PENDING),
+            status=status,
             error_msg=d.get("error_msg", ""),
             merge_runs=d.get("merge_runs", False),
             processed_files=d.get("processed_files") or [],

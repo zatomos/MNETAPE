@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
 from mnetape.actions.registry import get_action_by_id, get_action_title
 from mnetape.core.codegen import generate_full_script, parse_script_to_actions
 from mnetape.core.models import CUSTOM_ACTION_ID, DataType, ICASolution
-from mnetape.core.project import ProjectContext
+from mnetape.core.project import ParticipantStatus, ProjectContext
 from mnetape.gui.controllers.action_controller import ActionController, PROTECTED_ACTION_IDS
 from mnetape.gui.controllers.file_handler import FileHandler
 from mnetape.gui.controllers.nav_controller import NavController
@@ -702,7 +702,7 @@ class MainWindow(QMainWindow):
             elif out_str not in s.processed_files:
                 s.processed_files.append(out_str)
 
-        ctx.on_status_update("done")
+        ctx.on_status_update(ParticipantStatus.DONE)
 
     def on_pipeline_complete(self):
         """Called by PipelineRunner when all pipeline actions complete successfully."""
@@ -727,11 +727,11 @@ class MainWindow(QMainWindow):
         if self.project_context:
             actions = self.state.actions
             if any(a.status.name == "ERROR" for a in actions):
-                final_status = "error"
+                final_status = ParticipantStatus.ERROR
             elif actions and all(a.status.name == "COMPLETE" for a in actions):
-                final_status = "done"
+                final_status = ParticipantStatus.DONE
             else:
-                final_status = "pending"
+                final_status = ParticipantStatus.PENDING
             try:
                 self.project_context.on_status_update(final_status)
             except Exception as e:

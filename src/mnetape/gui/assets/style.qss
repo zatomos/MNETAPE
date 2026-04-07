@@ -789,8 +789,8 @@ QTreeWidget#participant_tree {
     padding: 4px 2px;
 }
 QTreeWidget#participant_tree::item {
-    padding: 5px 8px;
-    margin: 1px 2px;
+    padding: 3px 8px;
+    margin: 0px 2px;
     border-radius: 6px;
     font-size: 13px;
 }
