@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QComboBox
+from PyQt6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QHBoxLayout,
+    QLineEdit,
+    QPushButton,
+    QWidget,
+)
 
 from mnetape.actions.base import ParamWidgetBinding
+from mnetape.gui.dialogs.channel_picker_dialog import ChannelPickerDialog
 
 AUTO_DETECT = "Auto-detect"
 
@@ -58,6 +66,35 @@ def channel_factory(preferred_type: str):
     return factory
 
 
+def threshold_channel_factory(current_value, raw, parent):
+    """Factory for the threshold_channel param button."""
+    saved = ", ".join(current_value) if isinstance(current_value, list) else (str(current_value) if current_value else "")
+
+    line_edit = QLineEdit(saved)
+    line_edit.setPlaceholderText("all channels if empty")
+
+    btn_pick = QPushButton("Pick...")
+    btn_pick.setEnabled(raw is not None)
+
+    def pick():
+        if raw is None:
+            return
+        selected = [c.strip() for c in line_edit.text().split(",") if c.strip()]
+        dlg = ChannelPickerDialog(raw, selected, parent, title="Select Channels to Scan (Drop Channels)")
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            line_edit.setText(", ".join(dlg.get_selected()))
+
+    btn_pick.clicked.connect(pick)
+
+    container = QWidget()
+    layout = QHBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.addWidget(line_edit, 1)
+    layout.addWidget(btn_pick)
+
+    return container, line_edit
+
+
 ecg_channel_factory = channel_factory("ecg")
 eog_channel_factory = channel_factory("eog")
 
@@ -67,4 +104,5 @@ eog_channel_factory = channel_factory("eog")
 WIDGET_BINDINGS = [
     ParamWidgetBinding("ecg_channel", ecg_channel_factory),
     ParamWidgetBinding("eog_channel", eog_channel_factory),
+    ParamWidgetBinding("threshold_channel", threshold_channel_factory),
 ]
