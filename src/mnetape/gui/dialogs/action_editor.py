@@ -8,7 +8,8 @@ import json
 import logging
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QFontMetrics
+from PyQt6.Qsci import QsciLexerPython, QsciScintilla
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
@@ -27,7 +28,6 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -36,6 +36,7 @@ import mne
 from mnetape.actions.registry import get_action_by_id, get_action_title
 from mnetape.core.codegen import generate_action_code
 from mnetape.core.models import CUSTOM_ACTION_ID, ActionConfig, ActionStatus, DataType
+from mnetape.gui.widgets import create_code_editor
 
 
 logger = logging.getLogger(__name__)
@@ -389,21 +390,23 @@ class ActionEditor(QDialog):
         # ---- Fixed bottom section ----
         # Code preview
         bottom_layout.addWidget(QLabel("Generated code:"))
-        self.code_preview = QTextEdit()
+        self.code_preview = create_code_editor(self)
         self.code_preview.setReadOnly(True)
-        self.code_preview.setMaximumHeight(100)
-        self.code_preview.setFont(QFont("Consolas", 10))
-        self.code_preview.setStyleSheet(
-            """
-            QTextEdit {
-                background-color: #1E1E1E;
-                color: #A9B7C6;
-                border: 1px solid #3C3F41;
-                border-radius: 4px;
-                padding: 6px;
-            }
-        """
-        )
+        self.code_preview.setMarginWidth(0, 0)
+        self.code_preview.setCaretLineVisible(False)
+        preview_font = QFont("Consolas", 10)
+        preview_font.setFixedPitch(True)
+        self.code_preview.setFont(preview_font)
+        lexer = self.code_preview.lexer()
+        if lexer:
+            for i in range(128):
+                lexer.setFont(preview_font, i)
+            kw_font = QFont(preview_font)
+            kw_font.setBold(True)
+            lexer.setFont(kw_font, QsciLexerPython.Keyword)
+        self._preview_line_h = QFontMetrics(preview_font).height()
+        self.code_preview.SendScintilla(QsciScintilla.SCI_SETSCROLLWIDTHTRACKING, 1)
+        self.code_preview.SendScintilla(QsciScintilla.SCI_SETSCROLLWIDTH, 1)
         self.update_code_preview()
         bottom_layout.addWidget(self.code_preview)
 
@@ -546,7 +549,10 @@ class ActionEditor(QDialog):
                 advanced_params=self.get_advanced_params(),
             )
             code = generate_action_code(temp_action, self.context_type)
-        self.code_preview.setPlainText(code)
+        self.code_preview.setText(code)
+        lines = max(code.count("\n") + 1, 1)
+        new_h = min(lines * self._preview_line_h + 10, 150)
+        self.code_preview.setFixedHeight(new_h)
 
     def get_params(self) -> dict:
         """Return primary parameter values, including managed params preserved from action.params.
