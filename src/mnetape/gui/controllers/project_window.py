@@ -9,8 +9,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, Qt, QSettings
-from PyQt6.QtGui import QAction, QBrush, QColor, QKeySequence
+from PyQt6.QtCore import QEvent, Qt, QSettings, QUrl
+from PyQt6.QtGui import QAction, QBrush, QColor, QDesktopServices, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -123,13 +123,13 @@ def make_session_item(p: Participant, s: Session) -> QTreeWidgetItem:
     return item
 
 
-def _open_standalone():
+def open_standalone():
     from mnetape.gui.controllers.main_window import MainWindow
     w = MainWindow()
     w.show()
 
 
-def _strip_managed_params(actions) -> str:
+def strip_managed_params(actions) -> str:
     """Generate pipeline code with run-specific params reset to their schema defaults.
 
     Used when saving a default pipeline template so that per-run values (e.g. ICA exclusions)
@@ -149,6 +149,11 @@ def _strip_managed_params(actions) -> str:
     return generate_full_script(clean)
 
 
+def open_folder(folder: Path):
+    folder.mkdir(parents=True, exist_ok=True)
+    QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+
 class ProjectWindow(QMainWindow):
     """Top-level window for project-based EEG study management.
 
@@ -157,14 +162,47 @@ class ProjectWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        # State
         self.project: Project | None = None
         self.project_dir: Path | None = None
-        self.prep_window = None
-        self.analysis_window = None
-        self.analysis_content_layout = None
-        self.analysis_content = None
-        self.prep_content_layout = None
+
+        # Menu actions
+        self.recent_menu = None
+        self.open_folder_action = None
+        self.add_p_action = None
+        self.import_folder_action = None
+        self.import_bids_action = None
+
+        # Left panel
+        self.participant_tree = None
+        self.btn_add = None
+        self.btn_remove = None
+        self.btn_analysis = None
+        self.left_panel = None
+        self.left_sep = None
+
+        # Right stack + detail pages
+        self.right_stack = None
+        self.welcome_widget = None
+        self.no_selection_widget = None
+        self.participant_detail_widget = None
+        self.participant_detail_refs = None
+        self.session_detail_widget = None
+        self.session_detail_refs = None
+
+        # Preprocessing page
+        self.prep_page = None
+        self.prep_refs = None
         self.prep_content = None
+        self.prep_content_layout = None
+        self.prep_window = None
+
+        # Analysis page
+        self.analysis_page = None
+        self.analysis_refs = None
+        self.analysis_content = None
+        self.analysis_content_layout = None
+        self.analysis_window = None
 
         self.setWindowTitle("MNETAPE")
         self.resize(1200, 760)
@@ -195,6 +233,11 @@ class ProjectWindow(QMainWindow):
         open_action.triggered.connect(self.open_project)
         file_menu.addAction(open_action)
 
+        self.open_folder_action = QAction("Open Project Folder", self)
+        self.open_folder_action.triggered.connect(self.open_project_folder)
+        self.open_folder_action.setEnabled(False)
+        file_menu.addAction(self.open_folder_action)
+
         self.recent_menu = QMenu("Open Recent Project", self)
         self.recent_menu.aboutToShow.connect(self.refresh_recent_menu)
         file_menu.addMenu(self.recent_menu)
@@ -202,7 +245,7 @@ class ProjectWindow(QMainWindow):
         file_menu.addSeparator()
 
         standalone_action = QAction("Open Without Project...", self)
-        standalone_action.triggered.connect(_open_standalone)
+        standalone_action.triggered.connect(open_standalone)
         file_menu.addAction(standalone_action)
 
         file_menu.addSeparator()
@@ -366,7 +409,7 @@ class ProjectWindow(QMainWindow):
         layout.addSpacing(8)
         btn_standalone = QPushButton("Open Without Project...")
         btn_standalone.setFixedWidth(200)
-        btn_standalone.clicked.connect(_open_standalone)
+        btn_standalone.clicked.connect(open_standalone)
         btn_standalone.setStyleSheet("color: gray;")
         btn_row2 = QHBoxLayout()
         btn_row2.addStretch()
@@ -681,6 +724,7 @@ class ProjectWindow(QMainWindow):
 
         self.add_p_action.setEnabled(True)
         self.import_folder_action.setEnabled(True)
+        self.open_folder_action.setEnabled(True)
         self.btn_add.setEnabled(True)
 
         self.rebuild_tree()
@@ -1312,12 +1356,16 @@ class ProjectWindow(QMainWindow):
         if item_type == "participant":
             add_session_action = menu.addAction("Add Session...")
             add_session_action.triggered.connect(self.add_session_to_selected_participant)
+            open_p_folder_action = menu.addAction("Open Participant Folder")
+            open_p_folder_action.triggered.connect(self.open_participant_folder)
             menu.addSeparator()
             remove_action = menu.addAction("Remove Participant")
             remove_action.triggered.connect(self.remove_participant)
         elif item_type == "session":
-            open_action = menu.addAction("Open Preprocessing")
-            open_action.triggered.connect(self.open_preprocessing)
+            open_session_action = menu.addAction("Open Session Folder")
+            open_session_action.triggered.connect(self.open_session_folder)
+            open_data_action = menu.addAction("Open Data Folder")
+            open_data_action.triggered.connect(self.open_participant_data_folder)
             menu.addSeparator()
             remove_action = menu.addAction("Remove Session")
             pid = item.data(0, ROLE_PID)
@@ -1325,6 +1373,36 @@ class ProjectWindow(QMainWindow):
             remove_action.triggered.connect(lambda: self.remove_session(pid, sid))
 
         menu.exec(self.participant_tree.mapToGlobal(pos))
+
+    def open_project_folder(self):
+        if self.project_dir:
+            open_folder(self.project_dir)
+
+    def open_participant_folder(self):
+        p = self.get_selected_participant()
+        if not p or not self.project_dir:
+            return
+        open_folder(self.project.participant_dir(self.project_dir, p))
+
+    def open_session_folder(self):
+        p, s = self.get_selected_session()
+        if not p or not s or not self.project_dir:
+            return
+        open_folder(self.project.session_dir(self.project_dir, p, s))
+
+    def open_participant_data_folder(self):
+        """Open the source data folder for the selected session in the system file manager."""
+        p, s = self.get_selected_session()
+        if not p or not s or not self.project_dir:
+            return
+        folder: Path | None = None
+        if s.data_files:
+            resolved = self.project.resolve_data_files(self.project_dir, s)
+            if resolved:
+                folder = resolved[0].parent
+        if folder is None or not folder.exists():
+            folder = self.project.session_dir(self.project_dir, p, s)
+        open_folder(folder)
 
     # Embedded preprocessing
 
@@ -1470,7 +1548,7 @@ class ProjectWindow(QMainWindow):
         """Save current pipeline as the project default; optionally reset participant overrides."""
         if not self.prep_window or not self.project or not self.project_dir:
             return
-        code = _strip_managed_params(self.prep_window.state.actions)
+        code = strip_managed_params(self.prep_window.state.actions)
         if not code:
             return
 
