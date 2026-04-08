@@ -49,7 +49,7 @@ class PlotWorker(QThread):
             self.result_ready.emit(self.fn())
         except Exception as e:
             logger.warning("Background plot computation failed: %s", e)
-            self.result_ready.emit(None)
+            self.result_ready.emit(e)
 
 # Tab indices for each mode
 RAW_TAB_NAMES = ["Time Series", "PSD", "Sensors", "Topomap"]
@@ -386,13 +386,20 @@ class VisualizationPanel(QWidget):
 
         def on_result(result):
             self.finish_loading()
-            if result is not None:
+            if isinstance(result, Exception):
+                canvas.update_figure(
+                    make_loading_fig(str(result), color="#cc4444", fontstyle="normal")
+                )
+            elif result is not None:
                 try:
                     fig = render_fn(result)
                     if fig is not None:
                         canvas.update_figure(fig)
                 except Exception as e:
                     logger.warning("Plot render failed for %s: %s", slot_key, e)
+                    canvas.update_figure(
+                        make_loading_fig(str(e), color="#cc4444", fontstyle="normal")
+                    )
 
         def on_thread_exit():
             # Native QThread.finished: OS thread has fully exited, safe to drop reference.
@@ -480,8 +487,9 @@ class VisualizationPanel(QWidget):
             self.psd_data_id = data_id
             return fig
 
+        fmax = min(60.0, data.info["sfreq"] / 2)
         self.run_plot_worker("psd", self.plot_psd,
-                             lambda: data.compute_psd(fmax=60), render, "Computing PSD...")
+                             lambda: data.compute_psd(fmax=fmax), render, "Computing PSD...")
 
     def update_evoked_plot(self):
         """Render an evoked waveform plot on the main thread."""
