@@ -298,6 +298,7 @@ class ActionController:
             self.state.push_undo()
             action.params = dialog.get_params()
             action.advanced_params = dialog.get_advanced_params()
+            action.title_override = dialog.get_title_override()
 
             if dialog.should_clear_custom():
                 action.custom_code = ""

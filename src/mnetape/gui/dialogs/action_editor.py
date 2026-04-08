@@ -330,6 +330,15 @@ class ActionEditor(QDialog):
             self.btn_reset_custom.clicked.connect(self.reset_custom)
             layout.addWidget(self.btn_reset_custom)
 
+        # Custom name field
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("Name:"))
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("Custom name (optional)")
+        self.name_edit.setText(action.title_override or "")
+        name_row.addWidget(self.name_edit)
+        layout.addLayout(name_row)
+
         # Show action docstring if available
         doc_label = QLabel(self.action_def.doc if self.action_def else "")
         doc_label.setWordWrap(True)
@@ -579,6 +588,10 @@ class ActionEditor(QDialog):
                 if p in self.action.params:
                     params[p] = self.action.params[p]
         return params
+
+    def get_title_override(self) -> str:
+        """Return the custom name entered by the user, or empty string if none."""
+        return self.name_edit.text().strip()
 
     def should_clear_custom(self) -> bool:
         """Return True if the user chose to reset custom code during this session."""

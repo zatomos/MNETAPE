@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -185,6 +186,7 @@ class ProjectWindow(QMainWindow):
         self.add_p_action = None
         self.import_folder_action = None
         self.import_bids_action = None
+        self.rename_project_action = None
 
         # Left panel
         self.participant_tree = None
@@ -277,6 +279,13 @@ class ProjectWindow(QMainWindow):
         self.import_bids_action.triggered.connect(self.import_bids)
         self.import_bids_action.setEnabled(True)
         project_menu.addAction(self.import_bids_action)
+
+        project_menu.addSeparator()
+
+        self.rename_project_action = QAction("Rename Project...", self)
+        self.rename_project_action.triggered.connect(self.rename_project)
+        self.rename_project_action.setEnabled(False)
+        project_menu.addAction(self.rename_project_action)
 
 
     # UI
@@ -658,6 +667,7 @@ class ProjectWindow(QMainWindow):
         self.add_p_action.setEnabled(True)
         self.import_folder_action.setEnabled(True)
         self.open_folder_action.setEnabled(True)
+        self.rename_project_action.setEnabled(True)
         self.btn_add.setEnabled(True)
 
         self.rebuild_tree()
@@ -1050,9 +1060,6 @@ class ProjectWindow(QMainWindow):
         if not p:
             return
 
-        # Reuse the dialog but we only care about session_id and file
-        # We build a minimal dialog inline using the existing class
-        from PyQt6.QtWidgets import QInputDialog
         sid, ok = QInputDialog.getText(self, "Add Session", "Session ID:", text="01")
         if not ok or not sid.strip():
             return
@@ -1084,6 +1091,63 @@ class ProjectWindow(QMainWindow):
             self.remove_participant()
         elif item_type == "session":
             self.remove_session(pid, sid)
+
+    def rename_project(self):
+        """Rename the current project."""
+        if not self.project:
+            return
+        new_name, ok = QInputDialog.getText(
+            self, "Rename Project", "Project name:", text=self.project.name
+        )
+        new_name = new_name.strip()
+        if not ok or not new_name or new_name == self.project.name:
+            return
+        self.project.name = new_name
+        self.save_project()
+        self.setWindowTitle(f"MNETAPE - {new_name}")
+
+    def rename_participant(self, pid: str):
+        """Rename a participant ID."""
+        if not self.project:
+            return
+        p = self.project.get_participant(pid)
+        if not p:
+            return
+        new_id, ok = QInputDialog.getText(
+            self, "Rename Participant", "Participant ID:", text=p.id
+        )
+        new_id = new_id.strip()
+        if not ok or not new_id or new_id == p.id:
+            return
+        if any(x.id == new_id for x in self.project.participants if x.id != pid):
+            QMessageBox.warning(self, "Duplicate ID", f'A participant with ID "{new_id}" already exists.')
+            return
+        p.id = new_id
+        self.save_project()
+        self.rebuild_tree()
+
+    def rename_session_id(self, pid: str, sid: str):
+        """Rename a session ID."""
+        if not self.project:
+            return
+        p = self.project.get_participant(pid)
+        if not p:
+            return
+        s = p.get_session(sid)
+        if not s:
+            return
+        new_id, ok = QInputDialog.getText(
+            self, "Rename Session", "Session ID:", text=s.id
+        )
+        new_id = new_id.strip()
+        if not ok or not new_id or new_id == s.id:
+            return
+        if any(x.id == new_id for x in p.sessions if x.id != sid):
+            QMessageBox.warning(self, "Duplicate ID", f'A session with ID "{new_id}" already exists.')
+            return
+        s.id = new_id
+        self.save_project()
+        self.rebuild_tree()
 
     def remove_participant(self):
         p = self.get_selected_participant()
@@ -1221,8 +1285,11 @@ class ProjectWindow(QMainWindow):
         menu = QMenu(self)
 
         if item_type == "participant":
+            pid = item.data(0, ROLE_PID)
             add_session_action = menu.addAction("Add Session...")
             add_session_action.triggered.connect(self.add_session_to_selected_participant)
+            rename_p_action = menu.addAction("Rename...")
+            rename_p_action.triggered.connect(lambda: self.rename_participant(pid))
             open_p_folder_action = menu.addAction("Open Participant Folder")
             open_p_folder_action.triggered.connect(self.open_participant_folder)
             menu.addSeparator()
@@ -1234,9 +1301,11 @@ class ProjectWindow(QMainWindow):
             open_data_action = menu.addAction("Open Data Folder")
             open_data_action.triggered.connect(self.open_participant_data_folder)
             menu.addSeparator()
-            remove_action = menu.addAction("Remove Session")
             pid = item.data(0, ROLE_PID)
             sid = item.data(0, ROLE_SID)
+            rename_s_action = menu.addAction("Rename...")
+            rename_s_action.triggered.connect(lambda: self.rename_session_id(pid, sid))
+            remove_action = menu.addAction("Remove Session")
             remove_action.triggered.connect(lambda: self.remove_session(pid, sid))
 
         menu.exec(self.participant_tree.mapToGlobal(pos))
