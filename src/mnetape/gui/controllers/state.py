@@ -6,6 +6,7 @@ All GUI controllers read and write the same object, so any update is immediately
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from PyQt6.QtCore import QSettings
 
 from mnetape.core.data_store import DataStore
 from mnetape.core.models import ActionConfig
+
+MAX_UNDO = 20
 
 
 @dataclass(slots=True)
@@ -40,6 +43,29 @@ class AppState:
     pipeline_filepath: Path | None = None
     settings: QSettings = field(default_factory=QSettings)
     recent_fif: list[str] = field(default_factory=list)
+    undo_stack: list = field(default_factory=list, repr=False)
+    redo_stack: list = field(default_factory=list, repr=False)
+
+    def push_undo(self) -> None:
+        """Snapshot the current actions list onto the undo stack and clear redo."""
+        self.undo_stack.append(copy.deepcopy(self.actions))
+        if len(self.undo_stack) > MAX_UNDO:
+            self.undo_stack.pop(0)
+        self.redo_stack.clear()
+
+    def pop_undo(self) -> list[ActionConfig] | None:
+        """Pop the most recent undo snapshot; push current state to redo."""
+        if not self.undo_stack:
+            return None
+        self.redo_stack.append(copy.deepcopy(self.actions))
+        return self.undo_stack.pop()
+
+    def pop_redo(self) -> list[ActionConfig] | None:
+        """Pop the most recent redo snapshot; push current state to undo."""
+        if not self.redo_stack:
+            return None
+        self.undo_stack.append(copy.deepcopy(self.actions))
+        return self.redo_stack.pop()
 
     @classmethod
     def create(cls) -> AppState:

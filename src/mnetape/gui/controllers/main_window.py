@@ -87,6 +87,8 @@ class MainWindow(QMainWindow):
         self.btn_add_action = None
         self.recent_menu = None
         self.btn_viz = None
+        self.btn_undo = None
+        self.btn_redo = None
 
         self.project_context: ProjectContext | None = project_context
 
@@ -201,9 +203,29 @@ class MainWindow(QMainWindow):
 
         left_layout.addWidget(QLabel("<b>Actions</b>"))
 
+        action_bar = QHBoxLayout()
+
         self.btn_add_action = QPushButton("+ Add Action")
         self.btn_add_action.clicked.connect(self.action_ctrl.add_action)
-        left_layout.addWidget(self.btn_add_action)
+        action_bar.addWidget(self.btn_add_action, 1)
+
+        self.btn_undo = QPushButton("\u21ba")
+        self.btn_undo.setFixedSize(34, 28)
+        self.btn_undo.setStyleSheet("padding: 0;")
+        self.btn_undo.setToolTip("Undo (Ctrl+Z)")
+        self.btn_undo.setEnabled(False)
+        self.btn_undo.clicked.connect(self.undo_pipeline)
+        action_bar.addWidget(self.btn_undo)
+
+        self.btn_redo = QPushButton("\u21bb")
+        self.btn_redo.setFixedSize(34, 28)
+        self.btn_redo.setStyleSheet("padding: 0;")
+        self.btn_redo.setToolTip("Redo (Ctrl+Y)")
+        self.btn_redo.setEnabled(False)
+        self.btn_redo.clicked.connect(self.redo_pipeline)
+        action_bar.addWidget(self.btn_redo)
+
+        left_layout.addLayout(action_bar)
 
         self.action_list = ActionListWidget()
         self.action_list.itemClicked.connect(self.action_ctrl.on_action_clicked)
@@ -296,6 +318,12 @@ class MainWindow(QMainWindow):
         """Register global keyboard shortcuts not covered by menu accelerators."""
         shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
         shortcut.activated.connect(self.runner.run_all)
+
+        undo_shortcut = QShortcut(QKeySequence.StandardKey.Undo, self)
+        undo_shortcut.activated.connect(self.undo_pipeline)
+
+        redo_shortcut = QShortcut(QKeySequence.StandardKey.Redo, self)
+        redo_shortcut.activated.connect(self.redo_pipeline)
 
 
     # -------- Toggle between code/viz --------
@@ -391,7 +419,7 @@ class MainWindow(QMainWindow):
                 return
 
     def update_button_states(self):
-        """Enable or disable the move-up and move-down buttons based on selection."""
+        """Enable or disable the move-up, move-down, undo, and redo buttons based on selection."""
         row = self.get_selected_action_row()
         has_selection = row >= 0
         is_protected = has_selection and self.state.actions[row].action_id in PROTECTED_ACTION_IDS
@@ -401,6 +429,30 @@ class MainWindow(QMainWindow):
         )
         self.btn_move_up.setEnabled(has_selection and not is_protected and not above_protected and row > 0)
         self.btn_move_down.setEnabled(has_selection and not is_protected and row < len(self.state.actions) - 1)
+        self.btn_undo.setEnabled(bool(self.state.undo_stack))
+        self.btn_redo.setEnabled(bool(self.state.redo_stack))
+
+    def undo_pipeline(self):
+        """Restore the previous pipeline snapshot from the undo stack."""
+        snapshot = self.state.pop_undo()
+        if snapshot is None:
+            return
+        self.state.actions = snapshot
+        self.state.data_states.truncate(0)
+        for action in self.state.actions:
+            action.reset()
+        self.update_action_list()
+
+    def redo_pipeline(self):
+        """Re-apply the next pipeline snapshot from the redo stack."""
+        snapshot = self.state.pop_redo()
+        if snapshot is None:
+            return
+        self.state.actions = snapshot
+        self.state.data_states.truncate(0)
+        for action in self.state.actions:
+            action.reset()
+        self.update_action_list()
 
     def update_code(self):
         """Regenerate the full pipeline script and push it to the code panel."""
