@@ -21,7 +21,7 @@ from mnetape.core.models import CUSTOM_ACTION_ID
 
 # Action IDs not listed here are collected into "Other".
 CATEGORIES: dict[str, list[str]] = {
-    "Preprocessing": ["filter", "notch", "resample", "crop", "reference"],
+    "Preprocessing": ["filter", "notch", "resample", "crop", "reference", "normalize"],
     "Channels": ["set_channel_types", "drop_channels", "interpolate"],
     "Annotations & Events": ["set_annotations", "detect_events"],
     "Epochs": ["epoch_fixed", "epoch_events", "drop_bad_epochs", "average_epochs"],
