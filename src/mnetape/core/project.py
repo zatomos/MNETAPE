@@ -118,15 +118,11 @@ class Participant:
         id: Short identifier used as folder name.
         sessions: Ordered list of recording sessions.
         notes: Free-text notes for this participant.
-        excluded: Whether this participant is excluded from analysis.
-        exclusion_reason: Reason for exclusion.
     """
 
     id: str
     sessions: list[Session] = field(default_factory=list)
     notes: str = ""
-    excluded: bool = False
-    exclusion_reason: str = ""
 
     @property
     def participant_status(self) -> ParticipantStatus:
@@ -160,8 +156,6 @@ class Participant:
             "id": self.id,
             "sessions": [s.to_dict() for s in self.sessions],
             "notes": self.notes,
-            "excluded": self.excluded,
-            "exclusion_reason": self.exclusion_reason,
         }
 
     @classmethod
@@ -170,8 +164,6 @@ class Participant:
             id=d.get("id", ""),
             sessions=[Session.from_dict(s) for s in d.get("sessions", [])],
             notes=d.get("notes", ""),
-            excluded=d.get("excluded", False),
-            exclusion_reason=d.get("exclusion_reason", ""),
         )
 
 

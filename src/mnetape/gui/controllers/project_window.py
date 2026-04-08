@@ -65,8 +65,6 @@ PAGE_NO_SELECTION = 1
 PAGE_PARTICIPANT_DETAIL = 2
 PAGE_SESSION_DETAIL = 3
 PAGE_PREPROCESSING = 4
-PAGE_ANALYSIS = 5
-
 
 def make_no_selection_widget() -> QWidget:
     w = QWidget()
@@ -90,14 +88,10 @@ def add_recent_project(path: str):
 
 def make_participant_item(p: Participant, expanded: bool = True) -> QTreeWidgetItem:
     arrow = "▾" if expanded else "▸"
-    if p.excluded:
-        text = f"{arrow}  ─  {p.id}"
-        color = QColor("#888888")
-    else:
-        status = p.participant_status
-        icon = STATUS_ICONS.get(status, "◌")
-        text = f"{arrow}  {icon}  {p.id}"
-        color = QColor(STATUS_COLORS.get(status, "#888888"))
+    status = p.participant_status
+    icon = STATUS_ICONS.get(status, "◌")
+    text = f"{arrow}  {icon}  {p.id}"
+    color = QColor(STATUS_COLORS.get(status, "#888888"))
 
     item = QTreeWidgetItem([text])
     font = item.font(0)
@@ -133,8 +127,7 @@ def open_standalone():
 def strip_managed_params(actions) -> str:
     """Generate pipeline code with run-specific params reset to their schema defaults.
 
-    Used when saving a default pipeline template so that per-run values (e.g. ICA exclusions)
-    don't bleed across participants.
+    Used when saving a default pipeline template so that per-run values don't bleed across participants.
     """
     clean = []
     for action in actions:
@@ -197,7 +190,6 @@ class ProjectWindow(QMainWindow):
         self.participant_tree = None
         self.btn_add = None
         self.btn_remove = None
-        self.btn_analysis = None
         self.left_panel = None
         self.left_sep = None
 
@@ -216,13 +208,6 @@ class ProjectWindow(QMainWindow):
         self.prep_content = None
         self.prep_content_layout = None
         self.prep_window = None
-
-        # Analysis page
-        self.analysis_page = None
-        self.analysis_refs = None
-        self.analysis_content = None
-        self.analysis_content_layout = None
-        self.analysis_window = None
 
         self.setWindowTitle("MNETAPE")
         self.resize(1200, 760)
@@ -339,21 +324,9 @@ class ProjectWindow(QMainWindow):
         self.btn_remove = QPushButton("Remove")
         self.btn_remove.setEnabled(False)
         self.btn_remove.clicked.connect(self.remove_selected)
-        btn_row.addWidget(self.btn_add)
-        btn_row.addWidget(self.btn_remove)
-        btn_row.addStretch()
+        btn_row.addWidget(self.btn_add, 1)
+        btn_row.addWidget(self.btn_remove, 1)
         left_layout.addLayout(btn_row)
-
-        analysis_sep = QFrame()
-        analysis_sep.setFrameShape(QFrame.Shape.HLine)
-        analysis_sep.setStyleSheet("color: #D5D5D8; margin: 4px 8px;")
-        left_layout.addWidget(analysis_sep)
-
-        self.btn_analysis = QPushButton("Open Analysis")
-        self.btn_analysis.setObjectName("btn_analysis")
-        self.btn_analysis.setContentsMargins(8, 0, 8, 0)
-        self.btn_analysis.clicked.connect(self.open_analysis)
-        left_layout.addWidget(self.btn_analysis)
 
         self.left_panel = left_panel
         main_layout.addWidget(left_panel)
@@ -388,10 +361,6 @@ class ProjectWindow(QMainWindow):
         # Page 4: preprocessing
         self.prep_page, self.prep_refs = self.make_preprocessing_page()
         self.right_stack.addWidget(self.prep_page)
-
-        # Page 5: analysis
-        self.analysis_page, self.analysis_refs = self.make_analysis_page()
-        self.right_stack.addWidget(self.analysis_page)
 
         self.right_stack.setCurrentWidget(self.welcome_widget)
         main_layout.addWidget(self.right_stack, 1)
@@ -478,18 +447,6 @@ class ProjectWindow(QMainWindow):
         notes_edit.textChanged.connect(self.on_notes_changed)
         layout.addWidget(notes_edit)
 
-        layout.addSpacing(4)
-
-        excluded_check = QCheckBox("Exclude this participant from analysis")
-        excluded_check.toggled.connect(self.on_excluded_toggled)
-        layout.addWidget(excluded_check)
-
-        exclusion_edit = QLineEdit()
-        exclusion_edit.setPlaceholderText("Reason for exclusion...")
-        exclusion_edit.setVisible(False)
-        exclusion_edit.textChanged.connect(self.on_exclusion_reason_changed)
-        layout.addWidget(exclusion_edit)
-
         layout.addSpacing(8)
 
         sessions_header = QLabel("<b>Sessions</b>")
@@ -515,8 +472,6 @@ class ProjectWindow(QMainWindow):
             "id_label": id_label,
             "status_label": status_label,
             "notes_edit": notes_edit,
-            "excluded_check": excluded_check,
-            "exclusion_edit": exclusion_edit,
             "sessions_list_label": sessions_list_label,
         }
         return scroll, refs
@@ -685,52 +640,6 @@ class ProjectWindow(QMainWindow):
         }
         return page, refs
 
-    # Analysis page
-
-    def make_analysis_page(self) -> tuple[QWidget, dict]:
-        """Build the embedded analysis container."""
-        page = QWidget()
-        outer = QVBoxLayout(page)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-
-        header = QWidget()
-        header.setObjectName("prep_header")
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(8, 6, 8, 6)
-        header_layout.setSpacing(8)
-
-        btn_back = QPushButton("← Back")
-        btn_back.setObjectName("btn_back_to_project")
-        btn_back.setFixedWidth(90)
-        btn_back.clicked.connect(self.close_analysis)
-        header_layout.addWidget(btn_back)
-
-        v_sep = QFrame()
-        v_sep.setFrameShape(QFrame.Shape.VLine)
-        v_sep.setStyleSheet("color: #D5D5D8;")
-        header_layout.addWidget(v_sep)
-
-        title_label = QLabel("Analysis")
-        title_label.setObjectName("prep_participant_label")
-        header_layout.addWidget(title_label)
-        header_layout.addStretch()
-        outer.addWidget(header)
-
-        h_sep = QFrame()
-        h_sep.setFrameShape(QFrame.Shape.HLine)
-        h_sep.setStyleSheet("color: #D5D5D8;")
-        outer.addWidget(h_sep)
-
-        self.analysis_content = QWidget()
-        self.analysis_content_layout = QVBoxLayout(self.analysis_content)
-        self.analysis_content_layout.setContentsMargins(0, 0, 0, 0)
-        self.analysis_content_layout.setSpacing(0)
-        outer.addWidget(self.analysis_content, 1)
-
-        refs = {"title_label": title_label}
-        return page, refs
-
     # Project load/save
 
     def load_project(self, project_dir: Path):
@@ -885,28 +794,16 @@ class ProjectWindow(QMainWindow):
     def populate_participant_detail(self, p: Participant):
         refs = self.participant_detail_refs
         refs["id_label"].setText(f"<b>{p.id}</b>")
-
-        if p.excluded:
-            refs["status_label"].setText("<span style='color:#888888;'>─ Excluded</span>")
-        else:
-            status = p.participant_status
-            color = STATUS_COLORS.get(status, "#888888")
-            label = STATUS_LABELS.get(status, str(status))
-            refs["status_label"].setText(
-                f"<span style='color:{color};'>{STATUS_ICONS.get(status, '')} {label}</span>"
-            )
+        status = p.participant_status
+        color = STATUS_COLORS.get(status, "#888888")
+        label = STATUS_LABELS.get(status, str(status))
+        refs["status_label"].setText(
+            f"<span style='color:{color};'>{STATUS_ICONS.get(status, '')} {label}</span>"
+        )
 
         refs["notes_edit"].blockSignals(True)
         refs["notes_edit"].setPlainText(p.notes)
         refs["notes_edit"].blockSignals(False)
-
-        refs["excluded_check"].blockSignals(True)
-        refs["excluded_check"].setChecked(p.excluded)
-        refs["excluded_check"].blockSignals(False)
-        refs["exclusion_edit"].setVisible(p.excluded)
-        refs["exclusion_edit"].blockSignals(True)
-        refs["exclusion_edit"].setText(p.exclusion_reason)
-        refs["exclusion_edit"].blockSignals(False)
 
         # Sessions summary
         session_lines = []
@@ -1081,20 +978,6 @@ class ProjectWindow(QMainWindow):
             p.notes = self.participant_detail_refs["notes_edit"].toPlainText()
             self.save_project()
 
-    def on_excluded_toggled(self, checked: bool):
-        p = self.get_selected_participant()
-        if p:
-            p.excluded = checked
-            self.save_project()
-            self.populate_participant_detail(p)
-            self.refresh_participant_item(p.id)
-
-    def on_exclusion_reason_changed(self, text: str):
-        p = self.get_selected_participant()
-        if p:
-            p.exclusion_reason = text
-            self.save_project()
-
     # Project actions
 
     def new_project(self):
@@ -1136,46 +1019,6 @@ class ProjectWindow(QMainWindow):
             return
         self.load_project(path)
 
-    def open_analysis(self):
-        from mnetape.gui.controllers.analysis_window import AnalysisWindow
-        if self.analysis_window is None:
-            self.analysis_window = AnalysisWindow(
-                project=self.project, project_dir=self.project_dir
-            )
-            # Hide the analysis window's own menu bar
-            self.analysis_window.menuBar().setVisible(False)
-            self.analysis_content_layout.addWidget(self.analysis_window)
-        else:
-            self.analysis_window.project = self.project
-            self.analysis_window.project_dir = self.project_dir
-            self.analysis_window.rebuild_tree()
-
-        if self.project:
-            self.analysis_refs["title_label"].setText(f"Analysis - {self.project.name}")
-
-        self.left_panel.setVisible(False)
-        self.left_sep.setVisible(False)
-        self.right_stack.setCurrentWidget(self.analysis_page)
-
-    def close_analysis(self):
-        self.left_panel.setVisible(True)
-        self.left_sep.setVisible(True)
-        item_type, pid, sid = self.get_selected_item_data()
-        if self.project and item_type == "session" and pid and sid:
-            p = self.project.get_participant(pid)
-            if p:
-                s = p.get_session(sid)
-                if s:
-                    self.populate_session_detail(p, s)
-                    self.right_stack.setCurrentWidget(self.session_detail_widget)
-                    return
-        elif self.project and item_type == "participant" and pid:
-            p = self.project.get_participant(pid)
-            if p:
-                self.populate_participant_detail(p)
-                self.right_stack.setCurrentWidget(self.participant_detail_widget)
-                return
-        self.right_stack.setCurrentWidget(self.no_selection_widget)
 
     # Participant/session management
 
@@ -1556,7 +1399,7 @@ class ProjectWindow(QMainWindow):
         current_code = generate_full_script(self.prep_window.state.actions)
         existing_code = default_path.read_text() if default_path.exists() else ""
 
-        # Normalize both sides: strip load_file and managed_params (e.g. ICA exclusions)
+        # Normalize both sides: strip load_file and managed_params
         normalized_current = generate_full_script(
             self.normalize_actions_for_default(self.prep_window.state.actions)
         )
