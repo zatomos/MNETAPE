@@ -285,7 +285,7 @@ class VisualizationPanel(QWidget):
         self.current_data = data
 
         if fallback_label is not None and current_step > 0:
-            self.status_label.setText(f"not computed \u2014 showing {fallback_label}")
+            self.status_label.setText(f"not computed; showing {fallback_label}")
         else:
             self.status_label.setText("")
 

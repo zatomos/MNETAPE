@@ -211,6 +211,9 @@ class MainWindow(QMainWindow):
         self.action_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.action_list.customContextMenuRequested.connect(self.action_ctrl.show_action_context_menu)
         self.action_list.items_reordered.connect(self.action_ctrl.move_action_to)
+        delete_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.action_list)
+        delete_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+        delete_shortcut.activated.connect(self.action_ctrl.remove_action)
         left_layout.addWidget(self.action_list)
 
         move_btns = QHBoxLayout()

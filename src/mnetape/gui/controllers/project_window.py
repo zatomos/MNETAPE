@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, Qt, QSettings, QUrl
+from PyQt6.QtCore import QEvent, Qt, QSettings, QUrl, pyqtSignal
 from PyQt6.QtGui import QAction, QBrush, QColor, QDesktopServices, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication,
@@ -88,14 +88,15 @@ def add_recent_project(path: str):
     settings.setValue("project/recent", recent[:10])
 
 
-def make_participant_item(p: Participant) -> QTreeWidgetItem:
+def make_participant_item(p: Participant, expanded: bool = True) -> QTreeWidgetItem:
+    arrow = "▾" if expanded else "▸"
     if p.excluded:
-        text = f"─  {p.id}"
+        text = f"{arrow}  ─  {p.id}"
         color = QColor("#888888")
     else:
         status = p.participant_status
         icon = STATUS_ICONS.get(status, "◌")
-        text = f"{icon}  {p.id}"
+        text = f"{arrow}  {icon}  {p.id}"
         color = QColor(STATUS_COLORS.get(status, "#888888"))
 
     item = QTreeWidgetItem([text])
@@ -153,6 +154,25 @@ def open_folder(folder: Path):
     folder.mkdir(parents=True, exist_ok=True)
     QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
+
+def on_participant_expanded(item: QTreeWidgetItem):
+    if item.data(0, ROLE_TYPE) == "participant":
+        item.setText(0, item.text(0).replace("▸", "▾", 1))
+
+
+def on_participant_collapsed(item: QTreeWidgetItem):
+    if item.data(0, ROLE_TYPE) == "participant":
+        item.setText(0, item.text(0).replace("▾", "▸", 1))
+
+
+class RunFileButton(QPushButton):
+    """Checkable push button that also emits doubleClicked."""
+
+    doubleClicked = pyqtSignal()
+
+    def mouseDoubleClickEvent(self, event):
+        self.doubleClicked.emit()
+        super().mouseDoubleClickEvent(event)
 
 class ProjectWindow(QMainWindow):
     """Top-level window for project-based EEG study management.
@@ -304,6 +324,8 @@ class ProjectWindow(QMainWindow):
         self.participant_tree.setColumnCount(1)
         self.participant_tree.setUniformRowHeights(True)
         self.participant_tree.currentItemChanged.connect(self.on_item_selected)
+        self.participant_tree.itemExpanded.connect(on_participant_expanded)
+        self.participant_tree.itemCollapsed.connect(on_participant_collapsed)
         self.participant_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.participant_tree.customContextMenuRequested.connect(self.show_tree_context_menu)
         left_layout.addWidget(self.participant_tree)
@@ -783,7 +805,7 @@ class ProjectWindow(QMainWindow):
         for i in range(self.participant_tree.topLevelItemCount()):
             p_item = self.participant_tree.topLevelItem(i)
             if p_item.data(0, ROLE_PID) == participant_id:
-                new_p = make_participant_item(p)
+                new_p = make_participant_item(p, expanded=p_item.isExpanded())
                 p_item.setText(0, new_p.text(0))
                 p_item.setForeground(0, new_p.foreground(0))
                 p_item.setFont(0, new_p.font(0))
@@ -936,11 +958,12 @@ class ProjectWindow(QMainWindow):
                 is_processed = bool(s.processed_files)
                 run_icon = "●" if is_processed else "○"
                 run_label = f"run{'s' if n != 1 else ''}"
-                btn = QPushButton(f"{run_icon}  Merged  ({n} {run_label})")
+                btn = RunFileButton(f"{run_icon}  Merged  ({n} {run_label})")
                 btn.setCheckable(True)
                 btn.setChecked(True)
                 any_missing = any(not p.exists() for p in resolved)
                 btn.setStyleSheet(_btn_style.format(text_color="#C62828" if any_missing else "inherit"))
+                btn.doubleClicked.connect(self.open_preprocessing)
                 button_group.addButton(btn, 0)
                 runs_layout.addWidget(btn)
             else:
@@ -950,11 +973,12 @@ class ProjectWindow(QMainWindow):
                         i < len(s.processed_files) and bool(s.processed_files[i])
                     )
                     run_icon = "●" if is_processed else "○"
-                    btn = QPushButton(f"{run_icon}  {filename}")
+                    btn = RunFileButton(f"{run_icon}  {filename}")
                     btn.setCheckable(True)
                     btn.setStyleSheet(_btn_style.format(
                         text_color="#C62828" if not path.exists() else "inherit"
                     ))
+                    btn.doubleClicked.connect(self.open_preprocessing)
                     button_group.addButton(btn, i)
                     runs_layout.addWidget(btn)
 

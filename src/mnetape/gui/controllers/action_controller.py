@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtWidgets import QDialog, QMenu
+from PyQt6.QtWidgets import QDialog, QMenu, QMessageBox
 
 from typing import TYPE_CHECKING
 
@@ -57,15 +57,26 @@ class ActionController:
     def remove_action(self):
         """Remove the currently selected action from the pipeline."""
         row = self.w.get_selected_action_row()
-        if row >= 0:
-            if self.state.actions[row].action_id in PROTECTED_ACTION_IDS:
-                return
-            self.state.actions.pop(row)
-            self.state.data_states.truncate(row)
-            for action in self.state.actions[row:]:
-                if not action.is_custom:
-                    action.reset()
-            self.w.update_action_list()
+        if row < 0:
+            return
+        if self.state.actions[row].action_id in PROTECTED_ACTION_IDS:
+            return
+        title = get_action_title(self.state.actions[row])
+        reply = QMessageBox.question(
+            self.w,
+            "Remove Action",
+            f'Remove "{title}"?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.state.actions.pop(row)
+        self.state.data_states.truncate(row)
+        for action in self.state.actions[row:]:
+            if not action.is_custom:
+                action.reset()
+        self.w.update_action_list()
 
     def move_action_to(self, from_row: int, to_row: int):
         """Move an action from from_row to to_row (drag-and-drop reorder).
