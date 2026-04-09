@@ -655,6 +655,12 @@ QPushButton#btn_next_step:hover {
     background-color: #E5E5EA;
     border-color: #B5B5BC;
 }
+QPushButton#btn_prev_step:disabled,
+QPushButton#btn_next_step:disabled {
+    color: #C0C0C4;
+    border-color: #E0E0E4;
+    background-color: transparent;
+}
 
 /* View-switch buttons (Visualization / Code) */
 QPushButton#btn_viz,

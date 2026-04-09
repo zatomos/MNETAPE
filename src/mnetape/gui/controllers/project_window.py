@@ -608,9 +608,25 @@ class ProjectWindow(QMainWindow):
         v_sep.setStyleSheet("color: #D5D5D8;")
         header_layout.addWidget(v_sep)
 
+        btn_prev = QPushButton("‹")
+        btn_prev.setObjectName("btn_prev_step")
+        btn_prev.setFixedSize(32, 28)
+        btn_prev.setEnabled(False)
+        btn_prev.setToolTip("Previous run")
+        btn_prev.clicked.connect(lambda: self.navigate_preprocessing(-1))
+        header_layout.addWidget(btn_prev)
+
         participant_label = QLabel()
         participant_label.setObjectName("prep_participant_label")
         header_layout.addWidget(participant_label)
+
+        btn_next = QPushButton("›")
+        btn_next.setObjectName("btn_next_step")
+        btn_next.setFixedSize(32, 28)
+        btn_next.setEnabled(False)
+        btn_next.setToolTip("Next run")
+        btn_next.clicked.connect(lambda: self.navigate_preprocessing(+1))
+        header_layout.addWidget(btn_next)
 
         header_layout.addStretch()
 
@@ -654,6 +670,8 @@ class ProjectWindow(QMainWindow):
         refs = {
             "participant_label": participant_label,
             "status_label": status_label,
+            "btn_prev": btn_prev,
+            "btn_next": btn_next,
         }
         return page, refs
 
@@ -1353,12 +1371,6 @@ class ProjectWindow(QMainWindow):
         if self.project_dir:
             open_folder(self.project_dir)
 
-    def open_participant_folder(self):
-        p = self.get_selected_participant()
-        if not p or not self.project_dir:
-            return
-        open_folder(self.project.participant_dir(self.project_dir, p))
-
     def open_session_folder(self):
         p, s = self.get_selected_session()
         if not p or not s or not self.project_dir:
@@ -1396,6 +1408,116 @@ class ProjectWindow(QMainWindow):
         folder = self.project.session_dir(self.project_dir, p, s) / "outputs"
         folder.mkdir(parents=True, exist_ok=True)
         open_folder(folder)
+
+    # Preprocessing navigation
+
+    def build_nav_list(self) -> list:
+        """Return the flat ordered list of (Participant, Session, run_index|None)."""
+        items = []
+        for p in self.project.participants:
+            for s in p.sessions:
+                resolved = self.project.resolve_data_files(self.project_dir, s)
+                if s.merge_runs or not resolved:
+                    items.append((p, s, None))
+                else:
+                    for i in range(len(resolved)):
+                        items.append((p, s, i))
+        return items
+
+    def update_nav_buttons(self):
+        """Enable/disable and re-label prev/next buttons based on current position."""
+        if not self.prep_window or not self.prep_window.project_context:
+            return
+        ctx = self.prep_window.project_context
+        nav = self.build_nav_list()
+        pos = next(
+            (i for i, (p, s, r) in enumerate(nav)
+             if p.id == ctx.participant.id and s.id == ctx.session.id and r == ctx.run_index),
+            None,
+        )
+        btn_prev = self.prep_refs["btn_prev"]
+        btn_next = self.prep_refs["btn_next"]
+
+        if pos is None or pos == 0:
+            btn_prev.setEnabled(False)
+            btn_prev.setText("‹")
+            btn_prev.setToolTip("Previous run")
+        else:
+            btn_prev.setEnabled(True)
+            prev_p, prev_s, _ = nav[pos - 1]
+            same_ses = prev_s.id == ctx.session.id and prev_p.id == ctx.participant.id
+            btn_prev.setText("‹" if same_ses else "«")
+            btn_prev.setToolTip("Previous run" if same_ses else "Previous session")
+
+        if pos is None or pos >= len(nav) - 1:
+            btn_next.setEnabled(False)
+            btn_next.setText("›")
+            btn_next.setToolTip("Next run")
+        else:
+            btn_next.setEnabled(True)
+            next_p, next_s, _ = nav[pos + 1]
+            same_ses = next_s.id == ctx.session.id and next_p.id == ctx.participant.id
+            btn_next.setText("›" if same_ses else "»")
+            btn_next.setToolTip("Next run" if same_ses else "Next session")
+
+    def navigate_preprocessing(self, delta: int):
+        """Open the previous (delta=-1) or next (delta=+1) run/session."""
+        if not self.prep_window or not self.prep_window.project_context:
+            return
+        ctx = self.prep_window.project_context
+        nav = self.build_nav_list()
+        pos = next(
+            (i for i, (p, s, r) in enumerate(nav)
+             if p.id == ctx.participant.id and s.id == ctx.session.id and r == ctx.run_index),
+            None,
+        )
+        if pos is None:
+            return
+        new_pos = pos + delta
+        if new_pos < 0 or new_pos >= len(nav):
+            return
+        new_p, new_s, new_run_index = nav[new_pos]
+        self._open_preprocessing_for(new_p, new_s, new_run_index)
+
+    def _open_preprocessing_for(self, p, s, run_index):
+        """Open the preprocessing window for an explicit participant/session/run."""
+        from mnetape.gui.controllers.main_window import MainWindow
+
+        if self.prep_window is not None:
+            self.close_preprocessing(report_status=True)
+
+        resolved = self.project.resolve_data_files(self.project_dir, s)
+        if run_index is not None and not s.merge_runs:
+            data_files = [resolved[run_index]] if run_index < len(resolved) else []
+        else:
+            data_files = resolved
+
+        ctx = ProjectContext(
+            project=self.project,
+            project_dir=self.project_dir,
+            participant=p,
+            session=s,
+            on_status_update=lambda status, pid=p.id, sid=s.id: self.on_session_status_update(pid, sid, status),
+            data_files=data_files,
+            run_index=run_index,
+        )
+        self.prep_window = MainWindow(project_context=ctx)
+        self.prep_window.host_window = self
+
+        central = self.prep_window.takeCentralWidget()
+        self.prep_content_layout.addWidget(central)
+        self.prep_content_layout.addWidget(self.prep_window.status)
+
+        self.update_prep_status_label(s, run_index)
+        run_text = (run_index + 1) if run_index is not None else "merged"
+        self.prep_refs["participant_label"].setText(
+            f"<b>{p.id}</b>  /  ses-{s.id}  /  run-{run_text}  ·  {self.project.name}"
+        )
+        self.left_panel.setVisible(False)
+        self.left_sep.setVisible(False)
+        self.right_stack.setCurrentWidget(self.prep_page)
+        self.update_nav_buttons()
+        self.prep_window.auto_load()
 
     # Embedded preprocessing
 
@@ -1478,6 +1600,7 @@ class ProjectWindow(QMainWindow):
 
         # Switch to preprocessing view
         self.right_stack.setCurrentWidget(self.prep_page)
+        self.update_nav_buttons()
 
         self.prep_window.auto_load()
 
