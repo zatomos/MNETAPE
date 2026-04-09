@@ -57,6 +57,8 @@ class ChannelPickerDialog(QDialog):
         self.base_preview_bads: set[str] = set()
         self.sync_guard = False
 
+        self.off_map_selected: list[str] = []
+
         self.setWindowTitle(title)
         self.setMinimumSize(1200, 600)
 
@@ -74,6 +76,10 @@ class ChannelPickerDialog(QDialog):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.addWidget(QLabel("Sensor Map"))
         self.build_sensor_panel(left_layout)
+        # Channels in initial_selected that have no sensor position are invisible to the lasso picker.
+        # Track them separately so they survive sync.
+        lasso_names = set(getattr(self.lasso, "names", [])) if self.lasso is not None else set()
+        self.off_map_selected = [ch for ch in self.initial_selected if ch not in lasso_names]
         splitter.addWidget(sensor_panel)
 
         raw_panel = QWidget(self)
@@ -226,8 +232,9 @@ class ChannelPickerDialog(QDialog):
         self.sensor_canvas.draw_idle()
 
     def update_selected_label(self) -> None:
-        if self.selected:
-            self.selected_label.setText(f"Selected: {', '.join(self.selected)}")
+        all_selected = self.get_selected()
+        if all_selected:
+            self.selected_label.setText(f"Selected: {', '.join(all_selected)}")
         else:
             self.selected_label.setText("No channels selected")
 
@@ -247,7 +254,7 @@ class ChannelPickerDialog(QDialog):
             return
         try:
             self.sync_guard = True
-            managed = set(self.selected)
+            managed = set(self.selected) | set(self.off_map_selected)
             bads = sorted(self.base_preview_bads | managed)
             self.raw_preview.mne.info["bads"] = bads
             refresh_mne_browser_bads(self.raw_preview, set(bads))
@@ -264,13 +271,14 @@ class ChannelPickerDialog(QDialog):
         try:
             self.sync_guard = True
             bads = set(self.raw_preview.mne.info.get("bads", []))
-            selected_from_preview = [
-                ch for ch in self.raw.ch_names
-                if ch in bads and ch not in self.base_preview_bads
-            ]
-            if selected_from_preview == self.selected:
+            all_selected = [ch for ch in self.raw.ch_names if ch in bads and ch not in self.base_preview_bads]
+            lasso_names = set(getattr(self.lasso, "names", [])) if self.lasso is not None else set()
+            new_on_map = [ch for ch in all_selected if ch in lasso_names]
+            new_off_map = [ch for ch in all_selected if ch not in lasso_names]
+            if new_on_map == self.selected and new_off_map == self.off_map_selected:
                 return
-            self.selected = selected_from_preview
+            self.selected = new_on_map
+            self.off_map_selected = new_off_map
             if self.lasso is not None:
                 names = np.asarray(getattr(self.lasso, "names", []), dtype=object)
                 if names.size:
@@ -293,7 +301,8 @@ class ChannelPickerDialog(QDialog):
         self.sync_selection()
 
     def get_selected(self) -> list[str]:
-        return [ch for ch in self.raw.ch_names if ch in set(self.selected)]
+        keep = set(self.selected) | set(self.off_map_selected)
+        return [ch for ch in self.raw.ch_names if ch in keep]
 
     def closeEvent(self, event):
         if self.selection_timer.isActive():
