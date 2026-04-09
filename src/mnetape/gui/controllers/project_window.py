@@ -315,8 +315,9 @@ class ProjectWindow(QMainWindow):
         self.participant_tree.setObjectName("participant_tree")
         self.participant_tree.setHeaderHidden(True)
         self.participant_tree.setColumnCount(1)
-        self.participant_tree.setUniformRowHeights(True)
+        self.participant_tree.setStyleSheet("QTreeWidget::item { height: 28px; }")
         self.participant_tree.currentItemChanged.connect(self.on_item_selected)
+        self.participant_tree.viewport().installEventFilter(self)
         self.participant_tree.itemExpanded.connect(on_participant_expanded)
         self.participant_tree.itemCollapsed.connect(on_participant_collapsed)
         self.participant_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -769,6 +770,14 @@ class ProjectWindow(QMainWindow):
         return p, p.get_session(sid)
 
     # Selection handling
+
+    def eventFilter(self, obj, event):
+        if obj is self.participant_tree.viewport() and event.type() == QEvent.Type.MouseButtonPress:
+            item = self.participant_tree.itemAt(event.pos())
+            if item and item.data(0, ROLE_TYPE) == "participant":
+                if event.pos().x() <= obj.width() * 0.2:
+                    item.setExpanded(not item.isExpanded())
+        return super().eventFilter(obj, event)
 
     def on_item_selected(self, current: QTreeWidgetItem | None, previous):
         if not self.project or current is None:
