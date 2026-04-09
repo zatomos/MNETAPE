@@ -277,12 +277,36 @@ class Project:
             - epochs → ``{prefix}epochs_epo.fif``
             - evoked → ``{prefix}evoked_ave.fif``
         """
-        base = self.session_dir(project_dir, participant, session)
+        base = self.session_dir(project_dir, participant, session) / "outputs"
         run_part = f"_run-{run_index:02d}" if run_index is not None else ""
         suffix_map = {"epochs": "_epo.fif", "evoked": "_ave.fif"}
         suffix = suffix_map.get(file_type, "_raw.fif")
         stem = f"{participant.id}_ses-{session.id}{run_part}"
         return base / f"{stem}{suffix}"
+
+    def qc_report_path(
+        self,
+        project_dir: Path,
+        participant: Participant,
+        session: Session,
+        run_index: int | None = None,
+    ) -> Path:
+        """Absolute path for a QC report HTML file.
+
+        Saved flat in the participant folder (not inside a session sub-folder) so
+        it is easy to browse per-participant.
+
+        Args:
+            project_dir: The project directory.
+            participant: The participant.
+            session: The session.
+            run_index: Run index when ``merge_runs=False``; ``None`` for merged output.
+        """
+        if run_index is not None and not session.merge_runs:
+            fname = f"qc_report_ses-{session.id}_run-{run_index + 1:02d}.html"
+        else:
+            fname = f"qc_report_ses-{session.id}.html"
+        return project_dir / participant.id / "reports" / fname
 
     # -------- Participant lookup --------
 

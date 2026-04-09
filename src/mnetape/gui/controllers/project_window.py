@@ -21,7 +21,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
-    QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -860,6 +859,27 @@ class ProjectWindow(QMainWindow):
                     background: #F5F5F5;
                 }}
             """
+            def make_run_row(btn: QPushButton, qc_path: Path) -> QWidget:
+                row = QWidget()
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.setSpacing(4)
+                row_layout.addWidget(btn, 1)
+                qc_btn = QPushButton("QC")
+                qc_btn.setFixedWidth(32)
+                qc_btn.setToolTip(f"Open QC Report: {qc_path.name}")
+                qc_btn.setVisible(qc_path.exists())
+                qc_btn.setStyleSheet(
+                    "QPushButton { background: #E3F2FD; border: 1px solid #90CAF9;"
+                    " border-radius: 3px; font-size: 11px; padding: 0; }"
+                    "QPushButton:hover { background: #BBDEFB; }"
+                )
+                qc_btn.clicked.connect(
+                    lambda _checked, p=qc_path: QDesktopServices.openUrl(QUrl.fromLocalFile(str(p)))
+                )
+                row_layout.addWidget(qc_btn)
+                return row
+
             if s.merge_runs:
                 n = len(s.data_files)
                 is_processed = bool(s.processed_files)
@@ -872,7 +892,8 @@ class ProjectWindow(QMainWindow):
                 btn.setStyleSheet(_btn_style.format(text_color="#C62828" if any_missing else "inherit"))
                 btn.doubleClicked.connect(self.open_preprocessing)
                 button_group.addButton(btn, 0)
-                runs_layout.addWidget(btn)
+                qc_path = self.project.qc_report_path(self.project_dir, p, s, None)
+                runs_layout.addWidget(make_run_row(btn, qc_path))
             else:
                 for i, (raw_str, path) in enumerate(zip(s.data_files, resolved)):
                     filename = Path(raw_str).name
@@ -887,7 +908,8 @@ class ProjectWindow(QMainWindow):
                     ))
                     btn.doubleClicked.connect(self.open_preprocessing)
                     button_group.addButton(btn, i)
-                    runs_layout.addWidget(btn)
+                    qc_path = self.project.qc_report_path(self.project_dir, p, s, i)
+                    runs_layout.addWidget(make_run_row(btn, qc_path))
 
         status = s.session_status
         color = STATUS_COLORS.get(status, "#888888")

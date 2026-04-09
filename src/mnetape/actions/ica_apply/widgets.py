@@ -541,7 +541,7 @@ def get_auto_exclude(ic_labels: dict | None) -> list[int]:
 def run_background_classification(ica, raw) -> dict:
     """Run ICLabel (if available), EOG, and ECG detection in-process.
 
-    Results are for display only — not written to the pipeline script.
+    Results are for display only, not written to the pipeline script.
 
     Returns:
         ic_labels dict with "detected_artifacts" key (and ICLabel keys if available).

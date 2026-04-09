@@ -7,10 +7,12 @@ the action list, code panel, and visualization panel in sync.
 """
 
 import logging
+import tempfile
+from pathlib import Path
 
 import mne
-from PyQt6.QtCore import QEvent, Qt
-from PyQt6.QtGui import QAction, QBrush, QColor, QKeySequence, QShortcut
+from PyQt6.QtCore import QEvent, Qt, QUrl
+from PyQt6.QtGui import QAction, QBrush, QColor, QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -89,6 +91,7 @@ class MainWindow(QMainWindow):
         self.btn_viz = None
         self.btn_undo = None
         self.btn_redo = None
+        self.btn_qc_report = None
 
         self.project_context: ProjectContext | None = project_context
 
@@ -299,6 +302,12 @@ class MainWindow(QMainWindow):
         toggle_layout.addWidget(self.btn_code)
 
         toggle_layout.addStretch()
+
+        self.btn_qc_report = QPushButton("Open QC Report")
+        self.btn_qc_report.setVisible(False)
+        self.btn_qc_report.clicked.connect(self.open_qc_report)
+        toggle_layout.addWidget(self.btn_qc_report)
+
         right_layout.addLayout(toggle_layout)
 
         self.view_stack = QStackedWidget()
@@ -784,6 +793,49 @@ class MainWindow(QMainWindow):
 
     def on_pipeline_complete(self):
         """Called by PipelineRunner when all pipeline actions complete successfully."""
+        self.generate_qc_report()
+
+    def get_qc_report_path(self):
+        """Determine where to save the QC report."""
+        if self.project_context:
+            ctx = self.project_context
+            return ctx.project.qc_report_path(
+                ctx.project_dir, ctx.participant, ctx.session, ctx.run_index
+            )
+        if self.state.data_filepath:
+            return self.state.data_filepath.parent / f"qc_report_{self.state.data_filepath.stem}.html"
+        return Path(tempfile.gettempdir()) / "mnetape_qc_report.html"
+
+    def generate_qc_report(self):
+        """Generate the QC report in a background thread and show the Open button."""
+        from mnetape.core.qc_report import generate_report
+        from mnetape.gui.controllers.pipeline_runner import OperationCancelled
+
+        out_path = self.get_qc_report_path()
+        title = "EEG QC Report"
+        if self.state.data_filepath:
+            title = f"QC — {self.state.data_filepath.name}"
+
+        try:
+            self.runner.run_in_thread(
+                lambda: generate_report(self.state, out_path, title=title),
+                "Generating QC report...",
+            )
+        except OperationCancelled:
+            return
+        except Exception as e:
+            logger.warning("QC report generation failed: %s", e)
+            self.status.showMessage("QC report failed.")
+            return
+
+        self.btn_qc_report.setVisible(True)
+        self.status.showMessage(f"QC report saved → {out_path.name}")
+
+    def open_qc_report(self):
+        """Open the QC report for the current run in the system browser."""
+        path = self.get_qc_report_path()
+        if path.exists():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def cleanup(self):
         """Release resources. Called by ProjectWindow when the embedded session ends,
