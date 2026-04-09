@@ -473,6 +473,10 @@ class ProjectWindow(QMainWindow):
         btn_add_session.clicked.connect(self.add_session_to_selected_participant)
         btn_row.addWidget(btn_add_session)
         btn_row.addStretch()
+        btn_open_participant_folder = QPushButton("Open Participant Folder")
+        btn_open_participant_folder.setToolTip("Open this participant's output folder in the file manager")
+        btn_open_participant_folder.clicked.connect(self.open_participant_folder)
+        btn_row.addWidget(btn_open_participant_folder)
         layout.addLayout(btn_row)
 
         scroll.setWidget(inner)
@@ -558,6 +562,10 @@ class ProjectWindow(QMainWindow):
         btn_open.clicked.connect(self.open_preprocessing)
         btn_row.addWidget(btn_open)
         btn_row.addStretch()
+        btn_open_folder = QPushButton("Open Output Folder")
+        btn_open_folder.setToolTip("Open the session output folder in the file manager")
+        btn_open_folder.clicked.connect(self.open_output_folder)
+        btn_row.addWidget(btn_open_folder)
         layout.addLayout(btn_row)
 
         scroll.setWidget(inner)
@@ -1369,6 +1377,24 @@ class ProjectWindow(QMainWindow):
                 folder = resolved[0].parent
         if folder is None or not folder.exists():
             folder = self.project.session_dir(self.project_dir, p, s)
+        open_folder(folder)
+
+    def open_participant_folder(self):
+        """Open the participant output folder in the system file manager."""
+        p = self.get_selected_participant()
+        if not p:
+            return
+        folder = self.project.participant_dir(self.project_dir, p)
+        folder.mkdir(parents=True, exist_ok=True)
+        open_folder(folder)
+
+    def open_output_folder(self):
+        """Open the session output folder in the system file manager."""
+        p, s = self.get_selected_session()
+        if not p or not s:
+            return
+        folder = self.project.session_dir(self.project_dir, p, s) / "outputs"
+        folder.mkdir(parents=True, exist_ok=True)
         open_folder(folder)
 
     # Embedded preprocessing
