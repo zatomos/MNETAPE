@@ -141,16 +141,50 @@ def collect_func_defs(actions: list[ActionConfig], func_names: list[str], types:
             emitted[func_name] = action_def.build_function_def(func_name, context_type)
     return emitted
 
-def generate_full_script(actions: list[ActionConfig]) -> str:
+def extract_custom_preamble(script: str, actions: list[ActionConfig]) -> list[str]:
+    """Return user-added lines from the script preamble that are not auto-generated.
+
+    Scans everything before the first structured section (``# --- Functions ---`` or
+    ``# --- Pipeline ---``) and returns any line that ``generate_full_script`` would
+    not emit on its own, preserving order.
+
+    Args:
+        script: Full pipeline script text (may contain manual edits).
+        actions: Current action list, used to identify action-contributed imports.
+
+    Returns:
+        Ordered list of custom preamble lines (stripped, non-blank).
+    """
+    from mnetape.actions.registry import get_action_by_id as _get_action_by_id
+
+    section_match = re.search(r"^#\s*---\s*(Functions|Pipeline)\s*---", script, re.MULTILINE)
+    preamble = script[: section_match.start()].strip() if section_match else script.strip()
+
+    standard: set[str] = {
+        "# EEG Preprocessing Pipeline",
+        "# Auto-generated - edit here or in the GUI.",
+        *BASE_IMPORTS,
+    }
+    for action in actions:
+        action_def = _get_action_by_id(action.action_id)
+        if action_def:
+            standard.update(action_def.extra_imports)
+
+    return [ln.strip() for ln in preamble.split("\n") if ln.strip() and ln.strip() not in standard]
+
+
+def generate_full_script(actions: list[ActionConfig], extra_preamble: list[str] | None = None) -> str:
     """Generate a complete Python pipeline script from an action list.
 
-    Produces the two-section format:
+    Produces the following format:
       - Imports
-      - # --- Functions --- section with one def per unique body
-      - # --- Pipeline --- section with # [N] Title + call site per action
+      - Functions section with one def per unique body
+      - Pipeline section with call site for actions
 
     Args:
         actions: Ordered list of pipeline actions (including load_file and set_montage if present).
+        extra_preamble: Optional list of user-added lines to inject after the auto-generated import block and before
+        the Functions section.
 
     Returns:
         The complete Python script as a string.
@@ -198,6 +232,12 @@ def generate_full_script(actions: list[ActionConfig]) -> str:
         merged_imports,
         "",
     ]
+
+    if extra_preamble:
+        for ln in extra_preamble:
+            if ln not in seen_imports:
+                lines.append(ln)
+        lines.append("")
 
     if emitted_funcs:
         lines += ["", "# --- Functions ---", ""]

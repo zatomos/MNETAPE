@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
 import mne
 
-from mnetape.core.codegen import generate_full_script, parse_script_to_actions
+from mnetape.core.codegen import extract_custom_preamble, generate_full_script, parse_script_to_actions
 from mnetape.core.data_io import load_raw_data, open_file_dialog_filter
 from mnetape.core.models import ActionConfig, ActionStatus
 from mnetape.gui.controllers.pipeline_runner import OperationCancelled
@@ -259,7 +259,7 @@ class FileHandler:
             path += ".py"
 
         try:
-            code = generate_full_script(self.state.actions)
+            code = generate_full_script(self.state.actions, extra_preamble=self.state.custom_preamble or None)
             Path(path).write_text(code)
         except Exception as exc:
             logger.exception("Failed to save pipeline")
@@ -279,6 +279,7 @@ class FileHandler:
         try:
             code = Path(path).read_text()
             self.state.actions = parse_script_to_actions(code)
+            self.state.custom_preamble = extract_custom_preamble(code, self.state.actions)
             self.state.pipeline_filepath = Path(path)
             self.w.code_panel.set_file(self.state.pipeline_filepath)
             self.state.data_states.clear()
@@ -322,6 +323,7 @@ class FileHandler:
             )
             return
         self.state.actions = actions
+        self.state.custom_preamble = extract_custom_preamble(code, actions)
         self.state.data_states.clear()
         self.w.update_action_list(sync_code=False)
         self.w.code_panel.set_code(code)

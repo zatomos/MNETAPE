@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import QDialog, QMenu, QMessageBox
 from typing import TYPE_CHECKING
 
 from mnetape.actions.registry import get_action_by_id, get_action_title
-from mnetape.core.codegen import parse_script_to_actions
+from mnetape.core.codegen import extract_custom_preamble, parse_script_to_actions
 from mnetape.core.models import ActionConfig, ICASolution
 from mnetape.gui.dialogs import ActionEditor, AddActionDialog
 
@@ -209,7 +209,9 @@ class ActionController:
         Performs a minimal diff: only actions whose id, params, or code actually changed are reset, and data_states
         are trimmed from the first changed index onward.
         """
-        code = self.pending_code
+        if self.pending_code is None:
+            return
+        code: str = self.pending_code
         new_actions = parse_script_to_actions(code)
         changed = False
         first_changed_idx: int | None = None
@@ -260,6 +262,8 @@ class ActionController:
             for action in self.state.actions[first_changed_idx:]:
                 action.reset()
 
+        self.state.custom_preamble = extract_custom_preamble(code, self.state.actions)
+
         self.w.update_action_list(sync_code=False)
         if changed:
             logger.info("Applied manual code edits; action list updated")
@@ -273,6 +277,12 @@ class ActionController:
         """
         if row < 0 or row >= len(self.state.actions):
             return
+
+        # Flush any pending manual code edits before opening the dialog so that state reflects the latest code-panel
+        # content and the timer cannot fire after the dialog closes and overwrite the GUI change
+        if self.code_edit_timer and self.code_edit_timer.isActive():
+            self.code_edit_timer.stop()
+            self.apply_manual_code_edit()
         action = self.state.actions[row]
         # Pass the most relevant data object for channel-aware and ICA-aware widgets.
         # ICASolution is passed as-is so ica_apply's Browse widget can open the dialog.
