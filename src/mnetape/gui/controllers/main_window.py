@@ -465,7 +465,7 @@ class MainWindow(QMainWindow):
 
     def update_code(self):
         """Regenerate the full pipeline script and push it to the code panel."""
-        code = generate_full_script(self.state.actions)
+        code = generate_full_script(self.state.actions, extra_preamble=self.state.custom_preamble or None)
         self.code_panel.set_code(code)
         self.files.auto_save()
 
