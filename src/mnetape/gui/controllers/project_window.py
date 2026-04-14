@@ -257,6 +257,12 @@ class ProjectWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        prefs_action = QAction("Preferences...", self)
+        prefs_action.triggered.connect(self.open_preferences)
+        file_menu.addAction(prefs_action)
+
+        file_menu.addSeparator()
+
         quit_action = QAction("Quit", self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
@@ -1366,6 +1372,10 @@ class ProjectWindow(QMainWindow):
             remove_action.triggered.connect(lambda: self.remove_session(pid, sid))
 
         menu.exec(self.participant_tree.mapToGlobal(pos))
+
+    def open_preferences(self):
+        from mnetape.gui.dialogs.preferences_dialog import PreferencesDialog
+        PreferencesDialog(settings=QSettings(), parent=self).exec()
 
     def open_project_folder(self):
         if self.project_dir:

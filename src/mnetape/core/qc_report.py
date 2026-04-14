@@ -29,6 +29,7 @@ def generate_report(
     state: AppState,
     out_path: Path,
     title: str = "EEG QC Report",
+    include_events_viewer: bool = True,
 ) -> Path:
     """Generate and save an HTML QC report for the current pipeline state.
 
@@ -36,6 +37,7 @@ def generate_report(
         state: Shared app state (actions, data_states, raw_original).
         out_path: Destination path for the HTML file.
         title: Title shown at the top of the report.
+        include_events_viewer: Whether to include the Events Viewer section.
 
     Returns:
         Path to the saved HTML file.
@@ -62,6 +64,12 @@ def generate_report(
             add_action_section(report, action, section_title, data_before, data_after)
         except Exception as e:
             logger.warning("Section for action %d (%s) failed: %s", i + 1, action.action_id, e)
+
+    if include_events_viewer:
+        try:
+            add_events_evolution_section(report, state)
+        except Exception as e:
+            logger.warning("Events evolution section failed: %s", e)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     report.save(str(out_path), overwrite=True, open_browser=False, verbose=False)
@@ -324,7 +332,7 @@ def add_epochs_section(
         ax.set_title("Epochs per condition")
         for label in ax.get_xticklabels():
             label.set_rotation(30)
-            label.set_ha("right")
+            label.set_horizontalalignment("right")
         fig.tight_layout()
 
         caption = (
@@ -398,3 +406,296 @@ def add_evoked_section(
         report.add_evoked(data_after, title=title, tags=tags, n_time_points=5)
     except Exception as e:
         logger.warning("Evoked section failed: %s", e)
+
+
+# -------- Events viewer helpers --------
+
+MAX_EVO_CONDITIONS = 10
+TFR_N_BINS = 20        # log-spaced frequency bins in the TFR heatmap
+MAX_TFR_EPOCHS = 60    # epoch cap per condition/step to keep TFR fast
+
+
+def eeg_picks_for(info: mne.Info) -> np.ndarray:
+    """Return EEG pick indices, falling back to all non-bad channels."""
+    picks = mne.pick_types(info, eeg=True, meg=False, exclude="bads")
+    if len(picks) == 0:
+        picks = mne.pick_types(info, meg=True, eeg=True, exclude="bads")
+    if len(picks) == 0:
+        picks = np.arange(len(info.ch_names))
+    return picks
+
+
+def channel_scale(info: mne.Info, picks: np.ndarray) -> tuple[float, str]:
+    """Return (scale_factor, unit_label) for the dominant channel type in picks."""
+    types = {mne.channel_type(info, int(p)) for p in picks}
+    if "eeg" in types:
+        return 1e6, "µV"
+    if "mag" in types:
+        return 1e15, "fT"
+    if "grad" in types:
+        return 1e13, "fT/cm"
+    return 1.0, "a.u."
+
+
+def top_conditions(epoch_list: list[mne.BaseEpochs]) -> list[str]:
+    """Return the most-populated conditions across a list of epoch objects."""
+    counts: Counter = Counter()
+    for ep in epoch_list:
+        for cond, code in ep.event_id.items():
+            counts[cond] += int((ep.events[:, 2] == code).sum())
+    return [cond for cond, _ in counts.most_common(MAX_EVO_CONDITIONS)]
+
+
+def get_epoch_params(state: AppState) -> tuple[float, float, tuple]:
+    """Return (tmin, tmax, baseline) from the pipeline's epoch action, or sane defaults."""
+    for action in state.actions:
+        if action.action_id in ("epoch_fixed", "epoch_events"):
+            tmin = float(action.params.get("tmin", -0.2))
+            tmax = float(action.params.get("tmax", 0.8))
+            return tmin, tmax, (None, 0)
+    return -0.2, 0.8, (None, 0)
+
+
+def resolve_to_epochs(
+    raw: mne.io.BaseRaw,
+    tmin: float,
+    tmax: float,
+    baseline: tuple,
+) -> mne.BaseEpochs | None:
+    """Epoch a Raw object using stim-channel or annotation events. Returns None if no events found."""
+    events = None
+    event_id = None
+    try:
+        events = mne.find_events(raw, stim_channel="auto", verbose=False, min_duration=0.001)
+    except Exception:
+        pass
+    if events is None or len(events) == 0:
+        try:
+            events, event_id = mne.events_from_annotations(raw, verbose=False)
+        except Exception:
+            return None
+    if events is None or len(events) == 0:
+        return None
+    if event_id is None:
+        event_id = {str(int(c)): int(c) for c in np.unique(events[:, 2])}
+    try:
+        return mne.Epochs(
+            raw, events, event_id=event_id,
+            tmin=tmin, tmax=tmax, baseline=baseline,
+            preload=True, verbose=False,
+        )
+    except Exception:
+        return None
+
+
+def add_events_evolution_section(
+    report: mne.Report,
+    state: AppState,
+) -> None:
+    """Add Events Viewer section: per-condition ERP+TFR grid across every pipeline step.
+
+    For Raw/ICA steps, epochs the data on-the-fly using stim-channel or annotation events and the same window as
+    any existing epoch action in the pipeline.
+    Steps with no detectable events are skipped. TFR frequency range is computed automatically.
+    """
+    tmin, tmax, baseline = get_epoch_params(state)
+
+    # Resolve each completed step to an epoch or evoked object
+    step_data: list[tuple[str, mne.BaseEpochs | mne.Evoked]] = []
+    for i, action in enumerate(state.actions):
+        if action.status != ActionStatus.COMPLETE:
+            continue
+        data = get_data_after(state, i)
+        if data is None:
+            continue
+        label = f"Step {i + 1}: {get_action_title(action)}"
+        if isinstance(data, mne.BaseEpochs):
+            step_data.append((label, data))
+        elif isinstance(data, mne.Evoked):
+            step_data.append((label, data))
+        else:
+            raw = data.raw if isinstance(data, ICASolution) else data
+            if isinstance(raw, mne.io.BaseRaw):
+                ep = resolve_to_epochs(raw, tmin, tmax, baseline)
+                if ep is not None and len(ep) > 0:
+                    step_data.append((label, ep))
+
+    if not step_data:
+        return
+
+    epoch_objs = [d for _, d in step_data if isinstance(d, mne.BaseEpochs)]
+    conditions = top_conditions(epoch_objs)
+    if not conditions:
+        return
+
+    report.add_html(
+        "<h2>Events Viewer</h2>"
+        f"<p>ERP and TFR per event type across all pipeline steps "
+        f"(tmin={tmin:.2f} s, tmax={tmax:.2f} s). "
+        "TFR frequency range is derived automatically from each step's epoch length."
+        "Power in dB with a shared colorscale per condition.</p>",
+        title="Events Viewer",
+        tags=("events_viewer",),
+    )
+    for cond in conditions:
+        try:
+            add_condition_panel(report, cond, step_data)
+        except Exception as e:
+            logger.warning("Events viewer panel for '%s' failed: %s", cond, e)
+
+def add_condition_panel(
+    report: mne.Report,
+    cond: str,
+    step_data: list[tuple[str, mne.BaseEpochs | mne.Evoked]],
+) -> None:
+    """Render ERP and TFR side-by-side for each step in its own row."""
+
+    # Precompute ERP and TFR for every step
+    erp_results: list[tuple] = []
+    tfr_results: list[tuple] = []
+
+    for label, data in step_data:
+        ep_cond = data[cond] if isinstance(data, mne.BaseEpochs) and cond in data.event_id else None
+
+        # ERP
+        ev = None
+        if isinstance(data, mne.Evoked):
+            ev = data.copy()
+            if ev.tmin < -0.05:
+                ev.apply_baseline((None, 0))
+        elif ep_cond is not None:
+            try:
+                ev = ep_cond.average()
+                if ev.tmin < -0.05:
+                    ev.apply_baseline((None, 0))
+            except Exception:
+                pass
+
+        if ev is not None:
+            picks = eeg_picks_for(ev.info)
+            sc, unit = channel_scale(ev.info, picks)
+            erp_results.append((ev.data[picks] * sc, ev.times * 1000, unit))
+        else:
+            erp_results.append((None, None, ""))
+
+        # TFR
+        if ep_cond is not None:
+            try:
+                ep = ep_cond
+                if len(ep) == 0:
+                    raise ValueError("no epochs")
+
+                sfreq_ep = ep.info["sfreq"]
+                n_times = len(ep.times)
+                fmax = min(40.0, sfreq_ep / 2.0 - 1.0)
+                n_cycles_fixed = 7.0
+                # Start with a broad range and let MNE itself reject too-short wavelets.
+                # Retry by dropping the lowest frequency each time.
+                step_freqs = np.logspace(np.log10(1.0), np.log10(fmax), TFR_N_BINS)
+
+                picks_arr = eeg_picks_for(ep.info)
+                decim = max(1, int(sfreq_ep / 50))
+                ep_sub = ep[:MAX_TFR_EPOCHS].copy().pick(picks_arr)
+
+                tfr = None
+                while len(step_freqs) > 0:
+                    try:
+                        tfr = ep_sub.compute_tfr(
+                            method="morlet",
+                            freqs=step_freqs,
+                            n_cycles=n_cycles_fixed,
+                            average=True,
+                            verbose=False,
+                        )
+                        break
+                    except ValueError as ve:
+                        if "longer than the signal" not in str(ve):
+                            raise
+                        step_freqs = step_freqs[1:]
+
+                if tfr is None or len(step_freqs) == 0:
+                    raise ValueError(
+                        f"epoch too short ({n_times} samples at {sfreq_ep} Hz) "
+                        f"for any TFR frequency up to {fmax:.0f} Hz"
+                    )
+
+                logger.info(
+                    "TFR cond '%s': sfreq=%.0f n_times=%d freqs %.1f–%.1f Hz",
+                    cond, sfreq_ep, n_times, step_freqs[0], step_freqs[-1],
+                )
+                tfr = tfr.decimate(decim)
+                power_db = 10 * np.log10(tfr.data.mean(axis=0) + 1e-30)
+                tfr_results.append((power_db, tfr.times * 1000, step_freqs, None))
+
+            except Exception as e:
+                logger.warning("TFR failed for cond '%s': %s", cond, e)
+                tfr_results.append((None, None, None, str(e)))
+        else:
+            tfr_results.append((None, None, None, None))
+
+    # Shared TFR color scale across all steps
+    valid_power = [p for p, _, _, _ in tfr_results if p is not None]
+    if valid_power:
+        all_vals = np.concatenate([p.ravel() for p in valid_power])
+        vmin, vmax = np.percentile(all_vals, [5, 95])
+    else:
+        vmin, vmax = -30.0, 0.0
+
+    # One row per step, ERP left; TFR right
+    n_rows = len(step_data)
+    row_h = 3.5
+    fig = Figure(figsize=(13, row_h * n_rows))
+
+    for row, (label, _) in enumerate(step_data):
+        erp_data, times_erp, unit = erp_results[row]
+        power_db, times_tfr, step_freqs, error_msg = tfr_results[row]
+
+        # ERP
+        ax_e = fig.add_subplot(n_rows, 2, row * 2 + 1)
+        if erp_data is not None:
+            for ch in erp_data:
+                ax_e.plot(times_erp, ch, color="steelblue", alpha=0.2, linewidth=0.6)
+            ax_e.plot(times_erp, np.mean(erp_data, axis=0), color="crimson", linewidth=1.5)
+            ax_e.axvline(0, color="k", linestyle="--", linewidth=0.7, alpha=0.5)
+            ax_e.axhline(0, color="k", linewidth=0.3, alpha=0.2)
+            ax_e.set_ylabel(f"({unit})", fontsize=7)
+        else:
+            ax_e.text(0.5, 0.5, "N/A", ha="center", va="center", transform=ax_e.transAxes)
+            ax_e.set_axis_off()
+        ax_e.set_title(f"{label} - ERP", fontsize=8)
+        ax_e.tick_params(labelsize=6)
+        if row == n_rows - 1:
+            ax_e.set_xlabel("Time (ms)", fontsize=7)
+
+        # TFR
+        ax_t = fig.add_subplot(n_rows, 2, row * 2 + 2)
+        if power_db is not None:
+            ax_t.pcolormesh(
+                times_tfr, step_freqs, power_db,
+                cmap="RdBu_r", vmin=vmin, vmax=vmax, shading="auto",
+            )
+            ax_t.set_yscale("log")
+            ax_t.axvline(0, color="k", linestyle="--", linewidth=0.7, alpha=0.5)
+            ax_t.set_ylabel("Freq (Hz)", fontsize=7)
+        else:
+            ax_t.set_facecolor("#f8f8f8")
+            msg = "TFR failed"
+            if error_msg:
+                msg += f"\n{error_msg}"
+            ax_t.text(0.5, 0.5, msg, ha="center", va="center",
+                      fontsize=6, color="red", transform=ax_t.transAxes, wrap=True)
+            ax_t.set_xticks([])
+            ax_t.set_yticks([])
+        ax_t.set_title(f"{label} - TFR", fontsize=8)
+        ax_t.tick_params(labelsize=6)
+        if row == n_rows - 1:
+            ax_t.set_xlabel("Time (ms)", fontsize=7)
+
+    fig.suptitle(f"Events Viewer - {cond}", fontsize=10)
+    fig.subplots_adjust(left=0.07, right=0.99, top=0.97, bottom=0.04, hspace=0.55, wspace=0.2)
+
+    report.add_figure(
+        fig,
+        title=f"Events: {cond}",
+        tags=("events_viewer",),
+    )
