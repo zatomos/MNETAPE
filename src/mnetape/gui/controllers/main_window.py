@@ -793,7 +793,8 @@ class MainWindow(QMainWindow):
 
     def on_pipeline_complete(self):
         """Called by PipelineRunner when all pipeline actions complete successfully."""
-        self.generate_qc_report()
+        if self.state.settings.value("qc/auto_generate", True, type=bool):
+            self.generate_qc_report()
 
     def get_qc_report_path(self):
         """Determine where to save the QC report."""
@@ -814,11 +815,17 @@ class MainWindow(QMainWindow):
         out_path = self.get_qc_report_path()
         title = "EEG QC Report"
         if self.state.data_filepath:
-            title = f"QC — {self.state.data_filepath.name}"
+            title = f"QC - {self.state.data_filepath.name}"
+
+        settings = self.state.settings
+        include_events_viewer = settings.value("qc/events_viewer_enabled", True, type=bool)
 
         try:
             self.runner.run_in_thread(
-                lambda: generate_report(self.state, out_path, title=title),
+                lambda: generate_report(
+                    self.state, out_path, title=title,
+                    include_events_viewer=include_events_viewer,
+                ),
                 "Generating QC report...",
             )
         except OperationCancelled:
