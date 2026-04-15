@@ -179,10 +179,15 @@ class MainWindow(QMainWindow):
         new_pl.triggered.connect(lambda: self.prep_page and self.prep_page.files.new_pipeline())
         pipeline_menu.addAction(new_pl)
 
-        save_pl = QAction("Save Pipeline...", self)
+        save_pl = QAction("Save Pipeline", self)
         save_pl.setShortcut(QKeySequence.StandardKey.Save)
-        save_pl.triggered.connect(lambda: self.prep_page and self.prep_page.files.save_pipeline())
+        save_pl.triggered.connect(lambda: self.prep_page and self.prep_page.files.save_pipeline_default())
         pipeline_menu.addAction(save_pl)
+
+        save_as_pl = QAction("Save Pipeline As...", self)
+        save_as_pl.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        save_as_pl.triggered.connect(lambda: self.prep_page and self.prep_page.files.save_pipeline())
+        pipeline_menu.addAction(save_as_pl)
 
         load_pl = QAction("Load Pipeline...", self)
         load_pl.triggered.connect(lambda: self.prep_page and self.prep_page.files.load_pipeline())
@@ -259,9 +264,6 @@ class MainWindow(QMainWindow):
         """Clean up the current prep page; update project state if report_status."""
         if self.prep_page is None:
             return
-
-        if report_status:
-            self.project_page.set_pipeline_as_default_popup()
 
         ctx = self.prep_page.project_context
         if report_status and ctx:

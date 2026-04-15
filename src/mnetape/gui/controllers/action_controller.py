@@ -43,6 +43,7 @@ class ActionController:
             action_id = dialog.get_action_id()
             if action_id:
                 self.state.push_undo()
+                self.w.mark_pipeline_dirty()
                 action_def = get_action_by_id(action_id)
                 params = action_def.default_params() if action_def else {}
                 action = ActionConfig(action_id, params)
@@ -73,6 +74,7 @@ class ActionController:
         if reply != QMessageBox.StandardButton.Yes:
             return
         self.state.push_undo()
+        self.state.pipeline_dirty = True
         self.state.actions.pop(row)
         self.state.data_states.truncate(row)
         for action in self.state.actions[row:]:
@@ -95,6 +97,7 @@ class ActionController:
         if actions[to_row].action_id in PROTECTED_ACTION_IDS:
             return
         self.state.push_undo()
+        self.state.pipeline_dirty = True
         action = actions.pop(from_row)
         actions.insert(to_row, action)
         first_changed = min(from_row, to_row)
@@ -118,6 +121,7 @@ class ActionController:
             if self.state.actions[new_row].action_id in PROTECTED_ACTION_IDS:
                 return
             self.state.push_undo()
+            self.state.pipeline_dirty = True
             self.state.actions[row], self.state.actions[new_row] = self.state.actions[new_row], self.state.actions[row]
             self.state.data_states.truncate(min(row, new_row))
             for action in self.state.actions[min(row, new_row) :]:
@@ -264,10 +268,10 @@ class ActionController:
 
         self.state.custom_preamble = extract_custom_preamble(code, self.state.actions)
 
-        self.w.update_action_list(sync_code=False)
         if changed:
+            self.state.pipeline_dirty = True
             logger.info("Applied manual code edits; action list updated")
-        self.w.files.auto_save()
+        self.w.update_action_list(sync_code=False)
 
     def edit_action(self, row: int):
         """Open the action editor dialog for the action at row.
@@ -306,6 +310,7 @@ class ActionController:
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.state.push_undo()
+            self.w.mark_pipeline_dirty()
             action.params = dialog.get_params()
             action.advanced_params = dialog.get_advanced_params()
             action.title_override = dialog.get_title_override()

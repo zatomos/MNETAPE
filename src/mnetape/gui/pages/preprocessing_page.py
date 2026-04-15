@@ -120,6 +120,7 @@ class PreprocessingPage(QWidget):
         # Widget declarations — setup_ui() assigns the real instances
         self.btn_prev = QPushButton()
         self._participant_label = QLabel()
+        self._dirty_indicator = QLabel()
         self.btn_next = QPushButton()
         self.status_label = QLabel()
         self.btn_add_action = QPushButton()
@@ -176,7 +177,7 @@ class PreprocessingPage(QWidget):
         btn_back = QPushButton("← Back")
         btn_back.setObjectName("btn_back_to_project")
         btn_back.setFixedWidth(90)
-        btn_back.clicked.connect(self.close_requested)
+        btn_back.clicked.connect(self.on_back_clicked)
         header_layout.addWidget(btn_back)
 
         v_sep = QFrame()
@@ -189,19 +190,25 @@ class PreprocessingPage(QWidget):
         self.btn_prev.setFixedSize(32, 28)
         self.btn_prev.setEnabled(False)
         self.btn_prev.setToolTip("Previous run")
-        self.btn_prev.clicked.connect(lambda: self.navigate_requested.emit(-1))
+        self.btn_prev.clicked.connect(lambda: self.on_navigate(-1))
         header_layout.addWidget(self.btn_prev)
 
         self._participant_label = QLabel()
         self._participant_label.setObjectName("prep_participant_label")
         header_layout.addWidget(self._participant_label)
 
+        self._dirty_indicator = QLabel("●")
+        self._dirty_indicator.setStyleSheet("color: #CC7700; font-size: 10px;")
+        self._dirty_indicator.setToolTip("Pipeline has unsaved changes (Ctrl+S to save)")
+        self._dirty_indicator.setVisible(False)
+        header_layout.addWidget(self._dirty_indicator)
+
         self.btn_next = QPushButton("›")
         self.btn_next.setObjectName("btn_next_step")
         self.btn_next.setFixedSize(32, 28)
         self.btn_next.setEnabled(False)
         self.btn_next.setToolTip("Next run")
-        self.btn_next.clicked.connect(lambda: self.navigate_requested.emit(+1))
+        self.btn_next.clicked.connect(lambda: self.on_navigate(+1))
         header_layout.addWidget(self.btn_next)
 
         header_layout.addStretch()
@@ -474,6 +481,7 @@ class PreprocessingPage(QWidget):
         redo_shortcut = QShortcut(QKeySequence.StandardKey.Redo, self)
         redo_shortcut.activated.connect(self.redo_pipeline)
 
+
     # -------- Toggle between code/viz --------
 
     def set_view_mode(self, mode: str):
@@ -567,12 +575,24 @@ class PreprocessingPage(QWidget):
         self.btn_undo.setEnabled(bool(self.state.undo_stack))
         self.btn_redo.setEnabled(bool(self.state.redo_stack))
 
+    def mark_pipeline_dirty(self):
+        """Mark the pipeline as having unsaved changes and show the dirty indicator."""
+        self.state.pipeline_dirty = True
+        self.state.pipeline_modified_this_session = True
+        self._dirty_indicator.setVisible(True)
+
+    def clear_pipeline_dirty(self):
+        """Mark the pipeline as saved and hide the dirty indicator."""
+        self.state.pipeline_dirty = False
+        self._dirty_indicator.setVisible(False)
+
     def undo_pipeline(self):
         """Restore the previous pipeline snapshot from the undo stack."""
         snapshot = self.state.pop_undo()
         if snapshot is None:
             return
         self.state.actions = snapshot
+        self.mark_pipeline_dirty()
         self.state.data_states.truncate(0)
         for action in self.state.actions:
             action.reset()
@@ -584,16 +604,66 @@ class PreprocessingPage(QWidget):
         if snapshot is None:
             return
         self.state.actions = snapshot
+        self.mark_pipeline_dirty()
         self.state.data_states.truncate(0)
         for action in self.state.actions:
             action.reset()
         self.update_action_list()
 
+    # -------- Unsaved-changes guard --------
+
+    def confirm_discard_if_dirty(self) -> bool:
+        """Return True if it is safe to leave (saved or user chose to discard).
+
+        Shows a Save / Discard / Cancel dialog when the pipeline has unsaved changes.
+        """
+        if not self.state.pipeline_dirty:
+            return True
+        reply = QMessageBox.question(
+            self.window(),
+            "Unsaved Changes",
+            "The pipeline has unsaved changes.\nDo you want to save before leaving?",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if reply == QMessageBox.StandardButton.Save:
+            return self.files.save_pipeline_default()
+        return reply == QMessageBox.StandardButton.Discard
+
+    def offer_set_as_default(self):
+        """Ask whether the just-saved pipeline should become the project default."""
+        if self.project_context is None:
+            return
+        reply = QMessageBox.question(
+            self.window(),
+            "Apply to All Participants?",
+            "Do you also want to apply this pipeline as the project default for all participants?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.set_default_pipeline_stub()
+
+    def on_back_clicked(self):
+        if not self.confirm_discard_if_dirty():
+            return
+        if self.state.pipeline_modified_this_session and not self.state.pipeline_dirty:
+            self.offer_set_as_default()
+        self.close_requested.emit()
+
+    def on_navigate(self, direction: int):
+        if not self.confirm_discard_if_dirty():
+            return
+        if self.state.pipeline_modified_this_session and not self.state.pipeline_dirty:
+            self.offer_set_as_default()
+        self.navigate_requested.emit(direction)
+
     def update_code(self):
         """Regenerate the full pipeline script and push it to the code panel."""
         code = generate_full_script(self.state.actions, extra_preamble=self.state.custom_preamble or None)
         self.code_panel.set_code(code)
-        self.files.auto_save()
 
     def fallback_data(self, step: int):
         """Walk backward from step-1 to find the last computed data state."""

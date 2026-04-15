@@ -46,6 +46,8 @@ class AppState:
     undo_stack: list = field(default_factory=list, repr=False)
     redo_stack: list = field(default_factory=list, repr=False)
     custom_preamble: list[str] = field(default_factory=list)
+    pipeline_dirty: bool = False
+    pipeline_modified_this_session: bool = False
 
     def push_undo(self) -> None:
         """Snapshot the current actions list onto the undo stack and clear redo."""

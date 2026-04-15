@@ -241,11 +241,44 @@ class FileHandler:
         self.w.update_visualization()
         self.w.emit_status("New pipeline")
 
-    def save_pipeline(self):
-        """Serialize the current action list to a Python script and save to disk."""
-        path, _ = QFileDialog.getSaveFileName(self.w.window(), "Save Pipeline", "", "Python Files (*.py)")
+    def save_pipeline_default(self) -> bool:
+        """Save pipeline to the participant path (project mode) or current file (standalone).
+
+        Falls back to a Save As dialog if no file is currently open.
+        Returns True on success or if there was nothing to save, False if canceled or failed.
+        """
+        code = self.w.code_panel.get_code()
+        if not code:
+            return True
+        if self.w.project_context:
+            ctx = self.w.project_context
+            fp = ctx.project.participant_pipeline_path(ctx.project_dir, ctx.participant, ctx.session)
+            fp.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            fp = self.state.pipeline_filepath
+            if not fp:
+                return self.save_pipeline()
+        try:
+            fp.write_text(code)
+            self.w.code_panel.file_hash = hashlib.md5(code.encode()).hexdigest()
+            self.state.pipeline_filepath = fp
+            self.w.clear_pipeline_dirty()
+            self.w.code_panel.set_file(fp)
+            self.w.emit_status(f"Saved: {fp.name}", 2000)
+            return True
+        except Exception as exc:
+            logger.exception("Failed to save pipeline")
+            QMessageBox.critical(self.w.window(), "Save Failed", f"Could not save pipeline:\n{exc}")
+            return False
+
+    def save_pipeline(self) -> bool:
+        """Serialize the current action list to a Python script via a Save As dialog.
+
+        Returns True on success, False if cancelled or failed.
+        """
+        path, _ = QFileDialog.getSaveFileName(self.w.window(), "Save Pipeline As", "", "Python Files (*.py)")
         if not path:
-            return
+            return False
 
         if not path.endswith(".py"):
             path += ".py"
@@ -256,11 +289,13 @@ class FileHandler:
         except Exception as exc:
             logger.exception("Failed to save pipeline")
             QMessageBox.critical(self.w.window(), "Save Failed", f"Could not save pipeline:\n{exc}")
-            return
+            return False
 
         self.state.pipeline_filepath = Path(path)
+        self.state.pipeline_dirty = False
         self.w.code_panel.set_file(self.state.pipeline_filepath)
         self.w.emit_status(f"Saved: {self.state.pipeline_filepath.name}")
+        return True
 
     def load_pipeline(self):
         """Open a Python pipeline script and parse it back into actions."""
@@ -273,6 +308,7 @@ class FileHandler:
             self.state.actions = parse_script_to_actions(code)
             self.state.custom_preamble = extract_custom_preamble(code, self.state.actions)
             self.state.pipeline_filepath = Path(path)
+            self.w.clear_pipeline_dirty()
             self.w.code_panel.set_file(self.state.pipeline_filepath)
             self.state.data_states.clear()
 
@@ -283,22 +319,6 @@ class FileHandler:
         except Exception as e:
             logger.exception("Failed to load pipeline: %s", path)
             QMessageBox.critical(self.w, "Error", f"Failed to load pipeline:\n{e}")
-
-    def auto_save(self):
-        """Write current editor code to disk. In project mode, always writes to the participant pipeline."""
-        code = self.w.code_panel.get_code()
-        if not code:
-            return
-        if self.w.project_context:
-            ctx = self.w.project_context
-            fp = ctx.project.participant_pipeline_path(ctx.project_dir, ctx.participant, ctx.session)
-            fp.parent.mkdir(parents=True, exist_ok=True)
-        else:
-            fp = self.state.pipeline_filepath
-            if not fp or not fp.exists():
-                return
-        fp.write_text(code)
-        self.w.code_panel.file_hash = hashlib.md5(code.encode()).hexdigest()
 
     def reload_pipeline(self):
         """Reload the pipeline from the currently open file, discarding computed states."""
