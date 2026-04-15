@@ -107,6 +107,7 @@ class PreprocessingPage(QWidget):
         self.state = AppState.create_with_settings(settings)
         self.state.data_states.close()
         self.open_dialogs: list = []
+        self.generate_qc_after_pipeline = False
 
         # Helpers
         self.files = FileHandler(self)
@@ -844,6 +845,7 @@ class PreprocessingPage(QWidget):
 
     def run_and_save(self):
         """Run all pipeline actions, export the final output, then mark the session preprocessed."""
+        self.generate_qc_after_pipeline = True
         self.runner.run_all()
 
         ctx = self.project_context
@@ -962,6 +964,9 @@ class PreprocessingPage(QWidget):
 
     def on_pipeline_complete(self):
         """Called by PipelineRunner when all pipeline actions complete successfully."""
+        if not self.generate_qc_after_pipeline:
+            return
+        self.generate_qc_after_pipeline = False
         if self.state.settings.value("qc/auto_generate", True, type=bool):
             self.generate_qc_report()
 
