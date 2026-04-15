@@ -1,7 +1,7 @@
 """Code panel for generated pipeline script viewing and editing.
 
 CodePanel wraps an editor with action-block background highlighting, a watcher that reacts to external edits,
-and callbacks that allow MainWindow to handle manual edits and external file changes.
+and callbacks that allow PreprocessingPage to handle manual edits and external file changes.
 """
 
 import hashlib
@@ -66,10 +66,6 @@ class CodePanel(QWidget):
 
         toolbar = QHBoxLayout()
 
-        self.file_label = QLabel("No file")
-        self.file_label.setStyleSheet("color: gray;")
-        toolbar.addWidget(self.file_label)
-
         toolbar.addStretch()
 
         layout.addLayout(toolbar)
@@ -107,7 +103,6 @@ class CodePanel(QWidget):
             self.watcher.removePath(str(self.current_file))
 
         self.current_file = filepath
-        self.file_label.setText(filepath.name)
 
         if filepath.exists():
             self.watcher.addPath(str(filepath))
