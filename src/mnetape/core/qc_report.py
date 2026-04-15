@@ -281,7 +281,14 @@ def add_ica_classify_section(
 ) -> None:
     if not isinstance(data_after, ICASolution):
         return
-    ic_labels = data_after.ic_labels
+
+    from mnetape.actions.ica_apply.classify import run_background_classification
+    try:
+        ic_labels = run_background_classification(data_after.ica, data_after.raw)
+    except Exception as e:
+        logger.warning("ICA classification failed during QC report generation: %s", e)
+        return
+
     if not ic_labels or "labels" not in ic_labels:
         return
 
@@ -306,7 +313,7 @@ def add_ica_classify_section(
     ax.set_title("ICA Component Classification")
     fig.tight_layout()
 
-    excluded = data_after.detected_artifacts or []
+    excluded = ic_labels.get("detected_artifacts") or []
     caption = (
         f"{len(excluded)} component(s) marked for exclusion: {excluded}"
         if excluded else "No components marked for exclusion."

@@ -7,7 +7,6 @@ and sequential execution.
 
 from __future__ import annotations
 
-import json
 import logging
 import shutil
 import tempfile
@@ -17,7 +16,6 @@ from typing import Any, Callable
 
 import threading
 
-import numpy as np
 import mne
 from mnetape.core.models import ICASolution
 
@@ -31,18 +29,6 @@ RAW = "raw"
 EPOCHS = "epochs"
 EVOKED = "evoked"
 ICA = "ica"
-
-class NumpyEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if isinstance(obj, np.integer):
-            return int(obj)
-        if isinstance(obj, np.floating):
-            return float(obj)
-        if isinstance(obj, np.bool_):
-            return bool(obj)
-        return super().default(obj)
 
 def p(base: Path, suffix: str) -> Path:
     """Construct a slot file path by appending a suffix to the base name."""
@@ -59,8 +45,6 @@ def write_to_disk(data: Any, base: Path) -> str:
     if isinstance(data, ICASolution):
         data.ica.save(p(base, "_ica.fif"), overwrite=True)
         data.raw.save(p(base, "_ica_raw.fif"), overwrite=True)
-        if data.ic_labels is not None:
-            p(base, "_labels.json").write_text(json.dumps(data.ic_labels, cls=NumpyEncoder))
         return ICA
 
     if isinstance(data, mne.io.BaseRaw):
@@ -94,11 +78,7 @@ def read_from_disk(type_tag: str, base: Path) -> Any:
     if type_tag == ICA:
         ica = mne.preprocessing.read_ica(p(base, "_ica.fif"), verbose=False)
         raw = mne.io.read_raw_fif(p(base, "_ica_raw.fif"), preload=True, verbose=False)
-        ic_labels = None
-        labels_path = p(base, "_labels.json")
-        if labels_path.exists():
-            ic_labels = json.loads(labels_path.read_text())
-        return ICASolution(ica=ica, raw=raw, ic_labels=ic_labels)
+        return ICASolution(ica=ica, raw=raw)
 
     raise ValueError(f"Unknown DataStore type tag: {type_tag!r}")
 

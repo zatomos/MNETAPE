@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont
 
 from mnetape.actions.base import InteractiveRunner
+from mnetape.actions.ica_apply.classify import get_auto_exclude, run_background_classification
 from mnetape.gui.widgets import PlotCanvas
 
 logger = logging.getLogger(__name__)
@@ -534,55 +535,6 @@ class ICAInspectionDialog(QDialog):
 
 # -------- Interactive runner --------
 
-def get_auto_exclude(ic_labels: dict | None) -> list[int]:
-    return list(ic_labels.get("detected_artifacts", [])) if ic_labels else []
-
-
-def run_background_classification(ica, raw) -> dict:
-    """Run ICLabel (if available), EOG, and ECG detection in-process.
-
-    Results are for display only, not written to the pipeline script.
-
-    Returns:
-        ic_labels dict with "detected_artifacts" key (and ICLabel keys if available).
-    """
-    ic_labels = {}
-    detected = []
-
-    try:
-        import numpy as np
-        from mne_icalabel import label_components
-        label_result = label_components(raw, ica, method="iclabel")
-        ic_labels.update(label_result)
-        detected.extend(
-            i for i, (lbl, prob) in enumerate(zip(label_result["labels"], label_result["y_pred_proba"]))
-            if lbl != "brain" and np.max(prob) >= 0.5
-        )
-        logger.debug("ICLabel classification completed (%d components flagged)", len(detected))
-    except Exception as e:
-        logger.debug("ICLabel not available or failed, skipping: %s", e)
-
-    import mne
-    if mne.pick_types(raw.info, eog=True).size > 0:
-        try:
-            eog_indices, _ = ica.find_bads_eog(raw, threshold=3.0, verbose=False)
-            detected.extend(list(eog_indices))
-            logger.debug("EOG detection: %d components flagged", len(eog_indices))
-        except Exception as e:
-            logger.debug("EOG detection failed: %s", e)
-
-    if mne.pick_types(raw.info, ecg=True).size > 0:
-        try:
-            ecg_indices, _ = ica.find_bads_ecg(raw, method="correlation", threshold=0.25, verbose=False)
-            detected.extend(list(ecg_indices))
-            logger.debug("ECG detection: %d components flagged", len(ecg_indices))
-        except Exception as e:
-            logger.debug("ECG detection failed: %s", e)
-
-    ic_labels["detected_artifacts"] = sorted(set(detected))
-    return ic_labels
-
-
 def ica_apply_run(action, data, parent):
     """Run background classification then open the ICA inspection dialog."""
     from mnetape.core.models import ICASolution
@@ -590,8 +542,6 @@ def ica_apply_run(action, data, parent):
     ica_solution: ICASolution = data
 
     ic_labels = run_background_classification(ica_solution.ica, ica_solution.raw)
-    ica_solution.ic_labels = ic_labels
-
     initial_exclude = action.params.get("exclude") or get_auto_exclude(ic_labels)
 
     dialog = ICAInspectionDialog(
@@ -664,16 +614,15 @@ def ica_apply_build_editor_widget(data, action, parent, param_widgets=None):
     def open_dialog():
         if ica_solution is None:
             return
-        if ica_solution.ic_labels is None:
-            ica_solution.ic_labels = run_background_classification(ica_solution.ica, ica_solution.raw)
-        auto_exclude = get_auto_exclude(ica_solution.ic_labels)
+        ic_labels = run_background_classification(ica_solution.ica, ica_solution.raw)
+        auto_exclude = get_auto_exclude(ic_labels)
         current = action.params.get("exclude")
         initial = list(current) if current else auto_exclude
         dialog = ICAInspectionDialog(
             ica=ica_solution.ica,
             raw=ica_solution.raw,
             auto_exclude=initial,
-            ic_labels=ica_solution.ic_labels,
+            ic_labels=ic_labels,
             parent=parent,
         )
         accepted = dialog.exec() == QDialog.DialogCode.Accepted

@@ -63,11 +63,9 @@ def exec_action(
         if isinstance(data, ICASolution):
             scope["ica"] = data.ica
             scope["raw"] = data.raw
-            scope["ic_labels"] = data.ic_labels
         else:
             scope["ica"] = data
             scope["raw"] = data
-            scope["ic_labels"] = None
     else:
         var = SCOPE_VAR.get(input_type, "raw")
         scope[var] = data
@@ -92,7 +90,6 @@ def exec_action(
         return ICASolution(
             ica=scope["ica"],
             raw=scope["raw"],
-            ic_labels=scope.get("ic_labels"),
         )
 
     out_var = SCOPE_VAR.get(output_type, "raw")

@@ -33,13 +33,12 @@ def template_builder(
     ] = "infomax",
     ica_kwargs={},
     fit_kwargs={},
-) -> tuple[mne.preprocessing.ICA, mne.io.Raw, dict | None]:
+) -> tuple[mne.preprocessing.ICA, mne.io.Raw]:
     fit_params = {"extended": True} if method == "infomax" else None
     n_comp = len(mne.pick_types(raw.info, eeg=True)) if n_components == 0 else n_components
     ica = mne.preprocessing.ICA(n_components=n_comp, method=method, max_iter="auto", fit_params=fit_params, **ica_kwargs)
     ica.fit(raw, picks="eeg", **fit_kwargs)
-    ic_labels = None
-    return ica, raw, ic_labels
+    return ica, raw
 
 @result_builder
 def build_result(data):
