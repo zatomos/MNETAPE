@@ -7,6 +7,7 @@ The time-series tab embeds an MNE interactive browser widget.
 """
 
 import logging
+import warnings
 from typing import Callable
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
@@ -20,7 +21,7 @@ from PyQt6.QtWidgets import (
 from matplotlib.figure import Figure
 import mne
 
-from mnetape.core.models import ActionConfig, STATUS_ICONS
+from mnetape.core.models import ActionConfig
 from mnetape.gui.widgets import PlotCanvas
 from mnetape.gui.widgets.common import (
     disable_mne_browser_channel_clicks,
@@ -38,18 +39,22 @@ class PlotWorker(QThread):
     which Qt uses internally for OS-thread cleanup.
     """
 
-    result_ready = pyqtSignal(object)
+    result_ready = pyqtSignal(object, object)  # (result, warning_messages: list[str])
 
     def __init__(self, fn: Callable):
         super().__init__()
         self.fn = fn
 
     def run(self):
-        try:
-            self.result_ready.emit(self.fn())
-        except Exception as e:
-            logger.warning("Background plot computation failed: %s", e)
-            self.result_ready.emit(e)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            try:
+                result = self.fn()
+            except Exception as e:
+                logger.warning("Background plot computation failed: %s", e)
+                self.result_ready.emit(e, [])
+                return
+        self.result_ready.emit(result, [str(w.message) for w in caught])
 
 # Tab indices for each mode
 RAW_TAB_NAMES = ["Time Series", "PSD", "Sensors", "Topomap"]
@@ -75,9 +80,6 @@ class VisualizationPanel(QWidget):
     Switches based on the data type being visualized.
 
     Attributes:
-        step_combo: Combo box for choosing which pipeline step to visualize.
-        btn_prev: Button to step backward through the pipeline.
-        btn_next: Button to step forward through the pipeline.
         status_label: Displays a warning when the selected step has no computed data.
         tabs: QTabWidget containing the visualization tabs.
         plot_psd: PlotCanvas for the PSD plot.
@@ -142,6 +144,13 @@ class VisualizationPanel(QWidget):
         layout.addWidget(self.status_label)
         self.build_raw_tabs()
         layout.addWidget(self.tabs)
+
+        self.plot_warning_label = QLabel("")
+        self.plot_warning_label.setStyleSheet("color: #CC7700; font-size: 9pt; padding: 2px 6px;")
+        self.plot_warning_label.setWordWrap(True)
+        self.plot_warning_label.setVisible(False)
+        layout.addWidget(self.plot_warning_label)
+
         self.show_placeholder()
 
 
@@ -177,6 +186,16 @@ class VisualizationPanel(QWidget):
 
     # -------- Helper methods --------
 
+    def update_plot_warning(self, messages: list[str]) -> None:
+        """Show unique warning messages below the plot, or hide the label if there are none."""
+        seen: set[str] = set()
+        unique = [m for m in messages if not (m in seen or seen.add(m))]
+        if unique:
+            self.plot_warning_label.setText("\n".join(unique))
+            self.plot_warning_label.setVisible(True)
+        else:
+            self.plot_warning_label.setVisible(False)
+
     def close_browser(self):
         """Close and remove the current MNE browser widget."""
         if self.browser is not None:
@@ -208,7 +227,10 @@ class VisualizationPanel(QWidget):
         try:
             self.close_browser()
             self.time_placeholder.setVisible(False)
-            self.browser = self.current_data.plot(show=False)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                self.browser = self.current_data.plot(show=False)
+            self.update_plot_warning([str(w.message) for w in caught])
             self.browser_data_id = data_id
             self.sanitize_browser_toolbar()
             self.time_layout.addWidget(self.browser)
@@ -231,7 +253,10 @@ class VisualizationPanel(QWidget):
         try:
             self.close_browser()
             self.epochs_placeholder.setVisible(False)
-            self.browser = self.current_data.plot(show=False)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                self.browser = self.current_data.plot(show=False)
+            self.update_plot_warning([str(w.message) for w in caught])
             self.browser_data_id = data_id
             self.sanitize_browser_toolbar()
             self.epochs_layout.addWidget(self.browser)
@@ -384,8 +409,9 @@ class VisualizationPanel(QWidget):
         worker = PlotWorker(compute_fn)
         self.slot_workers[slot_key] = worker
 
-        def on_result(result):
+        def on_result(result, warning_messages):
             self.finish_loading()
+            self.update_plot_warning(warning_messages)
             if isinstance(result, Exception):
                 canvas.update_figure(
                     make_loading_fig(str(result), color="#cc4444", fontstyle="normal")
