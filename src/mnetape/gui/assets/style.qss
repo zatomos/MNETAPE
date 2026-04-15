@@ -750,7 +750,7 @@ QScrollArea#participant_detail_scroll > QWidget > QWidget {
 QWidget#prep_header {
     background-color: #ECECEE;
     border-bottom: 1px solid #D5D5D8;
-    min-height: 36px;
+    min-height: 44px;
     max-height: 44px;
 }
 
