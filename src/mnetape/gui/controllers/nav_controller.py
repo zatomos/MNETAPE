@@ -18,7 +18,7 @@ from mnetape.gui.widgets.common import (
 )
 
 if TYPE_CHECKING:
-    from mnetape.gui.controllers.main_window import MainWindow
+    from mnetape.gui.pages.preprocessing_page import PreprocessingPage
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 class NavController:
     """Handles step-selector navigation and MNE browser launch."""
 
-    def __init__(self, window: MainWindow) -> None:
+    def __init__(self, window: "PreprocessingPage") -> None:
         self.w = window
         self.state = window.state
 

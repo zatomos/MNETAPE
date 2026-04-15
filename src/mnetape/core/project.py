@@ -11,6 +11,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class ParticipantStatus(str, Enum):
@@ -169,7 +173,7 @@ class Participant:
 
 @dataclass
 class ProjectContext:
-    """Carries project information into a preprocessing MainWindow.
+    """Carries project information into a PreprocessingPage.
 
     Attributes:
         project: The parent Project object.
@@ -186,7 +190,7 @@ class ProjectContext:
     project_dir: Path
     participant: Participant
     session: Session
-    on_status_update: object  # Callable[[str], None]
+    on_status_update: Callable[..., None]
     data_files: list[Path] = field(default_factory=list)
     run_index: int | None = None
 

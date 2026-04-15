@@ -1,29 +1,31 @@
-"""Main application window for the EEG preprocessing pipeline.
+"""Preprocessing page widget for the EEG preprocessing pipeline.
 
-MainWindow is the top-level QMainWindow. It owns the shared AppState and instantiates the controller objects
+QWidget that hosts an active preprocessing session. It owns the shared AppState and instantiates the controller objects
 that implement all user-facing operations.
-The window itself only builds the menu, sets up the layout widgets, and provides update helpers that keep
-the action list, code panel, and visualization panel in sync.
+Builds the header bar, action list, code/visualization panels, and provides update helpers that keep the action list,
+code panel, and visualization panel in sync.
 """
 
 import logging
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from mnetape.gui.pages.project_page import ProjectPage
 
 import mne
-from PyQt6.QtCore import QEvent, Qt, QUrl
-from PyQt6.QtGui import QAction, QBrush, QColor, QDesktopServices, QKeySequence, QShortcut
+from PyQt6.QtCore import QEvent, QSettings, Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor, QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidgetItem,
-    QMainWindow,
-    QMenu,
     QMessageBox,
     QPushButton,
     QStackedWidget,
-    QStatusBar,
     QVBoxLayout,
     QWidget,
 )
@@ -58,49 +60,51 @@ def make_type_header(data_type: DataType) -> QListWidgetItem:
     return header
 
 
-class MainWindow(QMainWindow):
-    """Top-level application window.
+class PreprocessingPage(QWidget):
+    """Preprocessing session page.
 
-    Composes the left action-list panel, the right view stack (visualization or code editor), and a status bar.
+    Composes the header bar (back button, participant label, nav buttons, status label), the left action-list panel,
+    and the right view stack (visualization or code editor).
     All operations are delegated to the controller objects stored as instance attributes.
+
+    Signals:
+        status_message(str, int): Emit a status bar message with timeout.
+        raw_info_changed(str): Emit updated raw info text for the status bar permanent widget.
+        title_change(str): Request a window title change.
+        close_requested(): User clicked the back button.
+        navigate_requested(int): User clicked prev (-1) or next (+1).
+        session_status_updated(str, str, object): (participant_id, session_id, status)
 
     Attributes:
         state: Shared mutable application state.
         files: File I/O controller.
         runner: Pipeline execution controller.
         viz_panel: Visualisation panel.
-        code_panel:Code editor panel.
+        code_panel: Code editor panel.
         action_list: Pipeline action list.
-        status: QStatusBar for transient messages.
-        recent_menu: The File > Open Recent sub-menu.
-        project_context: Optional project context when opened from ProjectWindow.
+        project_context: Optional project context when opened from ProjectPage.
     """
 
-    def __init__(self, project_context: ProjectContext | None = None):
-        super().__init__()
-        self.code_panel = None
-        self.viz_panel = None
-        self.view_stack = None
-        self.btn_code = None
-        self.btn_run = None
-        self.btn_move_down = None
-        self.btn_move_up = None
-        self.action_list = None
-        self.btn_add_action = None
-        self.recent_menu = None
-        self.btn_viz = None
-        self.btn_undo = None
-        self.btn_redo = None
-        self.btn_qc_report = None
+    status_message = pyqtSignal(str, int)
+    raw_info_changed = pyqtSignal(str)
+    title_change = pyqtSignal(str)
+    close_requested = pyqtSignal()
+    navigate_requested = pyqtSignal(int)
+    session_status_updated = pyqtSignal(str, str, object)
 
-        self.project_context: ProjectContext | None = project_context
-
-        # Basic window setup
-        self.setWindowTitle("MNETAPE")
-        self.resize(1400, 900)
+    def __init__(
+        self,
+        ctx: ProjectContext | None,
+        settings: QSettings,
+        nav_list: list,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.project_context: ProjectContext | None = ctx
+        self._nav_list: list = nav_list
 
         # State
-        self.state = AppState.create()
+        self.state = AppState.create_with_settings(settings)
         self.state.data_states.close()
         self.open_dialogs: list = []
 
@@ -113,92 +117,131 @@ class MainWindow(QMainWindow):
         # DataStore shows a progress dialog when reading a file
         self.state.data_states.thread_runner = self.runner.run_in_thread
 
+        # Widget declarations — setup_ui() assigns the real instances
+        self.btn_prev = QPushButton()
+        self._participant_label = QLabel()
+        self.btn_next = QPushButton()
+        self.status_label = QLabel()
+        self.btn_add_action = QPushButton()
+        self.btn_undo = QPushButton()
+        self.btn_redo = QPushButton()
+        self.action_list = ActionListWidget()
+        self.btn_move_up = QPushButton()
+        self.btn_move_down = QPushButton()
+        self.btn_run = QPushButton()
+        self.btn_finish = QPushButton()
+        self.btn_viz = QPushButton()
+        self.btn_code = QPushButton()
+        self.btn_qc_report = QPushButton()
+        self.view_stack = QStackedWidget()
+        self.viz_panel = VisualizationPanel()
+        self.code_panel = CodePanel()
+
         # UI
-        self.setup_menu()
         self.setup_ui()
         self.setup_shortcuts()
 
-        self.raw_info_label = QLabel()
-        self.raw_info_label.setStyleSheet("color: gray;")
+        # Connect status updated signal to the context callback
+        if ctx:
+            _ctx = ctx  # capture narrowed (non-None) reference for lambda
+            self.session_status_updated.connect(
+                lambda pid, sid, status: _ctx.on_status_update(status)
+                if _ctx.participant.id == pid and _ctx.session.id == sid
+                else None
+            )
 
-        self.status = QStatusBar()
-        self.setStatusBar(self.status)
-        self.status.addPermanentWidget(self.raw_info_label)
-        self.status.showMessage("Ready - Open a FIF file to begin")
+        self.emit_status("Ready - Open a FIF file to begin")
 
+    # -------- Status bar helpers --------
 
-    # -------- Menu setup --------
-
-    def setup_menu(self):
-        """Build the application menu bar."""
-        menubar = self.menuBar()
-
-        file_menu = menubar.addMenu("File")
-
-        open_action = QAction("Open EEG File...", self)
-        open_action.setShortcut(QKeySequence.StandardKey.Open)
-        open_action.triggered.connect(self.files.open_file)
-        file_menu.addAction(open_action)
-
-        self.recent_menu = QMenu("Open Recent", self)
-        self.recent_menu.aboutToShow.connect(self.files.refresh_recent_menu)
-        file_menu.addMenu(self.recent_menu)
-
-        close_action = QAction("Close File", self)
-        close_action.setShortcut(QKeySequence.StandardKey.Close)
-        close_action.triggered.connect(self.files.close_file)
-        file_menu.addAction(close_action)
-
-        file_menu.addSeparator()
-
-        export_action = QAction("Export Processed...", self)
-        export_action.triggered.connect(lambda checked: self.files.export_file())
-        file_menu.addAction(export_action)
-
-        file_menu.addSeparator()
-
-        prefs_action = QAction("Preferences...", self)
-        prefs_action.triggered.connect(self.open_preferences)
-        file_menu.addAction(prefs_action)
-
-        file_menu.addSeparator()
-
-        quit_action = QAction("Quit", self)
-        quit_action.setShortcut(QKeySequence.StandardKey.Quit)
-        quit_action.triggered.connect(self.close)
-        file_menu.addAction(quit_action)
-
-        pipeline_menu = menubar.addMenu("Pipeline")
-
-        new_action = QAction("New Pipeline", self)
-        new_action.setShortcut(QKeySequence.StandardKey.New)
-        new_action.triggered.connect(self.files.new_pipeline)
-        pipeline_menu.addAction(new_action)
-
-        save_action = QAction("Save Pipeline...", self)
-        save_action.setShortcut(QKeySequence.StandardKey.Save)
-        save_action.triggered.connect(self.files.save_pipeline)
-        pipeline_menu.addAction(save_action)
-
-        load_action = QAction("Load Pipeline...", self)
-        load_action.triggered.connect(self.files.load_pipeline)
-        pipeline_menu.addAction(load_action)
-
-        pipeline_menu.addSeparator()
-
-        run_all_action = QAction("Run All", self)
-        run_all_action.setShortcut(QKeySequence("Ctrl+Shift+Return"))
-        run_all_action.triggered.connect(self.runner.run_all)
-        pipeline_menu.addAction(run_all_action)
+    def emit_status(self, msg: str, timeout: int = 0):
+        """Emit a status bar message via signal."""
+        self.status_message.emit(msg, timeout)
 
     # -------- UI setup --------
 
     def setup_ui(self):
-        """Build the central widget: action list on the left, view stack on the right."""
-        central = QWidget()
-        self.setCentralWidget(central)
-        main_layout = QHBoxLayout(central)
+        """Build the page: header bar on top, action list on the left, view stack on the right."""
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
+        # ---- Header bar ----
+        header = QWidget()
+        header.setObjectName("prep_header")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(8, 6, 8, 6)
+        header_layout.setSpacing(8)
+
+        btn_back = QPushButton("← Back")
+        btn_back.setObjectName("btn_back_to_project")
+        btn_back.setFixedWidth(90)
+        btn_back.clicked.connect(self.close_requested)
+        header_layout.addWidget(btn_back)
+
+        v_sep = QFrame()
+        v_sep.setFrameShape(QFrame.Shape.VLine)
+        v_sep.setStyleSheet("color: #D5D5D8;")
+        header_layout.addWidget(v_sep)
+
+        self.btn_prev = QPushButton("‹")
+        self.btn_prev.setObjectName("btn_prev_step")
+        self.btn_prev.setFixedSize(32, 28)
+        self.btn_prev.setEnabled(False)
+        self.btn_prev.setToolTip("Previous run")
+        self.btn_prev.clicked.connect(lambda: self.navigate_requested.emit(-1))
+        header_layout.addWidget(self.btn_prev)
+
+        self._participant_label = QLabel()
+        self._participant_label.setObjectName("prep_participant_label")
+        header_layout.addWidget(self._participant_label)
+
+        self.btn_next = QPushButton("›")
+        self.btn_next.setObjectName("btn_next_step")
+        self.btn_next.setFixedSize(32, 28)
+        self.btn_next.setEnabled(False)
+        self.btn_next.setToolTip("Next run")
+        self.btn_next.clicked.connect(lambda: self.navigate_requested.emit(+1))
+        header_layout.addWidget(self.btn_next)
+
+        header_layout.addStretch()
+
+        btn_set_default = QPushButton("Set as Default Pipeline")
+        btn_set_default.setObjectName("btn_set_default_pipeline")
+        btn_set_default.setToolTip("Save current pipeline as the project default")
+        btn_set_default.clicked.connect(self.set_default_pipeline_stub)
+        header_layout.addWidget(btn_set_default)
+
+        btn_use_default = QPushButton("Use Default Pipeline")
+        btn_use_default.setObjectName("btn_use_default_pipeline")
+        btn_use_default.setToolTip("Reset this participant's pipeline to the project default")
+        btn_use_default.clicked.connect(self.use_default_pipeline_stub)
+        header_layout.addWidget(btn_use_default)
+
+        v_sep2 = QFrame()
+        v_sep2.setFrameShape(QFrame.Shape.VLine)
+        v_sep2.setStyleSheet("color: #D5D5D8;")
+        header_layout.addWidget(v_sep2)
+
+        self.status_label = QLabel("Status: Pending")
+        self.status_label.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold;")
+        self.status_label.setMinimumWidth(140)
+        header_layout.addWidget(self.status_label)
+
+        outer.addWidget(header)
+
+        h_sep = QFrame()
+        h_sep.setFrameShape(QFrame.Shape.HLine)
+        h_sep.setStyleSheet("color: #D5D5D8;")
+        outer.addWidget(h_sep)
+
+        # ---- Main content area ----
+        content = QWidget()
+        content_layout = QHBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
+        # Left panel
         left_panel = QWidget()
         left_panel.setMaximumWidth(300)
         left_panel.setMinimumWidth(240)
@@ -283,7 +326,7 @@ class MainWindow(QMainWindow):
         self.btn_finish.setVisible(self.project_context is not None)
         left_layout.addWidget(self.btn_finish)
 
-        main_layout.addWidget(left_panel)
+        content_layout.addWidget(left_panel)
 
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
@@ -312,16 +355,113 @@ class MainWindow(QMainWindow):
 
         self.view_stack = QStackedWidget()
 
-        self.viz_panel = VisualizationPanel()
         self.view_stack.addWidget(self.viz_panel)
 
-        self.code_panel = CodePanel()
         self.code_panel.on_external_change = self.files.on_external_code_change
         self.code_panel.on_manual_edit = self.action_ctrl.on_manual_code_edit
         self.view_stack.addWidget(self.code_panel)
 
         right_layout.addWidget(self.view_stack)
-        main_layout.addWidget(right_panel, 1)
+        content_layout.addWidget(right_panel, 1)
+
+        outer.addWidget(content, 1)
+
+        # Update header from context
+        self.refresh_header_from_context()
+
+    def refresh_header_from_context(self):
+        """Update header participant label and nav buttons from the current context and nav list."""
+        ctx = self.project_context
+        if ctx is None:
+            return
+        p = ctx.participant
+        s = ctx.session
+        run_index = ctx.run_index
+        run_text = (run_index + 1) if run_index is not None else "merged"
+        if self._participant_label is not None:
+            self._participant_label.setText(
+                f"<b>{p.id}</b>  /  ses-{s.id}  /  run-{run_text}  ·  {ctx.project.name}"
+            )
+        self.update_nav_buttons()
+        self.update_status_label_from_session()
+
+    def update_nav_buttons(self):
+        """Enable/disable and re-label prev/next buttons based on current position."""
+        ctx = self.project_context
+        nav = self._nav_list
+        if not ctx or not nav:
+            return
+        pos = next(
+            (i for i, (p, s, r) in enumerate(nav)
+             if p.id == ctx.participant.id and s.id == ctx.session.id and r == ctx.run_index),
+            None,
+        )
+        btn_prev = self.btn_prev
+        btn_next = self.btn_next
+        if btn_prev is None or btn_next is None:
+            return
+
+        if pos is None or pos == 0:
+            btn_prev.setEnabled(False)
+            btn_prev.setText("‹")
+            btn_prev.setToolTip("Previous run")
+        else:
+            btn_prev.setEnabled(True)
+            prev_p, prev_s, _ = nav[pos - 1]
+            same_ses = prev_s.id == ctx.session.id and prev_p.id == ctx.participant.id
+            btn_prev.setText("‹" if same_ses else "«")
+            btn_prev.setToolTip("Previous run" if same_ses else "Previous session")
+
+        if pos is None or pos >= len(nav) - 1:
+            btn_next.setEnabled(False)
+            btn_next.setText("›")
+            btn_next.setToolTip("Next run")
+        else:
+            btn_next.setEnabled(True)
+            next_p, next_s, _ = nav[pos + 1]
+            same_ses = next_s.id == ctx.session.id and next_p.id == ctx.participant.id
+            btn_next.setText("›" if same_ses else "»")
+            btn_next.setToolTip("Next run" if same_ses else "Next session")
+
+    def update_status_label_from_session(self):
+        """Update the preprocessing header status label from the current context."""
+        ctx = self.project_context
+        if ctx is None:
+            return
+        self.update_status_label(ctx.session, ctx.run_index)
+
+    def update_status_label(self, s, run_index: int | None = None):
+        """Update the preprocessing header status label. Called externally by ProjectPage."""
+        if run_index is not None and not s.merge_runs:
+            is_processed = (
+                run_index < len(s.processed_files) and bool(s.processed_files[run_index])
+            )
+            text = "Preprocessed" if is_processed else "Pending"
+            color = "#2E7D32" if is_processed else "#888888"
+        else:
+            _display = {
+                "done": ("Preprocessed", "#2E7D32"),
+                "error": ("Error", "#C62828"),
+                "pending": ("Pending", "#888888"),
+                "incomplete": ("Incomplete", "#E65100"),
+            }
+            text, color = _display.get(s.status, (s.status.title(), "#888888"))
+        self.status_label.setText(f"Status: {text}")
+        self.status_label.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: bold;")
+
+    def set_default_pipeline_stub(self):
+        """Forward set-default-pipeline to the project page via the window."""
+        win = self.window()
+        project_page: "ProjectPage | None" = getattr(win, "project_page", None) if win is not None else None
+        if project_page is not None:
+            project_page.set_default_pipeline()
+
+    def use_default_pipeline_stub(self):
+        """Forward use-default-pipeline to the project page via the window."""
+        win = self.window()
+        project_page: "ProjectPage | None" = getattr(win, "project_page", None) if win is not None else None
+        if project_page is not None:
+            project_page.use_default_pipeline()
 
     def setup_shortcuts(self):
         """Register global keyboard shortcuts not covered by menu accelerators."""
@@ -334,15 +474,10 @@ class MainWindow(QMainWindow):
         redo_shortcut = QShortcut(QKeySequence.StandardKey.Redo, self)
         redo_shortcut.activated.connect(self.redo_pipeline)
 
-
     # -------- Toggle between code/viz --------
 
     def set_view_mode(self, mode: str):
-        """Switch the right panel between visualization and code editor.
-
-        Args:
-            mode: "viz" to show the visualization panel, or "code" to show the code editor.
-        """
+        """Switch the right panel between visualization and code editor."""
         if mode == "viz":
             self.view_stack.setCurrentWidget(self.viz_panel)
             self.btn_viz.setChecked(True)
@@ -353,19 +488,10 @@ class MainWindow(QMainWindow):
             self.btn_code.setChecked(True)
             self.update_code()
 
-
     # -------- UI update --------
 
     def update_action_list(self, sync_code: bool = True):
-        """Rebuild the action list widget and synchronize dependent UI elements.
-
-        Repopulates action_list from state.actions, refreshes the step combo in the visualization panel,
-        and optionally regenerates the code panel.
-
-        Args:
-            sync_code: When True, also call update_code(). Pass False when the code panel already reflects the
-            current state to avoid a feedback loop (e.g. after a manual code edit).
-        """
+        """Rebuild the action list widget and synchronize dependent UI elements."""
         self.action_list.clear()
 
         pipeline_type = DataType.RAW
@@ -470,11 +596,7 @@ class MainWindow(QMainWindow):
         self.files.auto_save()
 
     def fallback_data(self, step: int):
-        """Walk backward from step-1 to find the last computed data state.
-
-        Returns:
-            Tuple of (data, label).
-        """
+        """Walk backward from step-1 to find the last computed data state."""
         for i in range(step - 1, -1, -1):
             if i == 0:
                 if self.state.raw_original is not None:
@@ -513,39 +635,28 @@ class MainWindow(QMainWindow):
 
     def update_raw_info(self, data):
         if data is None:
-            self.raw_info_label.setText("")
+            self.raw_info_changed.emit("")
             return
         name = self.state.data_filepath.name if self.state.data_filepath else ""
         n_ch = len(data.ch_names)
         sfreq = data.info["sfreq"]
         if isinstance(data, mne.Epochs):
             n_epochs = len(data)
-            self.raw_info_label.setText(f"{name}  ·  {n_ch} ch  ·  {sfreq:.0f} Hz  ·  {n_epochs} epochs")
+            self.raw_info_changed.emit(f"{name}  ·  {n_ch} ch  ·  {sfreq:.0f} Hz  ·  {n_epochs} epochs")
         elif isinstance(data, mne.Evoked):
             n_ave = getattr(data, "nave", 0)
             dur = data.times[-1] - data.times[0] if len(data.times) else 0.0
-            self.raw_info_label.setText(
+            self.raw_info_changed.emit(
                 f"{name}  ·  {n_ch} ch  ·  {sfreq:.0f} Hz  ·  {dur:.3f} s  ·  nave={n_ave}"
             )
         else:
             dur = data.times[-1]
-            self.raw_info_label.setText(f"{name}  ·  {n_ch} ch  ·  {sfreq:.0f} Hz  ·  {dur:.1f} s")
+            self.raw_info_changed.emit(f"{name}  ·  {n_ch} ch  ·  {sfreq:.0f} Hz  ·  {dur:.1f} s")
 
     # --------- Code generation and execution ---------
 
     def get_execution_code(self, index: int, action) -> tuple[str, str]:
-        """Return (call_site, func_defs) for executing a single action.
-
-        For custom/inline actions, func_defs is empty and call_site contains the raw code.
-        For standard actions, generates the call-site and the action's function definition fresh.
-
-        Args:
-            index: Position of the action in the pipeline.
-            action: The ActionConfig whose code to generate.
-
-        Returns:
-            Tuple of (call_site_str, func_defs_str).
-        """
+        """Return (call_site, func_defs) for executing a single action."""
         if action.action_id == CUSTOM_ACTION_ID:
             return action.custom_code or "", ""
 
@@ -556,14 +667,12 @@ class MainWindow(QMainWindow):
         context_type = self.runner.get_data_type_at(index)
 
         if action.is_custom and action.custom_code:
-            # Custom-edited body: wrap in canonical signature so call site still works
             func_defs = action_def.build_function_def_with_body(action.action_id, action.custom_code, context_type)
             params = {**action_def.default_params(), **action.params}
             adv = action.advanced_params or None
             call_site = action_def.build_call_site(action.action_id, params, adv, context_type)
             return call_site, func_defs
 
-        # Standard action: generate function def + call site using action_id as func name
         params = {**action_def.default_params(), **action.params}
         adv = action.advanced_params or None
         func_defs = action_def.build_function_def(action.action_id, context_type)
@@ -581,21 +690,18 @@ class MainWindow(QMainWindow):
 
     def show_action_result(self, result, title: str):
         """Open the ActionResultDialog for a given result and title."""
-
-        dlg = ActionResultDialog(result, title, parent=self)
+        dlg = ActionResultDialog(result, title, parent=self.window())
         self.open_dialogs.append(dlg)
-        dlg.destroyed.connect(lambda: self.open_dialogs.remove(dlg) if dlg in self.open_dialogs else None)
+        def _on_dlg_destroyed():
+            if dlg in self.open_dialogs:
+                self.open_dialogs.remove(dlg)
+        dlg.destroyed.connect(_on_dlg_destroyed)
         dlg.show()
         dlg.raise_()
 
     def open_preferences(self):
-        dlg = PreferencesDialog(self.state, parent=self)
+        dlg = PreferencesDialog(self.state, parent=self.window())
         dlg.exec()
-
-    def showEvent(self, event):
-        """Autoload project data on first show (standalone mode)."""
-        super().showEvent(event)
-        self.auto_load()
 
     def auto_load(self):
         """Load participant data files and pipeline from project context, if not already loaded."""
@@ -603,7 +709,6 @@ class MainWindow(QMainWindow):
             return
         ctx = self.project_context
 
-        # Parse pipeline first so that set_montage is in state.actions before load_data_path triggers check_montage.
         participant_pipeline = ctx.project.participant_pipeline_path(
             ctx.project_dir, ctx.participant, ctx.session
         )
@@ -621,31 +726,23 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logger.warning("Failed to load project pipeline: %s", e)
 
-        # Load data after pipeline is parsed so check_montage sees set_montage in state.actions
         existing = [p for p in ctx.data_files if p.exists()]
         if len(existing) == 1:
             self.files.load_data_path(str(existing[0]))
         elif len(existing) > 1:
             self.load_and_concatenate(existing)
 
-        # Update load_file params with actual file path
         if self.state.data_filepath and self.state.actions and self.state.actions[0].action_id == "load_file":
             self.state.actions[0].params["file_path"] = str(self.state.data_filepath)
 
-        # Apply stored montage to raw_original so visualization reflects it without needing
-        # to run the pipeline first (set_montage is already parsed into state.actions above).
         self.files.apply_stored_montage_if_present()
 
         if pipeline_source.exists():
             self.update_action_list()
-            self.status.showMessage(f"Loaded pipeline: {pipeline_source.name}")
+            self.emit_status(f"Loaded pipeline: {pipeline_source.name}")
 
     def load_and_concatenate(self, paths: list):
-        """Load multiple run files and concatenate them into a single Raw object.
-
-        Uses mne.concatenate_raws which inserts BAD_boundary / EDGE annotations at run boundaries
-        so downstream filters and epoch rejection handle them correctly.
-        """
+        """Load multiple run files and concatenate them into a single Raw object."""
         n = len(paths)
         try:
             raw = self.runner.run_in_thread(
@@ -653,11 +750,11 @@ class MainWindow(QMainWindow):
                 f"Loading {n} runs...",
             )
         except OperationCancelled:
-            self.status.showMessage("Load cancelled")
+            self.emit_status("Load cancelled")
             return
         except Exception as e:
             logger.exception("Failed to load/concatenate run files")
-            QMessageBox.critical(self, "Error", f"Failed to load runs:\n{e}")
+            QMessageBox.critical(self.window(), "Error", f"Failed to load runs:\n{e}")
             return
 
         self.state.raw_original = raw
@@ -668,12 +765,12 @@ class MainWindow(QMainWindow):
         self.files.mark_load_file_complete(raw)
         self.update_action_list()
         self.update_visualization()
-        self.status.showMessage(f"Loaded {n} runs - concatenated ({raw.times[-1]:.1f} s total)")
+        self.emit_status(f"Loaded {n} runs - concatenated ({raw.times[-1]:.1f} s total)")
 
     @staticmethod
-    def concatenate_raws(paths: list):
+    def concatenate_raws(paths: list) -> mne.io.Raw:
         raws = [mne.io.read_raw(str(p), preload=True, verbose=False) for p in paths]
-        return mne.concatenate_raws(raws)
+        return cast(mne.io.Raw, mne.concatenate_raws(raws))
 
     def run_and_save(self):
         """Run all pipeline actions, export the final output, then mark the session preprocessed."""
@@ -700,7 +797,6 @@ class MainWindow(QMainWindow):
             file_type = "preprocessed"
             data_to_save = last_data.raw if isinstance(last_data, ICASolution) else last_data
 
-        # When the pipeline ends at epochs or evoked, also save the last raw intermediate.
         last_raw: mne.io.BaseRaw | None = None
         if file_type in ("epochs", "evoked"):
             for state in reversed(self.state.data_states):
@@ -708,7 +804,10 @@ class MainWindow(QMainWindow):
                     last_raw = state
                     break
 
-        # Ensure raw data is fully loaded into memory before saving.
+        if data_to_save is None:
+            ctx.on_status_update("error")
+            return
+
         if isinstance(data_to_save, mne.io.BaseRaw) and not data_to_save.preload:
             logger.warning("data_to_save is not preloaded - forcing load_data() before save")
             try:
@@ -729,7 +828,7 @@ class MainWindow(QMainWindow):
         )
         if n_samples == 0:
             logger.error("data_to_save has 0 samples - aborting save to avoid creating an empty file")
-            QMessageBox.warning(self, "Export Failed", "Pipeline output contains no data (0 samples).\nCheck your pipeline for actions that may have produced empty output.")
+            QMessageBox.warning(self.window(), "Export Failed", "Pipeline output contains no data (0 samples).\nCheck your pipeline for actions that may have produced empty output.")
             ctx.on_status_update("error")
             return
 
@@ -739,8 +838,9 @@ class MainWindow(QMainWindow):
 
         try:
             out_path.parent.mkdir(parents=True, exist_ok=True)
+            _data_to_save = data_to_save
             self.runner.run_in_thread(
-                lambda: data_to_save.save(str(out_path), overwrite=True),
+                lambda: _data_to_save.save(str(out_path), overwrite=True),
                 f"Saving {file_type}...",
             )
             logger.info(
@@ -750,28 +850,27 @@ class MainWindow(QMainWindow):
             )
         except Exception as e:
             logger.exception("Auto-export failed: %s", out_path)
-            QMessageBox.warning(self, "Export Failed", f"Could not save output:\n{e}")
+            QMessageBox.warning(self.window(), "Export Failed", f"Could not save output:\n{e}")
             ctx.on_status_update("error")
             return
 
-        # Also save the last raw intermediate when output is epochs/evoked.
         if last_raw is not None:
             raw_path = ctx.project.session_output_file(
                 ctx.project_dir, ctx.participant, ctx.session, "preprocessed", ctx.run_index
             )
             try:
-                if not last_raw.preload:
-                    last_raw.load_data()
+                _last_raw = last_raw
+                if not _last_raw.preload:
+                    _last_raw.load_data()
                 raw_path.parent.mkdir(parents=True, exist_ok=True)
                 self.runner.run_in_thread(
-                    lambda: last_raw.save(str(raw_path), overwrite=True),
+                    lambda: _last_raw.save(str(raw_path), overwrite=True),
                     "Saving preprocessed raw...",
                 )
                 logger.info("Saved raw intermediate: %s", raw_path.name)
             except Exception as e:
                 logger.warning("Could not save raw intermediate: %s", e)
 
-        # Track exported path(s) in processed_files before notifying project window.
         s = ctx.session
         paths_to_track = [str(out_path)]
         if last_raw is not None:
@@ -832,11 +931,11 @@ class MainWindow(QMainWindow):
             return
         except Exception as e:
             logger.warning("QC report generation failed: %s", e)
-            self.status.showMessage("QC report failed.")
+            self.emit_status("QC report failed.")
             return
 
         self.btn_qc_report.setVisible(True)
-        self.status.showMessage(f"QC report saved → {out_path.name}")
+        self.emit_status(f"QC report saved → {out_path.name}")
 
     def open_qc_report(self):
         """Open the QC report for the current run in the system browser."""
@@ -845,32 +944,13 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def cleanup(self):
-        """Release resources. Called by ProjectWindow when the embedded session ends,
-        or automatically from closeEvent in standalone mode."""
+        """Release resources. Called by MainWindow when the embedded session ends."""
         self.state.data_states.close()
 
-    def event(self, event):
-        if event.type() == QEvent.Type.WindowActivate:
+    def event(self, event: QEvent | None) -> bool:
+        if event is not None and event.type() == QEvent.Type.WindowActivate:
             modal = QApplication.activeModalWidget()
             if modal:
                 modal.raise_()
                 modal.activateWindow()
         return super().event(event)
-
-    def closeEvent(self, event):
-        """Handle close for standalone mode. In embedded mode, ProjectWindow calls cleanup()."""
-        self.cleanup()
-        # Notify project context when used as a standalone window (not embedded)
-        if self.project_context:
-            actions = self.state.actions
-            if any(a.status.name == "ERROR" for a in actions):
-                final_status = ParticipantStatus.ERROR
-            elif actions and all(a.status.name == "COMPLETE" for a in actions):
-                final_status = ParticipantStatus.DONE
-            else:
-                final_status = ParticipantStatus.PENDING
-            try:
-                self.project_context.on_status_update(final_status)
-            except Exception as e:
-                logger.warning("Failed to update participant status on close: %s", e)
-        super().closeEvent(event)

@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 from PyQt6.QtWidgets import QApplication
 
 from mnetape.core.logging_config import setup_logging
-from mnetape.gui.controllers import ProjectWindow
+from mnetape.gui.main_window import MainWindow
 
 matplotlib.use("QtAgg")
 logger = logging.getLogger(__name__)
@@ -48,9 +48,10 @@ def load_stylesheet() -> str:
     Returns:
         The stylesheet string, or an empty string if the file is not found.
     """
-    assets_dir = Path(__file__).with_name("assets")
+    assets_dir = Path(__file__).parent / "gui" / "assets"
     stylesheet_path = assets_dir / "style.qss"
     if not stylesheet_path.exists():
+        logger.error("The stylesheet file does not exist.")
         return ""
     css = stylesheet_path.read_text()
     # Replace {assets} placeholder with the absolute assets directory path
@@ -81,7 +82,7 @@ def main():
 
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-    window = ProjectWindow()
+    window = MainWindow()
     window.show()
 
     sys.exit(app.exec())

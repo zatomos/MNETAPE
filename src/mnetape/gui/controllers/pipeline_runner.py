@@ -8,9 +8,14 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING, TypeVar
 
 import mne
-from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Any, Callable
+
+_T = TypeVar("_T")
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QMessageBox, QProgressDialog
@@ -21,7 +26,7 @@ from mnetape.core.models import ActionResult, ActionStatus, DataType, ICASolutio
 from mnetape.gui.widgets.toast_notification import ToastNotification
 
 if TYPE_CHECKING:
-    from mnetape.gui.controllers.main_window import MainWindow
+    from mnetape.gui.pages.preprocessing_page import PreprocessingPage
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +41,7 @@ class PipelineRunner:
     All heavy processing runs inside a QThread via run_in_thread().
     """
 
-    def __init__(self, window: MainWindow) -> None:
+    def __init__(self, window: "PreprocessingPage") -> None:
         self.w = window
         self.state = window.state
         self.current_toast = None
@@ -54,7 +59,7 @@ class PipelineRunner:
         elif action.result is not None:
             logger.warning("Unexpected action.result type: %s (value=%r)",
                            type(action.result).__name__, action.result)
-        toast_parent = getattr(self.w, "host_window", None) or self.w
+        toast_parent = self.w.window()
         toast = ToastNotification(
             f'"{title}" complete',
             parent=toast_parent,
@@ -183,10 +188,10 @@ class PipelineRunner:
             self.run_actions(len(self.state.data_states), row)
         return row <= len(self.state.data_states)
 
-    def run_in_thread(self, fn, message="Processing..."):
+    def run_in_thread(self, fn: Callable[[], _T], message: str = "Processing...") -> _T:
         """Execute a callable in a background QThread with a cancellable progress dialog."""
-        result: list[object | None] = [None]
-        error: list[Exception | None] = [None]
+        result: list[Any] = [None]
+        error: list[BaseException | None] = [None]
         cancel_requested = [False]
 
         class _Worker(QThread):
@@ -217,7 +222,7 @@ class PipelineRunner:
             QApplication.processEvents()
             if progress.wasCanceled() and not cancel_requested[0]:
                 cancel_requested[0] = True
-                self.w.status.showMessage("Cancelling...")
+                self.w.emit_status("Cancelling...")
                 progress.setCancelButtonText("Cancelling...")
                 progress.setCancelButton(None)
                 worker.requestInterruption()
@@ -229,7 +234,7 @@ class PipelineRunner:
         if cancel_requested[0]:
             if not worker.wait(500):
                 logger.warning("Worker thread still running after cancel; it will complete in background")
-            self.w.status.showMessage("Operation cancelled.")
+            self.w.emit_status("Operation cancelled.")
             raise OperationCancelled("Operation cancelled.")
         if worker.isRunning() and not worker.wait(200):
             raise RuntimeError("Background worker did not finish cleanly.")
@@ -351,7 +356,7 @@ class PipelineRunner:
             end_idx: Index one past the last action to run.
         """
         final_status = "Pipeline complete"
-        self.w.status.showMessage("Running pipeline...")
+        self.w.emit_status("Running pipeline...")
         logger.info("======== Running actions %d to %d ========", start_idx, end_idx)
 
         if start_idx > 0 and self.state.data_states:
@@ -377,7 +382,7 @@ class PipelineRunner:
         for i in range(start_idx, min(end_idx, len(self.state.actions))):
             action = self.state.actions[i]
             title = get_action_title(action)
-            self.w.status.showMessage(f"Running: {title}...")
+            self.w.emit_status(f"Running: {title}...")
             logger.info("-------- Running action %d: %s --------", i + 1, title)
             QApplication.processEvents()
 
@@ -473,7 +478,7 @@ class PipelineRunner:
 
         self.w.viz_panel.current_step = min(end_idx, len(self.state.data_states))
         self.w.update_visualization()
-        self.w.status.showMessage(final_status)
+        self.w.emit_status(final_status)
 
         # Notify project context when the full pipeline completes without error
         if (

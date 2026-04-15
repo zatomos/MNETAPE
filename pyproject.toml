@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mnetape = "mnetape.gui.app:main"
+mnetape = "mnetape.app:main"
 
 [project.optional-dependencies]
 dev = [

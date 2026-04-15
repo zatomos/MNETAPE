@@ -1,6 +1,6 @@
 """Shared mutable state for the EEG pipeline GUI.
 
-AppState is a single dataclass instance owned by MainWindow and passed by reference to every controller.
+AppState is a single dataclass instance owned by PreprocessingPage and passed by reference to every controller.
 All GUI controllers read and write the same object, so any update is immediately visible to all other controllers.
 """
 
@@ -69,13 +69,25 @@ class AppState:
         return self.redo_stack.pop()
 
     @classmethod
-    def create(cls) -> AppState:
+    def create(cls) -> "AppState":
         """Construct an AppState and restore the recent files list from QSettings.
 
         Returns:
             A fully initialised AppState instance.
         """
         settings = QSettings()
+        return cls.create_with_settings(settings)
+
+    @classmethod
+    def create_with_settings(cls, settings: QSettings) -> "AppState":
+        """Construct an AppState using the provided QSettings instance.
+
+        Args:
+            settings: An already-constructed QSettings object to use.
+
+        Returns:
+            A fully initialized AppState instance.
+        """
         recent_fif = settings.value("recent_fif", [], list)
         if not isinstance(recent_fif, list):
             recent_fif = []

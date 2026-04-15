@@ -21,7 +21,7 @@ from mnetape.gui.dialogs import ActionEditor, AddActionDialog
 PROTECTED_ACTION_IDS = frozenset({"load_file", "set_montage"})
 
 if TYPE_CHECKING:
-    from mnetape.gui.controllers.main_window import MainWindow
+    from mnetape.gui.pages.preprocessing_page import PreprocessingPage
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 class ActionController:
     """Manages the action list and the action editor dialog."""
 
-    def __init__(self, window: MainWindow) -> None:
+    def __init__(self, window: "PreprocessingPage") -> None:
         self.w = window
         self.state = window.state
         self.pending_code: str | None = None

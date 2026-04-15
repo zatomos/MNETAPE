@@ -1,18 +1,23 @@
-"""Project window: participant roster and project management.
+"""Project page widget: participant roster and project management.
 
-ProjectWindow is the application entry point. It shows the list of participants and their sessions in a tree on the left
-and provides a stacked detail panel on the right.
+QWidget that shows the list of participants and their sessions in a tree on the left and provides
+a stacked detail panel on the right.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, Qt, QSettings, QUrl, pyqtSignal
-from PyQt6.QtGui import QAction, QBrush, QColor, QDesktopServices, QKeySequence
+from typing import TYPE_CHECKING
+
+from PyQt6.QtCore import QEvent, QObject, QSettings, Qt, QUrl, pyqtSignal
+
+if TYPE_CHECKING:
+    from PyQt6.QtCore import QPoint
+from PyQt6.QtGui import (QBrush, QColor, QDesktopServices, QMouseEvent)
 from PyQt6.QtWidgets import (
-    QApplication,
     QButtonGroup,
     QCheckBox,
     QFileDialog,
@@ -21,7 +26,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
-    QMainWindow,
     QMenu,
     QMessageBox,
     QPlainTextEdit,
@@ -34,8 +38,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-import dataclasses
 
 from mnetape.actions.registry import get_action_by_id
 from mnetape.core.codegen import generate_full_script
@@ -64,7 +66,7 @@ PAGE_WELCOME = 0
 PAGE_NO_SELECTION = 1
 PAGE_PARTICIPANT_DETAIL = 2
 PAGE_SESSION_DETAIL = 3
-PAGE_PREPROCESSING = 4
+
 
 def make_no_selection_widget() -> QWidget:
     w = QWidget()
@@ -118,22 +120,13 @@ def make_session_item(p: Participant, s: Session) -> QTreeWidgetItem:
     return item
 
 
-def open_standalone():
-    from mnetape.gui.controllers.main_window import MainWindow
-    w = MainWindow()
-    w.show()
-
-
 def strip_managed_params(actions) -> str:
-    """Generate pipeline code with run-specific params reset to their schema defaults.
-
-    Used when saving a default pipeline template so that per-run values don't bleed across participants.
-    """
+    """Generate pipeline code with run-specific params reset to their schema defaults."""
     clean = []
     for action in actions:
         action_def = get_action_by_id(action.action_id)
         ir = action_def.interactive_runner if action_def else None
-        if ir and ir.managed_params:
+        if action_def and ir and ir.managed_params:
             clean_params = dict(action.params)
             for param in ir.managed_params:
                 clean_params[param] = action_def.params_schema.get(param, {}).get("default")
@@ -163,142 +156,82 @@ class RunFileButton(QPushButton):
 
     doubleClicked = pyqtSignal()
 
-    def mouseDoubleClickEvent(self, event):
+    def mouseDoubleClickEvent(self, event: QMouseEvent | None) -> None:
         self.doubleClicked.emit()
         super().mouseDoubleClickEvent(event)
 
-class ProjectWindow(QMainWindow):
-    """Top-level window for project-based EEG study management.
+
+class ProjectPage(QWidget):
+    """Top-level page for project-based EEG study management.
 
     Shows a participant/session tree on the left and a stacked detail panel on the right.
+
+    Signals:
+        open_preprocessing_requested(object, list): (ProjectContext, nav_list) open a prep session.
+        status_message(str, int): Emit a status bar message.
+        title_change(str): Request a window title change.
+        preprocessing_closed(object, object): (ParticipantStatus, ProjectContext) prep session closed.
     """
 
-    def __init__(self):
-        super().__init__()
+    open_preprocessing_requested = pyqtSignal(object, list)
+    status_message = pyqtSignal(str, int)
+    title_change = pyqtSignal(str)
+    preprocessing_closed = pyqtSignal(object, object)
+
+    def __init__(self, settings: QSettings, parent=None):
+        super().__init__(parent)
+
+        self.settings = settings
+
         # State
         self.project: Project | None = None
         self.project_dir: Path | None = None
 
-        # Menu actions
-        self.recent_menu = None
+        # Active prep page reference (set by MainWindow)
+        self.active_prep_page = None
+
+        # Menu action refs (injected by MainWindow)
         self.open_folder_action = None
         self.add_p_action = None
         self.import_folder_action = None
         self.import_bids_action = None
         self.rename_project_action = None
 
-        # Left panel
-        self.participant_tree = None
-        self.btn_add = None
-        self.btn_remove = None
-        self.left_panel = None
-        self.left_sep = None
+        # Widget attributes
+        self.participant_tree = QTreeWidget()
+        self.btn_add = QPushButton()
+        self.btn_remove = QPushButton()
+        self.left_panel = QWidget()
+        self.left_sep = QFrame()
+        self.right_stack = QStackedWidget()
+        self.welcome_widget = QWidget()
+        self.no_selection_widget = QWidget()
+        self.participant_detail_widget = QWidget()
+        self.participant_detail_refs = {}
+        self.session_detail_widget = QWidget()
+        self.session_detail_refs = {}
 
-        # Right stack + detail pages
-        self.right_stack = None
-        self.welcome_widget = None
-        self.no_selection_widget = None
-        self.participant_detail_widget = None
-        self.participant_detail_refs = None
-        self.session_detail_widget = None
-        self.session_detail_refs = None
-
-        # Preprocessing page
-        self.prep_page = None
-        self.prep_refs = None
-        self.prep_content = None
-        self.prep_content_layout = None
-        self.prep_window = None
-
-        self.setWindowTitle("MNETAPE")
-        self.resize(1200, 760)
-
-        self.setup_menu()
         self.setup_ui()
 
-
         # Restore last project
-        settings = QSettings()
         last = settings.value(SETTINGS_LAST_PROJECT)
         if last and Path(last).is_dir():
             self.load_project(Path(last))
 
-    # Menu
+    # --- Active prep page management ---
 
-    def setup_menu(self):
-        menubar = self.menuBar()
+    def set_active_prep_page(self, page):
+        """Called by MainWindow when a prep page is opened."""
+        self.active_prep_page = page
 
-        file_menu = menubar.addMenu("File")
-
-        new_action = QAction("New Project...", self)
-        new_action.setShortcut(QKeySequence.StandardKey.New)
-        new_action.triggered.connect(self.new_project)
-        file_menu.addAction(new_action)
-
-        open_action = QAction("Open Project...", self)
-        open_action.setShortcut(QKeySequence.StandardKey.Open)
-        open_action.triggered.connect(self.open_project)
-        file_menu.addAction(open_action)
-
-        self.open_folder_action = QAction("Open Project Folder", self)
-        self.open_folder_action.triggered.connect(self.open_project_folder)
-        self.open_folder_action.setEnabled(False)
-        file_menu.addAction(self.open_folder_action)
-
-        self.recent_menu = QMenu("Open Recent Project", self)
-        self.recent_menu.aboutToShow.connect(self.refresh_recent_menu)
-        file_menu.addMenu(self.recent_menu)
-
-        file_menu.addSeparator()
-
-        standalone_action = QAction("Open Without Project...", self)
-        standalone_action.triggered.connect(open_standalone)
-        file_menu.addAction(standalone_action)
-
-        file_menu.addSeparator()
-
-        prefs_action = QAction("Preferences...", self)
-        prefs_action.triggered.connect(self.open_preferences)
-        file_menu.addAction(prefs_action)
-
-        file_menu.addSeparator()
-
-        quit_action = QAction("Quit", self)
-        quit_action.setShortcut(QKeySequence.StandardKey.Quit)
-        quit_action.triggered.connect(self.close)
-        file_menu.addAction(quit_action)
-
-        project_menu = menubar.addMenu("Project")
-
-        self.add_p_action = QAction("Add Participant...", self)
-        self.add_p_action.triggered.connect(self.add_participant)
-        self.add_p_action.setEnabled(False)
-        project_menu.addAction(self.add_p_action)
-
-        self.import_folder_action = QAction("Import Participants from Folder...", self)
-        self.import_folder_action.triggered.connect(self.import_from_folder)
-        self.import_folder_action.setEnabled(False)
-        project_menu.addAction(self.import_folder_action)
-
-        self.import_bids_action = QAction("Import BIDS Dataset...", self)
-        self.import_bids_action.triggered.connect(self.import_bids)
-        self.import_bids_action.setEnabled(True)
-        project_menu.addAction(self.import_bids_action)
-
-        project_menu.addSeparator()
-
-        self.rename_project_action = QAction("Rename Project...", self)
-        self.rename_project_action.triggered.connect(self.rename_project)
-        self.rename_project_action.setEnabled(False)
-        project_menu.addAction(self.rename_project_action)
-
+    def clear_active_prep_page(self):
+        """Called by MainWindow when a prep page is closed."""
+        self.active_prep_page = None
 
     # UI
 
     def setup_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
-        main_layout = QHBoxLayout(central)
+        main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
@@ -323,7 +256,8 @@ class ProjectWindow(QMainWindow):
         self.participant_tree.setColumnCount(1)
         self.participant_tree.setStyleSheet("QTreeWidget::item { height: 28px; }")
         self.participant_tree.currentItemChanged.connect(self.on_item_selected)
-        self.participant_tree.viewport().installEventFilter(self)
+        if vp := self.participant_tree.viewport():
+            vp.installEventFilter(self)
         self.participant_tree.itemExpanded.connect(on_participant_expanded)
         self.participant_tree.itemCollapsed.connect(on_participant_collapsed)
         self.participant_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -373,14 +307,8 @@ class ProjectWindow(QMainWindow):
         self.session_detail_widget, self.session_detail_refs = self.make_session_detail_widget()
         self.right_stack.addWidget(self.session_detail_widget)
 
-        # Page 4: preprocessing
-        self.prep_page, self.prep_refs = self.make_preprocessing_page()
-        self.right_stack.addWidget(self.prep_page)
-
         self.right_stack.setCurrentWidget(self.welcome_widget)
         main_layout.addWidget(self.right_stack, 1)
-
-        self.setStatusBar(None)
 
     #  welcome / no-selection
 
@@ -417,7 +345,7 @@ class ProjectWindow(QMainWindow):
         layout.addSpacing(8)
         btn_standalone = QPushButton("Open Without Project...")
         btn_standalone.setFixedWidth(200)
-        btn_standalone.clicked.connect(open_standalone)
+        btn_standalone.clicked.connect(self.open_standalone)
         btn_standalone.setStyleSheet("color: gray;")
         btn_row2 = QHBoxLayout()
         btn_row2.addStretch()
@@ -427,16 +355,44 @@ class ProjectWindow(QMainWindow):
 
         return w
 
-    # Participant detail page
+    def open_standalone(self):
+        """Open the standalone preprocessing window (no project context)."""
+        from mnetape.gui.pages.preprocessing_page import PreprocessingPage
+        # Create a thin wrapper window for standalone mode
+        from PyQt6.QtWidgets import QMainWindow
+        w = QMainWindow()
+        w.setWindowTitle("MNETAPE")
+        w.resize(1400, 900)
+        page = PreprocessingPage(ctx=None, settings=self.settings, nav_list=[], parent=w)
+        w.setCentralWidget(page)
+        raw_info = QLabel()
+        raw_info.setStyleSheet("color: gray;")
+        status_bar = w.statusBar()
+        if status_bar:
+            status_bar.addPermanentWidget(raw_info)
 
-    def make_participant_detail_widget(self) -> tuple[QWidget, dict]:
-        """Build the participant detail panel."""
+        def _on_status(msg: str, t: int) -> None:
+            if status_bar:
+                status_bar.showMessage(msg, t)
+
+        page.status_message.connect(_on_status)
+        page.raw_info_changed.connect(raw_info.setText)
+        w.show()
+        page.auto_load()
+
+    @staticmethod
+    def make_detail_scroll(inner_name: str) -> tuple[QScrollArea, QVBoxLayout, QLabel]:
+        """Create a titled scroll area used by both detail panels.
+
+        Returns (scroll, layout, id_label) where layout is the inner VBoxLayout
+        and id_label is the pre-added bold title label.
+        """
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setObjectName("participant_detail_scroll")
 
         inner = QWidget()
-        inner.setObjectName("participant_detail_content")
+        inner.setObjectName(inner_name)
         layout = QVBoxLayout(inner)
         layout.setContentsMargins(28, 20, 28, 20)
         layout.setSpacing(12)
@@ -449,6 +405,15 @@ class ProjectWindow(QMainWindow):
         line.setFrameShape(QFrame.Shape.HLine)
         line.setStyleSheet("color: #D5D5D8;")
         layout.addWidget(line)
+
+        scroll.setWidget(inner)
+        return scroll, layout, id_label
+
+    # Participant detail page
+
+    def make_participant_detail_widget(self) -> tuple[QWidget, dict]:
+        """Build the participant detail panel."""
+        scroll, layout, id_label = self.make_detail_scroll("participant_detail_content")
 
         status_label = QLabel()
         layout.addWidget(status_label)
@@ -485,8 +450,6 @@ class ProjectWindow(QMainWindow):
         btn_row.addWidget(btn_open_participant_folder)
         layout.addLayout(btn_row)
 
-        scroll.setWidget(inner)
-
         refs = {
             "id_label": id_label,
             "status_label": status_label,
@@ -499,24 +462,7 @@ class ProjectWindow(QMainWindow):
 
     def make_session_detail_widget(self) -> tuple[QWidget, dict]:
         """Build the session detail panel."""
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setObjectName("participant_detail_scroll")
-
-        inner = QWidget()
-        inner.setObjectName("session_detail")
-        layout = QVBoxLayout(inner)
-        layout.setContentsMargins(28, 20, 28, 20)
-        layout.setSpacing(12)
-
-        id_label = QLabel()
-        id_label.setObjectName("sidebar_title")
-        layout.addWidget(id_label)
-
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setStyleSheet("color: #D5D5D8;")
-        layout.addWidget(line)
+        scroll, layout, id_label = self.make_detail_scroll("session_detail")
 
         form = QFormLayout()
         form.setSpacing(9)
@@ -574,8 +520,6 @@ class ProjectWindow(QMainWindow):
         btn_row.addWidget(btn_open_folder)
         layout.addLayout(btn_row)
 
-        scroll.setWidget(inner)
-
         refs = {
             "id_label": id_label,
             "runs_container": runs_container,
@@ -586,101 +530,6 @@ class ProjectWindow(QMainWindow):
         }
         return scroll, refs
 
-    # Preprocessing page
-
-    def make_preprocessing_page(self) -> tuple[QWidget, dict]:
-        """Build the embedded preprocessing container."""
-        page = QWidget()
-        page.setObjectName("prep_page")
-        outer = QVBoxLayout(page)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-
-        # ---- Header bar ----
-        header = QWidget()
-        header.setObjectName("prep_header")
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(8, 6, 8, 6)
-        header_layout.setSpacing(8)
-
-        btn_back = QPushButton("← Back")
-        btn_back.setObjectName("btn_back_to_project")
-        btn_back.setFixedWidth(90)
-        btn_back.clicked.connect(self.close_preprocessing)
-        header_layout.addWidget(btn_back)
-
-        v_sep = QFrame()
-        v_sep.setFrameShape(QFrame.Shape.VLine)
-        v_sep.setStyleSheet("color: #D5D5D8;")
-        header_layout.addWidget(v_sep)
-
-        btn_prev = QPushButton("‹")
-        btn_prev.setObjectName("btn_prev_step")
-        btn_prev.setFixedSize(32, 28)
-        btn_prev.setEnabled(False)
-        btn_prev.setToolTip("Previous run")
-        btn_prev.clicked.connect(lambda: self.navigate_preprocessing(-1))
-        header_layout.addWidget(btn_prev)
-
-        participant_label = QLabel()
-        participant_label.setObjectName("prep_participant_label")
-        header_layout.addWidget(participant_label)
-
-        btn_next = QPushButton("›")
-        btn_next.setObjectName("btn_next_step")
-        btn_next.setFixedSize(32, 28)
-        btn_next.setEnabled(False)
-        btn_next.setToolTip("Next run")
-        btn_next.clicked.connect(lambda: self.navigate_preprocessing(+1))
-        header_layout.addWidget(btn_next)
-
-        header_layout.addStretch()
-
-        btn_set_default = QPushButton("Set as Default Pipeline")
-        btn_set_default.setObjectName("btn_set_default_pipeline")
-        btn_set_default.setToolTip("Save current pipeline as the project default")
-        btn_set_default.clicked.connect(self.set_default_pipeline)
-        header_layout.addWidget(btn_set_default)
-
-        btn_use_default = QPushButton("Use Default Pipeline")
-        btn_use_default.setObjectName("btn_use_default_pipeline")
-        btn_use_default.setToolTip("Reset this participant's pipeline to the project default")
-        btn_use_default.clicked.connect(self.use_default_pipeline)
-        header_layout.addWidget(btn_use_default)
-
-        v_sep2 = QFrame()
-        v_sep2.setFrameShape(QFrame.Shape.VLine)
-        v_sep2.setStyleSheet("color: #D5D5D8;")
-        header_layout.addWidget(v_sep2)
-
-        status_label = QLabel("Status: Pending")
-        status_label.setStyleSheet("color: #888888; font-size: 11px; font-weight: bold;")
-        status_label.setMinimumWidth(140)
-        header_layout.addWidget(status_label)
-
-        outer.addWidget(header)
-
-        h_sep = QFrame()
-        h_sep.setFrameShape(QFrame.Shape.HLine)
-        h_sep.setStyleSheet("color: #D5D5D8;")
-        outer.addWidget(h_sep)
-
-        # ---- Content area ----
-        self.prep_content = QWidget()
-        self.prep_content.setObjectName("prep_content")
-        self.prep_content_layout = QVBoxLayout(self.prep_content)
-        self.prep_content_layout.setContentsMargins(0, 0, 0, 0)
-        self.prep_content_layout.setSpacing(0)
-        outer.addWidget(self.prep_content, 1)
-
-        refs = {
-            "participant_label": participant_label,
-            "status_label": status_label,
-            "btn_prev": btn_prev,
-            "btn_next": btn_next,
-        }
-        return page, refs
-
     # Project load/save
 
     def load_project(self, project_dir: Path):
@@ -688,18 +537,22 @@ class ProjectWindow(QMainWindow):
         try:
             project = Project.load(project_dir)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Could not open project:\n{e}")
+            QMessageBox.critical(self.window(), "Error", f"Could not open project:\n{e}")
             logger.exception("Failed to load project from %s", project_dir)
             return
 
         self.project = project
         self.project_dir = project_dir
-        self.setWindowTitle(f"MNETAPE - {project.name}")
+        self.title_change.emit(f"MNETAPE - {project.name}")
 
-        self.add_p_action.setEnabled(True)
-        self.import_folder_action.setEnabled(True)
-        self.open_folder_action.setEnabled(True)
-        self.rename_project_action.setEnabled(True)
+        if self.add_p_action:
+            self.add_p_action.setEnabled(True)
+        if self.import_folder_action:
+            self.import_folder_action.setEnabled(True)
+        if self.open_folder_action:
+            self.open_folder_action.setEnabled(True)
+        if self.rename_project_action:
+            self.rename_project_action.setEnabled(True)
         self.btn_add.setEnabled(True)
 
         self.rebuild_tree()
@@ -719,18 +572,19 @@ class ProjectWindow(QMainWindow):
 
     # Recent projects
 
-    def refresh_recent_menu(self):
-        self.recent_menu.clear()
+    def populate_recent_menu(self, menu: QMenu):
+        """Populate the given menu with recent project entries."""
+        menu.clear()
         settings = QSettings()
         recent = settings.value("project/recent", [], list) or []
         recent = [r for r in recent if Path(r).is_dir()]
         if not recent:
-            a = self.recent_menu.addAction("No recent projects")
-            a.setEnabled(False)
+            if a := menu.addAction("No recent projects"):
+                a.setEnabled(False)
             return
         for path in recent:
-            act = self.recent_menu.addAction(path)
-            act.triggered.connect(lambda _, p=path: self.load_project(Path(p)))
+            if act := menu.addAction(path):
+                act.triggered.connect(lambda _, p=path: self.load_project(Path(p)))
 
     # Tree building
 
@@ -750,19 +604,24 @@ class ProjectWindow(QMainWindow):
 
     def refresh_participant_item(self, participant_id: str):
         """Refresh the display text of a participant and all its session items."""
+        if not self.project:
+            return
         p = self.project.get_participant(participant_id)
         if not p:
             return
         for i in range(self.participant_tree.topLevelItemCount()):
             p_item = self.participant_tree.topLevelItem(i)
+            if not p_item:
+                continue
             if p_item.data(0, ROLE_PID) == participant_id:
                 new_p = make_participant_item(p, expanded=p_item.isExpanded())
                 p_item.setText(0, new_p.text(0))
                 p_item.setForeground(0, new_p.foreground(0))
                 p_item.setFont(0, new_p.font(0))
-                # Refresh children
                 for j in range(p_item.childCount()):
                     s_item = p_item.child(j)
+                    if not s_item:
+                        continue
                     sid = s_item.data(0, ROLE_SID)
                     s = p.get_session(sid)
                     if s:
@@ -803,18 +662,22 @@ class ProjectWindow(QMainWindow):
 
     # Selection handling
 
-    def eventFilter(self, obj, event):
-        if obj is self.participant_tree.viewport() and event.type() == QEvent.Type.MouseButtonPress:
+    def eventFilter(self, obj: QObject | None, event: QEvent | None) -> bool:
+        vp = self.participant_tree.viewport()
+        if (
+            vp and obj is vp
+            and isinstance(event, QMouseEvent)
+            and event.type() == QEvent.Type.MouseButtonPress
+        ):
             item = self.participant_tree.itemAt(event.pos())
             if item and item.data(0, ROLE_TYPE) == "participant":
-                if event.pos().x() <= obj.width() * 0.2:
+                if event.pos().x() <= vp.width() * 0.2:
                     item.setExpanded(not item.isExpanded())
         return super().eventFilter(obj, event)
 
-    def on_item_selected(self, current: QTreeWidgetItem | None, previous):
+    def on_item_selected(self, current: QTreeWidgetItem | None, _previous: QTreeWidgetItem | None):
         if not self.project or current is None:
-            if self.right_stack.currentWidget() != self.prep_page:
-                self.right_stack.setCurrentWidget(self.no_selection_widget)
+            self.right_stack.setCurrentWidget(self.no_selection_widget)
             self.btn_remove.setEnabled(False)
             return
 
@@ -826,8 +689,7 @@ class ProjectWindow(QMainWindow):
             p = self.project.get_participant(pid)
             if p:
                 self.populate_participant_detail(p)
-                if self.right_stack.currentWidget() != self.prep_page:
-                    self.right_stack.setCurrentWidget(self.participant_detail_widget)
+                self.right_stack.setCurrentWidget(self.participant_detail_widget)
         elif item_type == "session":
             pid = current.data(0, ROLE_PID)
             sid = current.data(0, ROLE_SID)
@@ -836,8 +698,7 @@ class ProjectWindow(QMainWindow):
                 s = p.get_session(sid)
                 if s:
                     self.populate_session_detail(p, s)
-                    if self.right_stack.currentWidget() != self.prep_page:
-                        self.right_stack.setCurrentWidget(self.session_detail_widget)
+                    self.right_stack.setCurrentWidget(self.session_detail_widget)
 
     # Detail population
 
@@ -855,7 +716,6 @@ class ProjectWindow(QMainWindow):
         refs["notes_edit"].setPlainText(p.notes)
         refs["notes_edit"].blockSignals(False)
 
-        # Sessions summary
         session_lines = []
         for s in p.sessions:
             icon = STATUS_ICONS.get(s.session_status, "◌")
@@ -870,7 +730,6 @@ class ProjectWindow(QMainWindow):
         refs = self.session_detail_refs
         refs["id_label"].setText(f"<b>{p.id}</b>  /  ses-{s.id}")
 
-        # Rebuild button-like run items
         runs_layout: QVBoxLayout = refs["runs_layout"]
         button_group: QButtonGroup = refs["runs_button_group"]
 
@@ -878,12 +737,12 @@ class ProjectWindow(QMainWindow):
             button_group.removeButton(btn)
         while runs_layout.count():
             item = runs_layout.takeAt(0)
-            if item and item.widget():
-                item.widget().deleteLater()
+            if item and (w := item.widget()):
+                w.deleteLater()
 
-        if self.project_dir:
-            resolved = self.project.resolve_data_files(self.project_dir, s)
-            _btn_style = """
+        if self.project and (project_dir := self.project_dir):
+            resolved = self.project.resolve_data_files(project_dir, s)
+            btn_style = """
                 QPushButton {{
                     background: white;
                     border: none;
@@ -900,7 +759,7 @@ class ProjectWindow(QMainWindow):
                     background: #F5F5F5;
                 }}
             """
-            def make_run_row(btn: QPushButton, qc_path: Path) -> QWidget:
+            def make_run_row(btn: QPushButton, report_path: Path) -> QWidget:
                 row = QWidget()
                 row_layout = QHBoxLayout(row)
                 row_layout.setContentsMargins(0, 0, 0, 0)
@@ -908,15 +767,17 @@ class ProjectWindow(QMainWindow):
                 row_layout.addWidget(btn, 1)
                 qc_btn = QPushButton("QC")
                 qc_btn.setFixedWidth(32)
-                qc_btn.setToolTip(f"Open QC Report: {qc_path.name}")
-                qc_btn.setVisible(qc_path.exists())
+                qc_btn.setToolTip(f"Open QC Report: {report_path.name}")
+                qc_btn.setVisible(report_path.exists())
                 qc_btn.setStyleSheet(
                     "QPushButton { background: #E3F2FD; border: 1px solid #90CAF9;"
                     " border-radius: 3px; font-size: 11px; padding: 0; }"
                     "QPushButton:hover { background: #BBDEFB; }"
                 )
                 qc_btn.clicked.connect(
-                    lambda _checked, p=qc_path: QDesktopServices.openUrl(QUrl.fromLocalFile(str(p)))
+                    lambda _checked, open_path=report_path: QDesktopServices.openUrl(
+                        QUrl.fromLocalFile(str(open_path))
+                    )
                 )
                 row_layout.addWidget(qc_btn)
                 return row
@@ -926,31 +787,31 @@ class ProjectWindow(QMainWindow):
                 is_processed = bool(s.processed_files)
                 run_icon = "●" if is_processed else "○"
                 run_label = f"run{'s' if n != 1 else ''}"
-                btn = RunFileButton(f"{run_icon}  Merged  ({n} {run_label})")
-                btn.setCheckable(True)
-                btn.setChecked(True)
-                any_missing = any(not p.exists() for p in resolved)
-                btn.setStyleSheet(_btn_style.format(text_color="#C62828" if any_missing else "inherit"))
-                btn.doubleClicked.connect(self.open_preprocessing)
-                button_group.addButton(btn, 0)
-                qc_path = self.project.qc_report_path(self.project_dir, p, s, None)
-                runs_layout.addWidget(make_run_row(btn, qc_path))
+                run_btn = RunFileButton(f"{run_icon}  Merged  ({n} {run_label})")
+                run_btn.setCheckable(True)
+                run_btn.setChecked(True)
+                any_missing = any(not rpath.exists() for rpath in resolved)
+                run_btn.setStyleSheet(btn_style.format(text_color="#C62828" if any_missing else "inherit"))
+                run_btn.doubleClicked.connect(self.open_preprocessing)
+                button_group.addButton(run_btn, 0)
+                qc_path = self.project.qc_report_path(project_dir, p, s, None)
+                runs_layout.addWidget(make_run_row(run_btn, qc_path))
             else:
-                for i, (raw_str, path) in enumerate(zip(s.data_files, resolved)):
+                for i, (raw_str, resolved_path) in enumerate(zip(s.data_files, resolved)):
                     filename = Path(raw_str).name
                     is_processed = (
                         i < len(s.processed_files) and bool(s.processed_files[i])
                     )
                     run_icon = "●" if is_processed else "○"
-                    btn = RunFileButton(f"{run_icon}  {filename}")
-                    btn.setCheckable(True)
-                    btn.setStyleSheet(_btn_style.format(
-                        text_color="#C62828" if not path.exists() else "inherit"
+                    run_btn = RunFileButton(f"{run_icon}  {filename}")
+                    run_btn.setCheckable(True)
+                    run_btn.setStyleSheet(btn_style.format(
+                        text_color="#C62828" if not resolved_path.exists() else "inherit"
                     ))
-                    btn.doubleClicked.connect(self.open_preprocessing)
-                    button_group.addButton(btn, i)
-                    qc_path = self.project.qc_report_path(self.project_dir, p, s, i)
-                    runs_layout.addWidget(make_run_row(btn, qc_path))
+                    run_btn.doubleClicked.connect(self.open_preprocessing)
+                    button_group.addButton(run_btn, i)
+                    qc_path = self.project.qc_report_path(project_dir, p, s, i)
+                    runs_layout.addWidget(make_run_row(run_btn, qc_path))
 
         status = s.session_status
         color = STATUS_COLORS.get(status, "#888888")
@@ -973,7 +834,7 @@ class ProjectWindow(QMainWindow):
         if not p or not s:
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select EEG Run File", "", open_file_dialog_filter()
+            self.window(), "Select EEG Run File", "", open_file_dialog_filter()
         )
         if not path:
             return
@@ -1016,14 +877,13 @@ class ProjectWindow(QMainWindow):
         if len(all_sessions) > 1:
             action = "Enable" if checked else "Disable"
             reply = QMessageBox.question(
-                self,
+                self.window(),
                 "Apply to all?",
                 f"{action} merge runs for all participants in the project?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.No,
             )
             if reply == QMessageBox.StandardButton.Cancel:
-                # Revert checkbox without re-triggering signal
                 self.session_detail_refs["merge_runs_check"].blockSignals(True)
                 self.session_detail_refs["merge_runs_check"].setChecked(s.merge_runs)
                 self.session_detail_refs["merge_runs_check"].blockSignals(False)
@@ -1053,19 +913,24 @@ class ProjectWindow(QMainWindow):
 
     # Project actions
 
-    def new_project(self):
+    def _create_and_load_project(self) -> Path | None:
+        """Open the new-project dialog, save project.json, and load the project. Returns project_dir or None."""
         from mnetape.gui.dialogs.new_project_dialog import NewProjectDialog
-        dlg = NewProjectDialog(self)
+        dlg = NewProjectDialog(self.window())
         if dlg.exec() != NewProjectDialog.DialogCode.Accepted:
-            return
-
-        name = dlg.get_name()
+            return None
         project_dir = dlg.get_project_dir()
+        if not project_dir:
+            return None
+        Project(name=dlg.get_name()).save(project_dir)
+        self.load_project(project_dir)
+        return project_dir
 
-        project = Project(name=name)
-        project.save(project_dir)
-
-        pipeline_path = project.pipeline_path(project_dir)
+    def new_project(self):
+        project_dir = self._create_and_load_project()
+        if project_dir is None or not self.project:
+            return
+        pipeline_path = self.project.pipeline_path(project_dir)
         if not pipeline_path.exists():
             pipeline_path.write_text(
                 "# MNETAPE Pipeline\n"
@@ -1076,22 +941,19 @@ class ProjectWindow(QMainWindow):
                 "raw = mne.io.read_raw(args.file, preload=True)\n"
             )
 
-        self.load_project(project_dir)
-
     def open_project(self):
-        project_dir = QFileDialog.getExistingDirectory(self, "Open Project Folder")
+        project_dir = QFileDialog.getExistingDirectory(self.window(), "Open Project Folder")
         if not project_dir:
             return
         path = Path(project_dir)
         if not (path / "project.json").exists():
             QMessageBox.warning(
-                self, "Not a project",
+                self.window(), "Not a project",
                 "The selected folder does not contain a project.json file.\n\n"
                 "Choose the root folder of a MNETAPE project."
             )
             return
         self.load_project(path)
-
 
     # Participant/session management
 
@@ -1102,7 +964,7 @@ class ProjectWindow(QMainWindow):
         dlg = AddParticipantDialog(
             existing_ids=[p.id for p in self.project.participants],
             project_dir=self.project_dir,
-            parent=self,
+            parent=self.window(),
         )
         if dlg.exec() != AddParticipantDialog.DialogCode.Accepted:
             return
@@ -1112,7 +974,6 @@ class ProjectWindow(QMainWindow):
         self.project.participants.append(participant)
         self.save_project()
         self.rebuild_tree()
-        # Select the newly added participant
         last = self.participant_tree.topLevelItem(self.participant_tree.topLevelItemCount() - 1)
         if last:
             self.participant_tree.setCurrentItem(last)
@@ -1123,23 +984,26 @@ class ProjectWindow(QMainWindow):
         if not p:
             return
 
-        sid, ok = QInputDialog.getText(self, "Add Session", "Session ID:", text="01")
+        sid, ok = QInputDialog.getText(self.window(), "Add Session", "Session ID:", text="01")
         if not ok or not sid.strip():
             return
         sid = sid.strip()
         if p.get_session(sid):
-            QMessageBox.warning(self, "Duplicate", f'Session "{sid}" already exists.')
+            QMessageBox.warning(self.window(), "Duplicate", f'Session "{sid}" already exists.')
             return
 
         from mnetape.core.data_io import open_file_dialog_filter
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select EEG File (optional)", "", open_file_dialog_filter()
+            self.window(), "Select EEG File (optional)", "", open_file_dialog_filter()
         )
         data_files: list[str] = []
         if path:
-            try:
-                data_files = [str(Path(path).relative_to(self.project_dir))]
-            except (ValueError, TypeError):
+            if self.project_dir:
+                try:
+                    data_files = [str(Path(path).relative_to(self.project_dir))]
+                except ValueError:
+                    data_files = [path]
+            else:
                 data_files = [path]
 
         session = Session(id=sid, data_files=data_files)
@@ -1152,7 +1016,7 @@ class ProjectWindow(QMainWindow):
         item_type, pid, sid = self.get_selected_item_data()
         if item_type == "participant":
             self.remove_participant()
-        elif item_type == "session":
+        elif item_type == "session" and pid and sid:
             self.remove_session(pid, sid)
 
     def rename_project(self):
@@ -1160,14 +1024,14 @@ class ProjectWindow(QMainWindow):
         if not self.project:
             return
         new_name, ok = QInputDialog.getText(
-            self, "Rename Project", "Project name:", text=self.project.name
+            self.window(), "Rename Project", "Project name:", text=self.project.name
         )
         new_name = new_name.strip()
         if not ok or not new_name or new_name == self.project.name:
             return
         self.project.name = new_name
         self.save_project()
-        self.setWindowTitle(f"MNETAPE - {new_name}")
+        self.title_change.emit(f"MNETAPE - {new_name}")
 
     def rename_participant(self, pid: str):
         """Rename a participant ID."""
@@ -1177,13 +1041,13 @@ class ProjectWindow(QMainWindow):
         if not p:
             return
         new_id, ok = QInputDialog.getText(
-            self, "Rename Participant", "Participant ID:", text=p.id
+            self.window(), "Rename Participant", "Participant ID:", text=p.id
         )
         new_id = new_id.strip()
         if not ok or not new_id or new_id == p.id:
             return
         if any(x.id == new_id for x in self.project.participants if x.id != pid):
-            QMessageBox.warning(self, "Duplicate ID", f'A participant with ID "{new_id}" already exists.')
+            QMessageBox.warning(self.window(), "Duplicate ID", f'A participant with ID "{new_id}" already exists.')
             return
         p.id = new_id
         self.save_project()
@@ -1200,13 +1064,13 @@ class ProjectWindow(QMainWindow):
         if not s:
             return
         new_id, ok = QInputDialog.getText(
-            self, "Rename Session", "Session ID:", text=s.id
+            self.window(), "Rename Session", "Session ID:", text=s.id
         )
         new_id = new_id.strip()
         if not ok or not new_id or new_id == s.id:
             return
         if any(x.id == new_id for x in p.sessions if x.id != sid):
-            QMessageBox.warning(self, "Duplicate ID", f'A session with ID "{new_id}" already exists.')
+            QMessageBox.warning(self.window(), "Duplicate ID", f'A session with ID "{new_id}" already exists.')
             return
         s.id = new_id
         self.save_project()
@@ -1216,21 +1080,23 @@ class ProjectWindow(QMainWindow):
         p = self.get_selected_participant()
         if not p:
             return
-        if self.prep_window and self.prep_window.project_context:
-            if self.prep_window.project_context.participant.id == p.id:
+        if self.active_prep_page and self.active_prep_page.project_context:
+            if self.active_prep_page.project_context.participant.id == p.id:
                 QMessageBox.information(
-                    self, "Participant in use",
+                    self.window(), "Participant in use",
                     "Close the preprocessing session before removing this participant."
                 )
                 return
         reply = QMessageBox.question(
-            self, "Remove Participant",
+            self.window(), "Remove Participant",
             f'Remove participant "{p.id}" from the project?\n\n'
             "This does not delete any files from disk.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
+            return
+        if not self.project:
             return
         self.project.participants.remove(p)
         self.save_project()
@@ -1248,7 +1114,7 @@ class ProjectWindow(QMainWindow):
         if not s:
             return
         reply = QMessageBox.question(
-            self, "Remove Session",
+            self.window(), "Remove Session",
             f'Remove session "ses-{s.id}" from participant "{p.id}"?\n\n'
             "This does not delete any files from disk.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -1264,7 +1130,7 @@ class ProjectWindow(QMainWindow):
     def import_from_folder(self):
         if not self.project:
             return
-        folder = QFileDialog.getExistingDirectory(self, "Select Folder with EEG Files")
+        folder = QFileDialog.getExistingDirectory(self.window(), "Select Folder with EEG Files")
         if not folder:
             return
 
@@ -1275,7 +1141,7 @@ class ProjectWindow(QMainWindow):
         files = sorted(f for f in folder_path.iterdir() if f.suffix.lower() in extensions)
         if not files:
             QMessageBox.information(
-                self, "No Files Found",
+                self.window(), "No Files Found",
                 "No recognized EEG files found in the selected folder."
             )
             return
@@ -1286,7 +1152,7 @@ class ProjectWindow(QMainWindow):
             if pid in existing_ids:
                 continue
             try:
-                file_str = str(f.relative_to(self.project_dir))
+                file_str = str(f.relative_to(self.project_dir)) if self.project_dir else str(f)
             except ValueError:
                 file_str = str(f)
             session = Session(id="01", data_files=[file_str])
@@ -1298,31 +1164,26 @@ class ProjectWindow(QMainWindow):
             self.save_project()
             self.rebuild_tree()
         else:
-            QMessageBox.information(self, "No New Participants", "All files already have entries.")
+            QMessageBox.information(self.window(), "No New Participants", "All files already have entries.")
 
     def import_bids(self):
         """Import participants and sessions from a BIDS dataset directory."""
-        bids_dir = QFileDialog.getExistingDirectory(self, "Select BIDS Dataset Root")
+        bids_dir = QFileDialog.getExistingDirectory(self.window(), "Select BIDS Dataset Root")
         if not bids_dir:
             return
         bids_path = Path(bids_dir)
 
-        # If no project is open, create one first
         if not self.project:
-            from mnetape.gui.dialogs.new_project_dialog import NewProjectDialog
-            dlg = NewProjectDialog(self)
-            if dlg.exec() != NewProjectDialog.DialogCode.Accepted:
+            if self._create_and_load_project() is None:
                 return
-            name = dlg.get_name()
-            project_dir = dlg.get_project_dir()
-            project = Project(name=name)
-            project.save(project_dir)
-            self.load_project(project_dir)
+
+        assert self.project is not None
+        assert self.project_dir is not None
 
         try:
             bids_project = Project.from_bids(bids_path, self.project_dir)
         except Exception as e:
-            QMessageBox.critical(self, "BIDS Import Error", f"Failed to parse BIDS dataset:\n{e}")
+            QMessageBox.critical(self.window(), "BIDS Import Error", f"Failed to parse BIDS dataset:\n{e}")
             logger.exception("BIDS import failed for %s", bids_path)
             return
 
@@ -1338,9 +1199,9 @@ class ProjectWindow(QMainWindow):
             self.save_project()
             self.rebuild_tree()
         else:
-            QMessageBox.information(self, "No New Participants", "All BIDS subjects already exist.")
+            QMessageBox.information(self.window(), "No New Participants", "All BIDS subjects already exist.")
 
-    def show_tree_context_menu(self, pos):
+    def show_tree_context_menu(self, pos: QPoint):
         item = self.participant_tree.itemAt(pos)
         if not item:
             return
@@ -1349,33 +1210,33 @@ class ProjectWindow(QMainWindow):
 
         if item_type == "participant":
             pid = item.data(0, ROLE_PID)
-            add_session_action = menu.addAction("Add Session...")
-            add_session_action.triggered.connect(self.add_session_to_selected_participant)
-            rename_p_action = menu.addAction("Rename...")
-            rename_p_action.triggered.connect(lambda: self.rename_participant(pid))
-            open_p_folder_action = menu.addAction("Open Participant Folder")
-            open_p_folder_action.triggered.connect(self.open_participant_folder)
+            if a := menu.addAction("Add Session..."):
+                a.triggered.connect(self.add_session_to_selected_participant)
+            if a := menu.addAction("Rename..."):
+                a.triggered.connect(lambda: self.rename_participant(pid))
+            if a := menu.addAction("Open Participant Folder"):
+                a.triggered.connect(self.open_participant_folder)
             menu.addSeparator()
-            remove_action = menu.addAction("Remove Participant")
-            remove_action.triggered.connect(self.remove_participant)
+            if a := menu.addAction("Remove Participant"):
+                a.triggered.connect(self.remove_participant)
         elif item_type == "session":
-            open_session_action = menu.addAction("Open Session Folder")
-            open_session_action.triggered.connect(self.open_session_folder)
-            open_data_action = menu.addAction("Open Data Folder")
-            open_data_action.triggered.connect(self.open_participant_data_folder)
+            if a := menu.addAction("Open Session Folder"):
+                a.triggered.connect(self.open_session_folder)
+            if a := menu.addAction("Open Data Folder"):
+                a.triggered.connect(self.open_participant_data_folder)
             menu.addSeparator()
             pid = item.data(0, ROLE_PID)
             sid = item.data(0, ROLE_SID)
-            rename_s_action = menu.addAction("Rename...")
-            rename_s_action.triggered.connect(lambda: self.rename_session_id(pid, sid))
-            remove_action = menu.addAction("Remove Session")
-            remove_action.triggered.connect(lambda: self.remove_session(pid, sid))
+            if a := menu.addAction("Rename..."):
+                a.triggered.connect(lambda: self.rename_session_id(pid, sid))
+            if a := menu.addAction("Remove Session"):
+                a.triggered.connect(lambda: self.remove_session(pid, sid))
 
         menu.exec(self.participant_tree.mapToGlobal(pos))
 
     def open_preferences(self):
         from mnetape.gui.dialogs.preferences_dialog import PreferencesDialog
-        PreferencesDialog(settings=QSettings(), parent=self).exec()
+        PreferencesDialog(settings=self.settings, parent=self.window()).exec()
 
     def open_project_folder(self):
         if self.project_dir:
@@ -1383,28 +1244,28 @@ class ProjectWindow(QMainWindow):
 
     def open_session_folder(self):
         p, s = self.get_selected_session()
-        if not p or not s or not self.project_dir:
+        if not p or not s or not self.project or not self.project_dir:
             return
         open_folder(self.project.session_dir(self.project_dir, p, s))
 
     def open_participant_data_folder(self):
         """Open the source data folder for the selected session in the system file manager."""
         p, s = self.get_selected_session()
-        if not p or not s or not self.project_dir:
+        if not p or not s or not self.project or not self.project_dir:
             return
+        project_dir = self.project_dir
         folder: Path | None = None
         if s.data_files:
-            resolved = self.project.resolve_data_files(self.project_dir, s)
+            resolved = self.project.resolve_data_files(project_dir, s)
             if resolved:
                 folder = resolved[0].parent
-        if folder is None or not folder.exists():
-            folder = self.project.session_dir(self.project_dir, p, s)
-        open_folder(folder)
+        target = folder if (folder is not None and folder.exists()) else self.project.session_dir(project_dir, p, s)
+        open_folder(target)
 
     def open_participant_folder(self):
         """Open the participant output folder in the system file manager."""
         p = self.get_selected_participant()
-        if not p:
+        if not p or not self.project or not self.project_dir:
             return
         folder = self.project.participant_dir(self.project_dir, p)
         folder.mkdir(parents=True, exist_ok=True)
@@ -1413,7 +1274,7 @@ class ProjectWindow(QMainWindow):
     def open_output_folder(self):
         """Open the session output folder in the system file manager."""
         p, s = self.get_selected_session()
-        if not p or not s:
+        if not p or not s or not self.project or not self.project_dir:
             return
         folder = self.project.session_dir(self.project_dir, p, s) / "outputs"
         folder.mkdir(parents=True, exist_ok=True)
@@ -1423,6 +1284,8 @@ class ProjectWindow(QMainWindow):
 
     def build_nav_list(self) -> list:
         """Return the flat ordered list of (Participant, Session, run_index|None)."""
+        if not self.project or not self.project_dir:
+            return []
         items = []
         for p in self.project.participants:
             for s in p.sessions:
@@ -1434,47 +1297,11 @@ class ProjectWindow(QMainWindow):
                         items.append((p, s, i))
         return items
 
-    def update_nav_buttons(self):
-        """Enable/disable and re-label prev/next buttons based on current position."""
-        if not self.prep_window or not self.prep_window.project_context:
-            return
-        ctx = self.prep_window.project_context
-        nav = self.build_nav_list()
-        pos = next(
-            (i for i, (p, s, r) in enumerate(nav)
-             if p.id == ctx.participant.id and s.id == ctx.session.id and r == ctx.run_index),
-            None,
-        )
-        btn_prev = self.prep_refs["btn_prev"]
-        btn_next = self.prep_refs["btn_next"]
-
-        if pos is None or pos == 0:
-            btn_prev.setEnabled(False)
-            btn_prev.setText("‹")
-            btn_prev.setToolTip("Previous run")
-        else:
-            btn_prev.setEnabled(True)
-            prev_p, prev_s, _ = nav[pos - 1]
-            same_ses = prev_s.id == ctx.session.id and prev_p.id == ctx.participant.id
-            btn_prev.setText("‹" if same_ses else "«")
-            btn_prev.setToolTip("Previous run" if same_ses else "Previous session")
-
-        if pos is None or pos >= len(nav) - 1:
-            btn_next.setEnabled(False)
-            btn_next.setText("›")
-            btn_next.setToolTip("Next run")
-        else:
-            btn_next.setEnabled(True)
-            next_p, next_s, _ = nav[pos + 1]
-            same_ses = next_s.id == ctx.session.id and next_p.id == ctx.participant.id
-            btn_next.setText("›" if same_ses else "»")
-            btn_next.setToolTip("Next run" if same_ses else "Next session")
-
     def navigate_preprocessing(self, delta: int):
         """Open the previous (delta=-1) or next (delta=+1) run/session."""
-        if not self.prep_window or not self.prep_window.project_context:
+        if not self.active_prep_page or not self.active_prep_page.project_context:
             return
-        ctx = self.prep_window.project_context
+        ctx = self.active_prep_page.project_context
         nav = self.build_nav_list()
         pos = next(
             (i for i, (p, s, r) in enumerate(nav)
@@ -1487,79 +1314,116 @@ class ProjectWindow(QMainWindow):
         if new_pos < 0 or new_pos >= len(nav):
             return
         new_p, new_s, new_run_index = nav[new_pos]
-        self._open_preprocessing_for(new_p, new_s, new_run_index)
+        self.open_preprocessing_for(new_p, new_s, new_run_index)
 
-    def _open_preprocessing_for(self, p, s, run_index):
-        """Open the preprocessing window for an explicit participant/session/run."""
-        from mnetape.gui.controllers.main_window import MainWindow
+    def _emit_open_preprocessing(
+        self, project: Project, project_dir: Path, p: Participant, s: Session,
+        data_files: list, run_index
+    ):
+        """Build ProjectContext and emit open_preprocessing_requested."""
+        ctx = ProjectContext(
+            project=project,
+            project_dir=project_dir,
+            participant=p,
+            session=s,
+            on_status_update=lambda status, pid=p.id, sid=s.id: self.on_ctx_status_update(pid, sid, status),
+            data_files=data_files,
+            run_index=run_index,
+        )
+        self.open_preprocessing_requested.emit(ctx, self.build_nav_list())
 
-        if self.prep_window is not None:
-            self.close_preprocessing(report_status=True)
-
-        resolved = self.project.resolve_data_files(self.project_dir, s)
+    def open_preprocessing_for(self, p: Participant, s: Session, run_index):
+        """Emit open_preprocessing_requested for an explicit participant/session/run."""
+        project = self.project
+        project_dir = self.project_dir
+        if not project or not project_dir:
+            return
+        resolved = project.resolve_data_files(project_dir, s)
         if run_index is not None and not s.merge_runs:
             data_files = [resolved[run_index]] if run_index < len(resolved) else []
         else:
             data_files = resolved
+        self._emit_open_preprocessing(project, project_dir, p, s, data_files, run_index)
 
-        ctx = ProjectContext(
-            project=self.project,
-            project_dir=self.project_dir,
-            participant=p,
-            session=s,
-            on_status_update=lambda status, pid=p.id, sid=s.id: self.on_session_status_update(pid, sid, status),
-            data_files=data_files,
-            run_index=run_index,
-        )
-        self.prep_window = MainWindow(project_context=ctx)
-        self.prep_window.host_window = self
+    def on_ctx_status_update(self, participant_id: str, session_id: str, new_status):
+        """Internal handler: update project state when a preprocessing session reports status."""
+        if not self.project:
+            return
+        p = self.project.get_participant(participant_id)
+        if not p:
+            return
+        s = p.get_session(session_id)
+        if not s:
+            return
 
-        central = self.prep_window.takeCentralWidget()
-        self.prep_content_layout.addWidget(central)
-        self.prep_content_layout.addWidget(self.prep_window.status)
+        if new_status in (ParticipantStatus.ERROR, ParticipantStatus.RUNNING):
+            s.status = new_status
+        else:
+            s.status = ParticipantStatus.PENDING
 
-        self.update_prep_status_label(s, run_index)
-        run_text = (run_index + 1) if run_index is not None else "merged"
-        self.prep_refs["participant_label"].setText(
-            f"<b>{p.id}</b>  /  ses-{s.id}  /  run-{run_text}  ·  {self.project.name}"
-        )
-        self.left_panel.setVisible(False)
-        self.left_sep.setVisible(False)
-        self.right_stack.setCurrentWidget(self.prep_page)
-        self.update_nav_buttons()
-        self.prep_window.auto_load()
+        self.save_project()
+        self.refresh_participant_item(participant_id)
+        item_type, cur_pid, cur_sid = self.get_selected_item_data()
+        if item_type == "session" and cur_pid == participant_id and cur_sid == session_id:
+            self.populate_session_detail(p, s)
+        elif item_type == "participant" and cur_pid == participant_id:
+            self.populate_participant_detail(p)
 
-    # Embedded preprocessing
+        # Update prep header status label if this session is currently open
+        if self.active_prep_page and self.active_prep_page.project_context:
+            ctx = self.active_prep_page.project_context
+            if ctx.participant.id == participant_id and ctx.session.id == session_id:
+                self.active_prep_page.update_status_label(s, ctx.run_index)
+
+        logger.info("Participant %s / ses-%s status → %s", participant_id, session_id, new_status)
+
+    def on_preprocessing_closed(self, _final_status, ctx: ProjectContext):
+        """Called by MainWindow after tearing down the preprocessing page."""
+        if ctx is None:
+            return
+        p = self.project.get_participant(ctx.participant.id) if self.project else None
+        if not p:
+            return
+        s = p.get_session(ctx.session.id)
+        if not s:
+            return
+
+        # Refresh tree and detail
+        self.refresh_participant_item(ctx.participant.id)
+        item_type, cur_pid, cur_sid = self.get_selected_item_data()
+        if item_type == "session" and cur_pid == ctx.participant.id and cur_sid == ctx.session.id:
+            self.populate_session_detail(p, s)
+            self.right_stack.setCurrentWidget(self.session_detail_widget)
+        elif item_type == "participant" and cur_pid == ctx.participant.id:
+            self.populate_participant_detail(p)
+            self.right_stack.setCurrentWidget(self.participant_detail_widget)
+        else:
+            self.right_stack.setCurrentWidget(self.no_selection_widget)
+
+        self.save_project()
+
+    # Embedded preprocessing (from session detail page)
 
     def open_preprocessing(self):
-        """Embed the preprocessing UI for the selected session in the right panel."""
+        """Request the MainWindow to open preprocessing for the selected session."""
+        project = self.project
+        project_dir = self.project_dir
+        if not project or not project_dir:
+            return
         p, s = self.get_selected_session()
         if not p or not s:
-            # If a participant node is selected but no session, try first session
             p2 = self.get_selected_participant()
             if p2 and p2.sessions:
                 p = p2
                 s = p2.sessions[0]
             else:
                 QMessageBox.information(
-                    self, "No Session Selected",
+                    self.window(), "No Session Selected",
                     "Please select a session from the tree to open preprocessing."
                 )
                 return
 
-        # If same session is already open, just switch back to preprocessing view
-        if self.prep_window and self.prep_window.project_context:
-            ctx = self.prep_window.project_context
-            if ctx.participant.id == p.id and ctx.session.id == s.id:
-                self.right_stack.setCurrentWidget(self.prep_page)
-                return
-
-        # Close any existing session (different participant/session)
-        if self.prep_window is not None:
-            self.close_preprocessing(report_status=True)
-
-        # Resolve run files; merge_runs=True → all files, False → selected run button
-        resolved = self.project.resolve_data_files(self.project_dir, s)
+        resolved = project.resolve_data_files(project_dir, s)
         if s.merge_runs:
             data_files = resolved
             run_index = None
@@ -1571,56 +1435,11 @@ class ProjectWindow(QMainWindow):
             data_files = [resolved[selected_idx]] if resolved else []
             run_index = selected_idx if resolved else None
 
-        from mnetape.gui.controllers.main_window import MainWindow
-
-        ctx = ProjectContext(
-            project=self.project,
-            project_dir=self.project_dir,
-            participant=p,
-            session=s,
-            on_status_update=lambda status, pid=p.id, sid=s.id: self.on_session_status_update(
-                pid, sid, status
-            ),
-            data_files=data_files,
-            run_index=run_index,
-        )
-        self.prep_window = MainWindow(project_context=ctx)
-
-        self.prep_window.host_window = self
-
-        # Take the central widget from MainWindow and embed it in our content area
-        central = self.prep_window.takeCentralWidget()
-        self.prep_content_layout.addWidget(central)
-
-        # Embed the status bar below the content so messages and raw-info stay visible
-        self.prep_content_layout.addWidget(self.prep_window.status)
-
-        # Show current status in the header label (per-run when not merging)
-        self.update_prep_status_label(s, run_index)
-
-        # Update header participant label
-        run_text = run_index + 1 if not s.merge_runs else "merged"
-        self.prep_refs["participant_label"].setText(
-            f"<b>{p.id}</b>  /  ses-{s.id}  /  run-{run_text}  ·  {self.project.name}"
-        )
-
-        # Hide sidebar
-        self.left_panel.setVisible(False)
-        self.left_sep.setVisible(False)
-
-        # Switch to preprocessing view
-        self.right_stack.setCurrentWidget(self.prep_page)
-        self.update_nav_buttons()
-
-        self.prep_window.auto_load()
+        self._emit_open_preprocessing(project, project_dir, p, s, data_files, run_index)
 
     @staticmethod
     def normalize_actions_for_default(actions: list) -> list:
-        """Return a copy of actions with participant-specific data stripped.
-
-        - Skips load_file (participant-specific file path).
-        - Resets managed_params to schema defaults.
-        """
+        """Return a copy of actions with participant-specific data stripped."""
         result = []
         for action in actions:
             if action.action_id == "load_file":
@@ -1634,9 +1453,9 @@ class ProjectWindow(QMainWindow):
             if managed:
                 defaults = action_def.default_params() if action_def else {}
                 stripped = {k: v for k, v in action.params.items() if k not in managed}
-                for p in managed:
-                    if p in defaults:
-                        stripped[p] = defaults[p]
+                for param in managed:
+                    if param in defaults:
+                        stripped[param] = defaults[param]
                 result.append(dataclasses.replace(action, params=stripped))
             else:
                 result.append(action)
@@ -1646,21 +1465,20 @@ class ProjectWindow(QMainWindow):
         """If the current pipeline structurally differs from the project default, ask to overwrite it."""
         import difflib
 
-        if self.prep_window is None:
+        if self.active_prep_page is None:
             return
-        ctx = self.prep_window.project_context
+        ctx = self.active_prep_page.project_context
         if not ctx:
             return
 
         from mnetape.core.codegen import parse_script_to_actions
 
         default_path = ctx.project.pipeline_path(ctx.project_dir)
-        current_code = generate_full_script(self.prep_window.state.actions)
+        current_code = generate_full_script(self.active_prep_page.state.actions)
         existing_code = default_path.read_text() if default_path.exists() else ""
 
-        # Normalize both sides: strip load_file and managed_params
         normalized_current = generate_full_script(
-            self.normalize_actions_for_default(self.prep_window.state.actions)
+            self.normalize_actions_for_default(self.active_prep_page.state.actions)
         )
         try:
             existing_actions = parse_script_to_actions(existing_code) if existing_code else []
@@ -1683,7 +1501,7 @@ class ProjectWindow(QMainWindow):
         logger.debug("Pipeline diff:\n%s", "".join(diff_lines))
 
         reply = QMessageBox.question(
-            self,
+            self.window(),
             "Update Project Pipeline",
             "The pipeline has been modified.\n\nSet it as the default for the entire project?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -1693,74 +1511,16 @@ class ProjectWindow(QMainWindow):
             default_path.parent.mkdir(parents=True, exist_ok=True)
             default_path.write_text(current_code)
 
-    def close_preprocessing(self, report_status: bool = True):
-        """Close the embedded preprocessing session and return to the detail view."""
-        if self.prep_window is None:
-            return
-
-        self.set_pipeline_as_default_popup()
-
-        if report_status:
-            ctx = self.prep_window.project_context
-            if ctx:
-                actions = self.prep_window.state.actions
-                if any(a.status.name == "ERROR" for a in actions):
-                    final_status = ParticipantStatus.ERROR
-                elif actions and all(a.status.name == "COMPLETE" for a in actions):
-                    final_status = ParticipantStatus.DONE
-                else:
-                    final_status = ParticipantStatus.PENDING
-                try:
-                    ctx.on_status_update(final_status)
-                except Exception as e:
-                    logger.warning("Failed to report preprocessing status: %s", e)
-
-        # Remove embedded central widget
-        while self.prep_content_layout.count():
-            item = self.prep_content_layout.takeAt(0)
-            if item.widget():
-                item.widget().setParent(None)
-
-        # Clean up resources
-        self.prep_window.cleanup()
-        self.prep_window.deleteLater()
-        self.prep_window = None
-
-        # Restore sidebar
-        self.left_panel.setVisible(True)
-        self.left_sep.setVisible(True)
-
-        # Clear status label
-        self.prep_refs["status_label"].setText("")
-
-        # Return to appropriate detail view
-        item_type, pid, sid = self.get_selected_item_data()
-        if item_type == "session" and pid and sid:
-            p = self.project.get_participant(pid)
-            if p:
-                s = p.get_session(sid)
-                if s:
-                    self.populate_session_detail(p, s)
-                    self.right_stack.setCurrentWidget(self.session_detail_widget)
-                    return
-        elif item_type == "participant" and pid:
-            p = self.project.get_participant(pid)
-            if p:
-                self.populate_participant_detail(p)
-                self.right_stack.setCurrentWidget(self.participant_detail_widget)
-                return
-        self.right_stack.setCurrentWidget(self.no_selection_widget)
-
     def set_default_pipeline(self):
         """Save current pipeline as the project default; optionally reset participant overrides."""
-        if not self.prep_window or not self.project or not self.project_dir:
+        if not self.active_prep_page or not self.project or not self.project_dir:
             return
-        code = strip_managed_params(self.prep_window.state.actions)
+        code = strip_managed_params(self.active_prep_page.state.actions)
         if not code:
             return
 
         reply = QMessageBox.question(
-            self,
+            self.window(),
             "Set as Default Pipeline?",
             "Overwrite the project default pipeline with the current participant's pipeline?\n"
             "Participants using the default will get this pipeline next time they are opened.",
@@ -1769,7 +1529,6 @@ class ProjectWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        # Check which participants have a custom pipeline override
         custom_paths = []
         for p in self.project.participants:
             for s in p.sessions:
@@ -1779,7 +1538,7 @@ class ProjectWindow(QMainWindow):
 
         if custom_paths:
             reply = QMessageBox.question(
-                self,
+                self.window(),
                 "Reset Participant Pipelines?",
                 f"{len(custom_paths)} participant session(s) have custom pipelines.\n"
                 "Reset them to the new default?",
@@ -1798,110 +1557,42 @@ class ProjectWindow(QMainWindow):
 
     def use_default_pipeline(self):
         """Reset this participant's pipeline to the project default."""
-        if not self.prep_window or not self.project or not self.project_dir:
+        if not self.active_prep_page or not self.project or not self.project_dir:
             return
         default_path = self.project.pipeline_path(self.project_dir)
         if not default_path.exists():
-            QMessageBox.information(self, "No Default Pipeline", "No default pipeline found for this project.")
+            QMessageBox.information(self.window(), "No Default Pipeline", "No default pipeline found for this project.")
             return
         try:
             from mnetape.core.codegen import parse_script_to_actions
             code = default_path.read_text()
             actions = parse_script_to_actions(code)
-            # Update load_file with actual participant file path
-            data_fp = self.prep_window.state.data_filepath
+            data_fp = self.active_prep_page.state.data_filepath
             if data_fp and actions and actions[0].action_id == "load_file":
                 actions[0].params["file_path"] = str(data_fp)
-            self.prep_window.state.actions = actions
-            self.prep_window.state.data_states.clear()
-            self.prep_window.code_panel.set_code(code)
-            self.prep_window.update_action_list()
+            self.active_prep_page.state.actions = actions
+            self.active_prep_page.state.data_states.clear()
+            self.active_prep_page.code_panel.set_code(code)
+            self.active_prep_page.update_action_list()
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load default pipeline:\n{e}")
+            QMessageBox.critical(self.window(), "Error", f"Failed to load default pipeline:\n{e}")
 
     def save_participant_pipeline(self):
         """Save the current pipeline as an override for this participant/session only."""
-        if not self.prep_window or not self.prep_window.project_context:
+        if not self.active_prep_page or not self.active_prep_page.project_context:
             return
-        ctx = self.prep_window.project_context
+        if not self.project or not self.project_dir:
+            return
+        ctx = self.active_prep_page.project_context
         path = self.project.participant_pipeline_path(self.project_dir, ctx.participant, ctx.session)
         path.parent.mkdir(parents=True, exist_ok=True)
-        code = self.prep_window.code_panel.get_code()
+        code = self.active_prep_page.code_panel.get_code()
         if not code:
             return
         try:
             path.write_text(code)
-            self.prep_window.state.pipeline_filepath = path
-            self.prep_window.code_panel.set_file(path)
+            self.active_prep_page.state.pipeline_filepath = path
+            self.active_prep_page.code_panel.set_file(path)
             logger.info("Saved participant pipeline: %s", path)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to save participant pipeline:\n{e}")
-
-    def update_prep_status_label(self, s: Session, run_index: int | None = None):
-        """Update the preprocessing header status label.
-
-        When run_index is set (merge_runs=False), shows per-run processed state.
-        Otherwise, shows the overall session status.
-        """
-        if run_index is not None and not s.merge_runs:
-            is_processed = (
-                run_index < len(s.processed_files) and bool(s.processed_files[run_index])
-            )
-            text = "Preprocessed" if is_processed else "Pending"
-            color = "#2E7D32" if is_processed else "#888888"
-        else:
-            _display = {
-                "done": ("Preprocessed", "#2E7D32"),
-                "error": ("Error", "#C62828"),
-                "pending": ("Pending", "#888888"),
-                "incomplete": ("Incomplete", "#E65100"),
-            }
-            text, color = _display.get(s.status, (s.status.title(), "#888888"))
-        label: QLabel = self.prep_refs["status_label"]
-        label.setText(f"Status: {text}")
-        label.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: bold;")
-
-    def on_session_status_update(self, participant_id: str, session_id: str, new_status: ParticipantStatus):
-        """Called when a preprocessing session reports its final status."""
-        p = self.project.get_participant(participant_id)
-        if not p:
-            return
-        s = p.get_session(session_id)
-        if not s:
-            return
-
-        # session_status derives DONE/INCOMPLETE/PENDING from processed_files automatically.
-        # Only persist ERROR and RUNNING so they survive across open/close cycles.
-        if new_status in (ParticipantStatus.ERROR, ParticipantStatus.RUNNING):
-            s.status = new_status
-        else:
-            s.status = ParticipantStatus.PENDING
-
-        self.save_project()
-        self.refresh_participant_item(participant_id)
-        item_type, cur_pid, cur_sid = self.get_selected_item_data()
-        if item_type == "session" and cur_pid == participant_id and cur_sid == session_id:
-            self.populate_session_detail(p, s)
-        elif item_type == "participant" and cur_pid == participant_id:
-            self.populate_participant_detail(p)
-        # Refresh the prep header status label if this session is currently open
-        if self.prep_window and self.prep_window.project_context:
-            ctx = self.prep_window.project_context
-            if ctx.participant.id == participant_id and ctx.session.id == session_id:
-                self.update_prep_status_label(s, ctx.run_index)
-        logger.info("Participant %s / ses-%s status → %s", participant_id, session_id, new_status)
-
-    # Window events
-
-    def event(self, event):
-        if event.type() == QEvent.Type.WindowActivate:
-            modal = QApplication.activeModalWidget()
-            if modal:
-                modal.raise_()
-                modal.activateWindow()
-        return super().event(event)
-
-    def closeEvent(self, event):
-        if self.prep_window is not None:
-            self.close_preprocessing(report_status=True)
-        super().closeEvent(event)
+            QMessageBox.critical(self.window(), "Error", f"Failed to save participant pipeline:\n{e}")

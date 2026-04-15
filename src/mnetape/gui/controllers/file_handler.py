@@ -23,18 +23,18 @@ from mnetape.core.models import ActionConfig, ActionStatus
 from mnetape.gui.controllers.pipeline_runner import OperationCancelled
 
 if TYPE_CHECKING:
-    from mnetape.gui.controllers.main_window import MainWindow
+    from mnetape.gui.pages.preprocessing_page import PreprocessingPage
 
 logger = logging.getLogger(__name__)
 
 
 class FileHandler:
-    """Handles all file I/O operations for the main window.
+    """Handles all file I/O operations for the preprocessing window.
 
-    Operates on MainWindow.state and calls MainWindow update methods to keep the UI in sync after each operation.
+    Operates on PreprocessingPage.state and calls update methods to keep the UI in sync after each operation.
     """
 
-    def __init__(self, window: MainWindow) -> None:
+    def __init__(self, window: "PreprocessingPage") -> None:
         self.w = window
         self.state = window.state
 
@@ -54,7 +54,7 @@ class FileHandler:
         self.w.viz_panel.current_raw = None
         self.w.viz_panel.show_placeholder()
         self.w.viz_panel.status_label.setText("")
-        self.w.status.showMessage("File closed")
+        self.w.emit_status("File closed")
 
     def add_recent_file(self, path: str):
         """Add a file path to the head of the recent-files list and persist it.
@@ -74,16 +74,8 @@ class FileHandler:
         self.state.settings.setValue("recent_fif", self.state.recent_fif)
 
     def refresh_recent_menu(self):
-        """Rebuild the Open Recent menu from the current recent files list."""
-        self.w.recent_menu.clear()
-        if not self.state.recent_fif:
-            empty = self.w.recent_menu.addAction("No recent files")
-            empty.setEnabled(False)
-            return
-
-        for path in self.state.recent_fif:
-            act = self.w.recent_menu.addAction(path)
-            act.triggered.connect(lambda _, p=path: self.load_data_path(p))
+        """No-op: recent menu is rebuilt lazily via MainWindow's aboutToShow signal."""
+        pass
 
     def ensure_load_file_action(self, file_path: str) -> None:
         """Ensure state.actions[0] is a load_file ActionConfig with the given path.
@@ -148,7 +140,7 @@ class FileHandler:
             logger.warning("Failed to apply stored montage to raw_original: %s", e)
 
     def load_data_path(self, path: str):
-        """Load an EEG file from a known path without opening a dialog.
+        """Load an EEG file from a known path.
 
         Resets action states and visualization, updates the status bar, and prompts for a montage if none is found
         in the file.
@@ -166,12 +158,12 @@ class FileHandler:
                 f"Loading {filename}...",
             )
         except OperationCancelled:
-            self.w.status.showMessage("Load cancelled")
+            self.w.emit_status("Load cancelled")
             return
         except Exception as e:
             logger.exception("Failed to load data file: %s", path)
-            QMessageBox.critical(self.w, "Error", f"Failed to load:\n{e}")
-            self.w.status.showMessage("Load failed")
+            QMessageBox.critical(self.w.window(), "Error", f"Failed to load:\n{e}")
+            self.w.emit_status("Load failed")
             return
 
         self.state.raw_original = raw
@@ -186,14 +178,14 @@ class FileHandler:
         self.w.update_action_list()
         self.w.update_visualization()
 
-        self.w.status.showMessage(f"Loaded {self.state.data_filepath.name}")
+        self.w.emit_status(f"Loaded {self.state.data_filepath.name}")
         self.add_recent_file(path)
         logger.info("Loaded data file: %s", path)
 
     def open_file(self):
         """Open a file-picker dialog and load the selected EEG file."""
         path, _ = QFileDialog.getOpenFileName(
-            self.w, "Open EEG File", "", open_file_dialog_filter()
+            self.w.window(), "Open EEG File", "", open_file_dialog_filter()
         )
         if not path:
             return
@@ -206,16 +198,16 @@ class FileHandler:
         # Check for pipeline state
         if row is None:
             if not self.state.data_states:
-                QMessageBox.warning(self.w, "No Data", "Run the pipeline first.")
+                QMessageBox.warning(self.w.window(), "No Data", "Run the pipeline first.")
                 return
             raw_to_export = self.state.data_states[-1]
         else:
             if row >= len(self.state.data_states):
-                QMessageBox.warning(self.w, "No Data", "Selected action has not been computed yet.")
+                QMessageBox.warning(self.w.window(), "No Data", "Selected action has not been computed yet.")
                 return
             raw_to_export = self.state.data_states[row]
 
-        path, _ = QFileDialog.getSaveFileName(self.w, "Export Processed", "", "FIF Files (*.fif)")
+        path, _ = QFileDialog.getSaveFileName(self.w.window(), "Export Processed", "", "FIF Files (*.fif)")
         if not path:
             return
 
@@ -224,7 +216,7 @@ class FileHandler:
 
         try:
             raw_to_export.save(path, overwrite=True)
-            self.w.status.showMessage(f"Exported: {Path(path).name}")
+            self.w.emit_status(f"Exported: {Path(path).name}")
             logger.info("Exported processed FIF: %s", path)
             # In project mode, track this exported file for analysis
             if self.w.project_context:
@@ -239,7 +231,7 @@ class FileHandler:
                 ctx.project.save(ctx.project_dir)
         except Exception as e:
             logger.exception("Export failed: %s", path)
-            QMessageBox.critical(self.w, "Error", f"Export failed:\n{e}")
+            QMessageBox.critical(self.w.window(), "Error", f"Export failed:\n{e}")
 
     def new_pipeline(self):
         """Clear all actions and computed states to start a fresh pipeline."""
@@ -247,11 +239,11 @@ class FileHandler:
         self.state.data_states.clear()
         self.w.update_action_list()
         self.w.update_visualization()
-        self.w.status.showMessage("New pipeline")
+        self.w.emit_status("New pipeline")
 
     def save_pipeline(self):
         """Serialize the current action list to a Python script and save to disk."""
-        path, _ = QFileDialog.getSaveFileName(self.w, "Save Pipeline", "", "Python Files (*.py)")
+        path, _ = QFileDialog.getSaveFileName(self.w.window(), "Save Pipeline", "", "Python Files (*.py)")
         if not path:
             return
 
@@ -263,16 +255,16 @@ class FileHandler:
             Path(path).write_text(code)
         except Exception as exc:
             logger.exception("Failed to save pipeline")
-            QMessageBox.critical(self.w, "Save Failed", f"Could not save pipeline:\n{exc}")
+            QMessageBox.critical(self.w.window(), "Save Failed", f"Could not save pipeline:\n{exc}")
             return
 
         self.state.pipeline_filepath = Path(path)
         self.w.code_panel.set_file(self.state.pipeline_filepath)
-        self.w.status.showMessage(f"Saved: {self.state.pipeline_filepath.name}")
+        self.w.emit_status(f"Saved: {self.state.pipeline_filepath.name}")
 
     def load_pipeline(self):
         """Open a Python pipeline script and parse it back into actions."""
-        path, _ = QFileDialog.getOpenFileName(self.w, "Load Pipeline", "", "Python Files (*.py)")
+        path, _ = QFileDialog.getOpenFileName(self.w.window(), "Load Pipeline", "", "Python Files (*.py)")
         if not path:
             return
 
@@ -286,7 +278,7 @@ class FileHandler:
 
             self.w.update_action_list()
             self.w.update_visualization()
-            self.w.status.showMessage(f"Loaded pipeline: {self.state.pipeline_filepath.name}")
+            self.w.emit_status(f"Loaded pipeline: {self.state.pipeline_filepath.name}")
             logger.info("Loaded pipeline script: %s", path)
         except Exception as e:
             logger.exception("Failed to load pipeline: %s", path)
@@ -327,11 +319,11 @@ class FileHandler:
         self.state.data_states.clear()
         self.w.update_action_list(sync_code=False)
         self.w.code_panel.set_code(code)
-        self.w.status.showMessage("Reloaded from file")
+        self.w.emit_status("Reloaded from file")
 
     def on_external_code_change(self):
         """Handle the pipeline file being modified externally."""
         self.reload_pipeline()
-        self.w.status.showMessage("Reloaded from disk", 3000)
+        self.w.emit_status("Reloaded from disk", 3000)
         self.w.code_panel.pending_external_change = False
         logger.info("Auto-reloaded pipeline after external file change")
