@@ -1511,7 +1511,7 @@ class ProjectPage(QWidget):
             default_path.parent.mkdir(parents=True, exist_ok=True)
             default_path.write_text(current_code)
 
-    def set_default_pipeline(self):
+    def set_default_pipeline(self, *, confirm: bool = True):
         """Save current pipeline as the project default; optionally reset participant overrides."""
         if not self.active_prep_page or not self.project or not self.project_dir:
             return
@@ -1519,36 +1519,52 @@ class ProjectPage(QWidget):
         if not code:
             return
 
-        reply = QMessageBox.question(
-            self.window(),
-            "Set as Default Pipeline?",
-            "Overwrite the project default pipeline with the current participant's pipeline?\n"
-            "Participants using the default will get this pipeline next time they are opened.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
+        if confirm:
+            reply = QMessageBox.question(
+                self.window(),
+                "Set as Default Pipeline?",
+                "Overwrite the project default pipeline with the current participant's pipeline?\n"
+                "Participants using the default will get this pipeline next time they are opened.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
 
-        custom_paths = []
+        ctx = self.active_prep_page.project_context
+        current_key = (ctx.participant.id, ctx.session.id) if ctx else None
+
+        current_path: Path | None = None
+        other_sessions: list[tuple[str, str]] = []
+        other_paths: list[Path] = []
         for p in self.project.participants:
             for s in p.sessions:
                 path = self.project.participant_pipeline_path(self.project_dir, p, s)
-                if path.exists():
-                    custom_paths.append(path)
+                if not path.exists():
+                    continue
+                if (p.id, s.id) == current_key:
+                    current_path = path
+                else:
+                    other_sessions.append((p.id, s.id))
+                    other_paths.append(path)
 
-        if custom_paths:
+        if other_sessions:
+            session_list = "\n".join(f"  \u2022 {pid} / ses-{sid}" for pid, sid in other_sessions)
             reply = QMessageBox.question(
                 self.window(),
                 "Reset Participant Pipelines?",
-                f"{len(custom_paths)} participant session(s) have custom pipelines.\n"
+                f"The following {len(other_sessions)} session(s) have custom pipelines that will be overridden:\n\n"
+                f"{session_list}\n\n"
                 "Reset them to the new default?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
             )
             if reply == QMessageBox.StandardButton.Cancel:
                 return
             if reply == QMessageBox.StandardButton.Yes:
-                for path in custom_paths:
+                for path in other_paths:
                     path.unlink(missing_ok=True)
+
+        if current_path is not None:
+            current_path.unlink(missing_ok=True)
 
         default_path = self.project.pipeline_path(self.project_dir)
         default_path.parent.mkdir(parents=True, exist_ok=True)

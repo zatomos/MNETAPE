@@ -457,12 +457,12 @@ class PreprocessingPage(QWidget):
         self.status_label.setText(f"Status: {text}")
         self.status_label.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: bold;")
 
-    def set_default_pipeline_stub(self):
+    def set_default_pipeline_stub(self, *, confirm: bool = True):
         """Forward set-default-pipeline to the project page via the window."""
         win = self.window()
         project_page: "ProjectPage | None" = getattr(win, "project_page", None) if win is not None else None
         if project_page is not None:
-            project_page.set_default_pipeline()
+            project_page.set_default_pipeline(confirm=confirm)
 
     def use_default_pipeline_stub(self):
         """Forward use-default-pipeline to the project page via the window."""
@@ -645,7 +645,7 @@ class PreprocessingPage(QWidget):
             QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self.set_default_pipeline_stub()
+            self.set_default_pipeline_stub(confirm=False)
 
     def on_back_clicked(self):
         if not self.confirm_discard_if_dirty():
