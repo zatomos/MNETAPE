@@ -174,6 +174,7 @@ class ProjectPage(QWidget):
     """
 
     open_preprocessing_requested = pyqtSignal(object, list)
+    close_project_requested = pyqtSignal()
     status_message = pyqtSignal(str, int)
     title_change = pyqtSignal(str)
     preprocessing_closed = pyqtSignal(object, object)
@@ -196,6 +197,7 @@ class ProjectPage(QWidget):
         self.import_folder_action = None
         self.import_bids_action = None
         self.rename_project_action = None
+        self.close_project_action = None
 
         # Widget attributes
         self.participant_tree = QTreeWidget()
@@ -212,11 +214,6 @@ class ProjectPage(QWidget):
         self.session_detail_refs = {}
 
         self.setup_ui()
-
-        # Restore last project
-        last = settings.value(SETTINGS_LAST_PROJECT)
-        if last and Path(last).is_dir():
-            self.load_project(Path(last))
 
     # --- Active prep page management ---
 
@@ -278,6 +275,7 @@ class ProjectPage(QWidget):
         left_layout.addLayout(btn_row)
 
         self.left_panel = left_panel
+        left_panel.setVisible(False)
         main_layout.addWidget(left_panel)
 
         # Vertical separator
@@ -285,6 +283,7 @@ class ProjectPage(QWidget):
         sep.setFrameShape(QFrame.Shape.VLine)
         sep.setStyleSheet("color: #D5D5D8;")
         self.left_sep = sep
+        sep.setVisible(False)
         main_layout.addWidget(sep)
 
         # ---- Right: stacked panel ----
@@ -346,7 +345,6 @@ class ProjectPage(QWidget):
         btn_standalone = QPushButton("Open Without Project...")
         btn_standalone.setFixedWidth(200)
         btn_standalone.clicked.connect(self.open_standalone)
-        btn_standalone.setStyleSheet("color: gray;")
         btn_row2 = QHBoxLayout()
         btn_row2.addStretch()
         btn_row2.addWidget(btn_standalone)
@@ -358,7 +356,6 @@ class ProjectPage(QWidget):
     def open_standalone(self):
         """Open the standalone preprocessing window (no project context)."""
         from mnetape.gui.pages.preprocessing_page import PreprocessingPage
-        # Create a thin wrapper window for standalone mode
         from PyQt6.QtWidgets import QMainWindow
         w = QMainWindow()
         w.setWindowTitle("MNETAPE")
@@ -377,6 +374,9 @@ class ProjectPage(QWidget):
 
         page.status_message.connect(_on_status)
         page.raw_info_changed.connect(raw_info.setText)
+        page.close_requested.connect(w.close)
+        # Keep a reference so the window isn't garbage collected
+        self._standalone_window = w
         w.show()
         page.auto_load()
 
@@ -553,6 +553,10 @@ class ProjectPage(QWidget):
             self.open_folder_action.setEnabled(True)
         if self.rename_project_action:
             self.rename_project_action.setEnabled(True)
+        if self.close_project_action:
+            self.close_project_action.setEnabled(True)
+        self.left_panel.setVisible(True)
+        self.left_sep.setVisible(True)
         self.btn_add.setEnabled(True)
 
         self.rebuild_tree()
@@ -1279,6 +1283,35 @@ class ProjectPage(QWidget):
         folder = self.project.session_dir(self.project_dir, p, s) / "outputs"
         folder.mkdir(parents=True, exist_ok=True)
         open_folder(folder)
+
+    # Close project
+
+    def close_project(self):
+        """Ask the user to confirm, then emit close_project_requested for MainWindow to handle."""
+        if not self.project:
+            return
+        if self.active_prep_page and not self.active_prep_page.confirm_discard_if_dirty():
+            return
+        self.close_project_requested.emit()
+
+    def do_close_project(self):
+        """Reset project state and return to the welcome screen. Called by MainWindow."""
+        self.project = None
+        self.project_dir = None
+        self.participant_tree.clear()
+        self.left_panel.setVisible(False)
+        self.left_sep.setVisible(False)
+        self.right_stack.setCurrentWidget(self.welcome_widget)
+        self.btn_add.setEnabled(False)
+        self.btn_remove.setEnabled(False)
+        for action in (
+            self.add_p_action, self.import_folder_action, self.open_folder_action,
+            self.rename_project_action, self.close_project_action,
+        ):
+            if action:
+                action.setEnabled(False)
+        self.title_change.emit("MNETAPE")
+        QSettings().setValue(SETTINGS_LAST_PROJECT, "")
 
     # Preprocessing navigation
 

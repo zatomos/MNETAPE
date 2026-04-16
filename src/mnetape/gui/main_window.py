@@ -5,6 +5,7 @@ All application content lives in the two page widgets.
 """
 
 import logging
+from pathlib import Path
 
 from PyQt6.QtCore import QSettings
 from PyQt6.QtGui import QAction, QKeySequence
@@ -52,6 +53,7 @@ class MainWindow(QMainWindow):
 
         # Wire project page signals
         self.project_page.open_preprocessing_requested.connect(self.on_open_preprocessing)
+        self.project_page.close_project_requested.connect(self.on_close_project)
         self.project_page.status_message.connect(lambda msg, t: self._status_bar.showMessage(msg, t))
         self.project_page.title_change.connect(self.setWindowTitle)
 
@@ -64,6 +66,11 @@ class MainWindow(QMainWindow):
         geom = self.settings.value("main_window/geometry")
         if geom:
             self.restoreGeometry(geom)
+
+        # Restore last project
+        last = self.settings.value("project/last_dir")
+        if last and Path(last).is_dir():
+            self.project_page.load_project(Path(last))
 
     # -------- Menu bar --------
 
@@ -94,6 +101,13 @@ class MainWindow(QMainWindow):
         recent_proj_menu = QMenu("Open Recent Project", self)
         recent_proj_menu.aboutToShow.connect(lambda: self.project_page.populate_recent_menu(recent_proj_menu))
         proj_file.addMenu(recent_proj_menu)
+
+        proj_file.addSeparator()
+        close_project_action = QAction("Close Project", self)
+        close_project_action.triggered.connect(self.project_page.close_project)
+        close_project_action.setEnabled(False)
+        proj_file.addAction(close_project_action)
+        self.project_page.close_project_action = close_project_action
 
         proj_file.addSeparator()
         standalone_action = QAction("Open Without Project...", self)
@@ -286,7 +300,6 @@ class MainWindow(QMainWindow):
     def on_close_preprocessing(self):
         """Back button -> tear down prep page and return to project."""
         self.teardown_prep_page(report_status=True)
-        # Clear raw info label
         self.raw_info_label.setText("")
         self.show_project_page()
         self.setWindowTitle(
@@ -294,6 +307,14 @@ class MainWindow(QMainWindow):
             if self.project_page.project
             else "MNETAPE"
         )
+
+    def on_close_project(self):
+        """Close Project -> tear down any open prep page, then reset project state."""
+        if self.prep_page is not None:
+            self.teardown_prep_page(report_status=False)
+            self.raw_info_label.setText("")
+        self.project_page.do_close_project()
+        self.show_project_page()
 
     # -------- Window events --------
 
