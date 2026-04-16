@@ -23,16 +23,25 @@ _harmonics = ParamMeta(
     min=1,
     max=10,
 )
+_trans_bandwidth = ParamMeta(
+    type="float",
+    label="Transition Bandwidth (Hz)",
+    description="Width of the transition band on each side of the notch. Smaller values produce a narrower dip.",
+    default=1.0,
+    min=0.1,
+    max=10.0,
+)
 
 @builder
 def notch_raw(
     raw: mne.io.Raw,
     freqs: Annotated[float, _freqs] = 50.0,
     harmonics: Annotated[int, _harmonics] = 3,
+    trans_bandwidth: Annotated[float, _trans_bandwidth] = 1.0,
     **kwargs,
 ) -> mne.io.Raw:
     freqs_list = [freqs * (i + 1) for i in range(harmonics)]
-    raw.notch_filter(freqs=freqs_list, **kwargs)
+    raw.notch_filter(freqs=freqs_list, trans_bandwidth=trans_bandwidth, **kwargs)
     return raw
 
 @builder
@@ -40,10 +49,11 @@ def notch_epochs(
     epochs: mne.BaseEpochs,
     freqs: Annotated[float, _freqs] = 50.0,
     harmonics: Annotated[int, _harmonics] = 3,
+    trans_bandwidth: Annotated[float, _trans_bandwidth] = 1.0,
     **kwargs,
 ) -> mne.BaseEpochs:
     freqs_list = [freqs * (i + 1) for i in range(harmonics)]
-    epochs.notch_filter(freqs=freqs_list, **kwargs)
+    epochs.notch_filter(freqs=freqs_list, trans_bandwidth=trans_bandwidth, **kwargs)
     return epochs
 
 @builder
@@ -51,8 +61,9 @@ def notch_evoked(
     evoked: mne.Evoked,
     freqs: Annotated[float, _freqs] = 50.0,
     harmonics: Annotated[int, _harmonics] = 3,
+    trans_bandwidth: Annotated[float, _trans_bandwidth] = 1.0,
     **kwargs,
 ) -> mne.Evoked:
     freqs_list = [freqs * (i + 1) for i in range(harmonics)]
-    evoked.notch_filter(freqs=freqs_list, **kwargs)
+    evoked.notch_filter(freqs=freqs_list, trans_bandwidth=trans_bandwidth, **kwargs)
     return evoked
