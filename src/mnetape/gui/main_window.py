@@ -299,6 +299,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         if self.prep_page is not None:
+            if not self.prep_page.confirm_discard_if_dirty():
+                event.ignore()
+                return
             self.teardown_prep_page(report_status=True)
         self.settings.setValue("main_window/geometry", self.saveGeometry())
         super().closeEvent(event)

@@ -6,7 +6,7 @@ Script format:
   - Imports at the top
   - # --- Functions --- section with one def per unique action body
   - # --- Pipeline --- section with # [N] Title comments + call-site lines
-  - Custom actions use # --inline-- / # --end-- blocks instead of a call site
+  - Custom actions emit their code directly after the header
 """
 
 import ast
@@ -212,9 +212,7 @@ def generate_full_script(actions: list[ActionConfig], extra_preamble: list[str] 
         pipeline_lines.append(f"# [{i}] {title}")
 
         if action.action_id == CUSTOM_ACTION_ID:
-            pipeline_lines.append("# --inline--")
             pipeline_lines.append(action.custom_code or "")
-            pipeline_lines.append("# --end--")
         else:
             action_def = get_action_by_id(action.action_id)
             if action_def:
@@ -308,8 +306,9 @@ def parse_script_to_actions(script: str) -> list[ActionConfig]:
     lines = pipeline_text.split("\n")
 
     header_re = re.compile(r"^#\s*\[(\d+)]\s*(.*?)\s*$")
-    inline_start_re = re.compile(r"^#\s*--inline--\s*$")
-    inline_end_re = re.compile(r"^#\s*--end--\s*$")
+    # For function-name fallback lookup: extract name from "x = func_name(" call sites
+    func_name_re = re.compile(r"=\s*(\w+)\s*\(")
+    dedup_suffix_re = re.compile(r"_\d+$")
 
     actions: list[ActionConfig] = []
     i = 0
@@ -323,40 +322,17 @@ def parse_script_to_actions(script: str) -> list[ActionConfig]:
         title = hm.group(2).strip()
         i += 1
 
-        # Check for inline block (custom action)
-        if i < len(lines) and inline_start_re.match(lines[i].strip()):
-            i += 1  # skip # --inline--
-            inline_lines: list[str] = []
-            while i < len(lines) and not inline_end_re.match(lines[i].strip()):
-                inline_lines.append(lines[i])
-                i += 1
-            if i < len(lines):
-                i += 1  # skip # --end--
-            custom_code = "\n".join(inline_lines).strip()
-
-            action = ActionConfig(
-                CUSTOM_ACTION_ID,
-                {},
-                ActionStatus.PENDING,
-                custom_code=custom_code,
-                is_custom=True,
-                title_override=title,
-            )
-            actions.append(action)
-            continue
-
-        # Find the call-site line
-        call_site_line = ""
-        while i < len(lines):
-            stripped = lines[i].strip()
-            if stripped and not stripped.startswith("#"):
-                call_site_line = stripped
-                i += 1
-                break
+        # Collect every line belonging to this action (up to the next header)
+        body_lines: list[str] = []
+        while i < len(lines) and not header_re.match(lines[i].strip()):
+            body_lines.append(lines[i])
             i += 1
 
-        if not call_site_line:
-            # Empty action slot
+        # Non-comment, non-blank code lines in the body
+        code_lines = [l.strip() for l in body_lines if l.strip() and not l.strip().startswith("#")]
+
+        if not code_lines:
+            # Empty body, fall back to title lookup
             action_def = get_action_by_title(title)
             if action_def:
                 action = ActionConfig(action_def.action_id, action_def.default_params())
@@ -365,41 +341,47 @@ def parse_script_to_actions(script: str) -> list[ActionConfig]:
             actions.append(action)
             continue
 
-        # Parse the call site
-        action_def = get_action_by_title(title)
-        if not action_def:
-            # Unknown title → custom action with the call site as code
-            action = ActionConfig(
-                CUSTOM_ACTION_ID,
-                {},
-                ActionStatus.PENDING,
-                custom_code=call_site_line,
-                is_custom=True,
-                title_override=title,
-            )
-            actions.append(action)
-            continue
+        if len(code_lines) == 1:
+            call_site_line = code_lines[0]
 
-        # Parse call kwargs from AST
-        params, advanced_params, func_name = parse_call_site(call_site_line, action_def)
-        action = ActionConfig(action_def.action_id, params, title_override=title)
-        if advanced_params:
-            action.advanced_params = advanced_params
+            # Resolve action: title lookup first, then function-name fallback
+            action_def = get_action_by_title(title)
+            if action_def is None:
+                m = func_name_re.search(call_site_line)
+                if m:
+                    base_name = dedup_suffix_re.sub("", m.group(1))
+                    action_def = get_action_by_id(base_name)
 
-        # Check if the function body in the script matches the canonical body.
-        # For ANY actions, check all variant bodies.
-        if func_name and func_name in func_defs:
-            actual_body = func_defs[func_name]
-            canonical_bodies = [get_canonical_body(action_def)]
-            if action_def.variants:
-                canonical_bodies.extend(
-                    get_canonical_body(v) for v in action_def.variants.values()
-                )
-            if not any(bodies_match(actual_body, cb) for cb in canonical_bodies):
-                action.custom_code = actual_body
-                action.is_custom = True
+            if action_def is not None:
+                params, advanced_params, func_name = parse_call_site(call_site_line, action_def)
+                action = ActionConfig(action_def.action_id, params, title_override=title)
+                if advanced_params:
+                    action.advanced_params = advanced_params
 
-        actions.append(action)
+                if func_name and func_name in func_defs:
+                    actual_body = func_defs[func_name]
+                    canonical_bodies = [get_canonical_body(action_def)]
+                    if action_def.variants:
+                        canonical_bodies.extend(
+                            get_canonical_body(v) for v in action_def.variants.values()
+                        )
+                    if not any(bodies_match(actual_body, cb) for cb in canonical_bodies):
+                        action.custom_code = actual_body
+                        action.is_custom = True
+
+                actions.append(action)
+                continue
+
+        # Multi-line body or unresolvable single line: custom inline action
+        custom_code = "\n".join(body_lines).strip()
+        actions.append(ActionConfig(
+            CUSTOM_ACTION_ID,
+            {},
+            ActionStatus.PENDING,
+            custom_code=custom_code,
+            is_custom=True,
+            title_override=title,
+        ))
 
     return actions
 

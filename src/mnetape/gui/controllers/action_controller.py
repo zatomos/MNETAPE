@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 from mnetape.actions.registry import get_action_by_id, get_action_title
 from mnetape.core.codegen import extract_custom_preamble, parse_script_to_actions
-from mnetape.core.models import ActionConfig, ICASolution
+from mnetape.core.models import CUSTOM_ACTION_ID, ActionConfig, ICASolution
 from mnetape.gui.dialogs import ActionEditor, AddActionDialog
 
 PROTECTED_ACTION_IDS = frozenset({"load_file", "set_montage"})
@@ -269,7 +269,7 @@ class ActionController:
         self.state.custom_preamble = extract_custom_preamble(code, self.state.actions)
 
         if changed:
-            self.state.pipeline_dirty = True
+            self.w.mark_pipeline_dirty()
             logger.info("Applied manual code edits; action list updated")
         self.w.update_action_list(sync_code=False)
 
@@ -313,7 +313,8 @@ class ActionController:
             self.w.mark_pipeline_dirty()
             action.params = dialog.get_params()
             action.advanced_params = dialog.get_advanced_params()
-            action.title_override = dialog.get_title_override()
+            if action.action_id == CUSTOM_ACTION_ID:
+                action.title_override = dialog.get_title_override()
 
             if dialog.should_clear_custom():
                 action.custom_code = ""

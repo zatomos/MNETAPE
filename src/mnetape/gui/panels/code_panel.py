@@ -183,7 +183,6 @@ class CodePanel(QWidget):
         lines = text.split("\n")
 
         header_re = re.compile(r"^#\s*\[(\d+)]\s*(.*?)\s*$")
-        inline_end_re = re.compile(r"^#\s*--end--\s*$")
 
         i = 0
         in_pipeline = False
@@ -204,21 +203,16 @@ class CodePanel(QWidget):
                 start_line = i
                 i += 1
 
-                # Mark inline block or single call-site line
-                if i < len(lines) and lines[i].strip() == "# --inline--":
-                    # Highlight through # --end--
-                    while i < len(lines) and not inline_end_re.match(lines[i].strip()):
-                        i += 1
-                    if i < len(lines):
-                        i += 1  # include # --end--
-                else:
-                    # Skip blank lines then mark up to (and including) the call-site line
-                    while i < len(lines) and not lines[i].strip():
-                        i += 1
-                    if i < len(lines) and not header_re.match(lines[i].strip()):
-                        i += 1  # include the call-site line
+                # Mark all body lines until the next action header
+                while i < len(lines) and not header_re.match(lines[i].strip()):
+                    i += 1
 
-                for line_num in range(start_line, i):
+                # Trim trailing blank lines from the highlighted range
+                end_line = i
+                while end_line > start_line + 1 and not lines[end_line - 1].strip():
+                    end_line -= 1
+
+                for line_num in range(start_line, end_line):
                     self.editor.markerAdd(line_num, marker_id)
             else:
                 i += 1
