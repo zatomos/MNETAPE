@@ -1,4 +1,9 @@
-"""Crop action templates."""
+"""Crop action templates.
+
+Variants/Modes:
+  absolute: crop to an explicit start/end time
+  trim: remove a fixed duration from each end of the recording
+"""
 
 from __future__ import annotations
 
@@ -7,12 +12,6 @@ from typing import Annotated
 import mne
 from mnetape.actions.base import ParamMeta, builder
 
-_crop_mode = ParamMeta(
-    type="choice",
-    label="Mode",
-    choices=["absolute", "trim"],
-    default="absolute",
-)
 _tmin = ParamMeta(
     type="float",
     label="Start (s)",
@@ -20,14 +19,12 @@ _tmin = ParamMeta(
     default=0.0,
     min=0.0,
     decimals=3,
-    visible_when={"crop_mode": ["absolute"]},
 )
 _tmax = ParamMeta(
     type="float",
     label="End (s)",
     description="End time in seconds.",
     default=0.0,
-    visible_when={"crop_mode": ["absolute"]},
 )
 _trim_start = ParamMeta(
     type="float",
@@ -36,7 +33,6 @@ _trim_start = ParamMeta(
     default=0.0,
     min=0.0,
     decimals=3,
-    visible_when={"crop_mode": ["trim"]},
 )
 _trim_end = ParamMeta(
     type="float",
@@ -45,56 +41,76 @@ _trim_end = ParamMeta(
     default=0.0,
     min=0.0,
     decimals=3,
-    visible_when={"crop_mode": ["trim"]},
 )
 
 
-@builder
-def crop_raw(
+# ---------- Raw variants ----------
+
+@builder(key="absolute")
+def _raw_absolute(
     raw: mne.io.Raw,
-    crop_mode: Annotated[str, _crop_mode] = "absolute",
     tmin: Annotated[float, _tmin] = 0.0,
     tmax: Annotated[float, _tmax] = 0.0,
+    **kwargs,
+) -> mne.io.Raw:
+    raw.crop(tmin=tmin, tmax=tmax, **kwargs)
+    return raw
+
+
+@builder(key="trim")
+def _raw_trim(
+    raw: mne.io.Raw,
     trim_start: Annotated[float, _trim_start] = 0.0,
     trim_end: Annotated[float, _trim_end] = 0.0,
     **kwargs,
 ) -> mne.io.Raw:
-    if crop_mode == "trim":
-        raw.crop(tmin=trim_start, tmax=raw.times[-1] - trim_end, **kwargs)
-    else:
-        raw.crop(tmin=tmin, tmax=tmax, **kwargs)
+    raw.crop(tmin=trim_start, tmax=raw.times[-1] - trim_end, **kwargs)
     return raw
 
 
-@builder
-def crop_epochs(
+# ---------- Epochs variants ----------
+
+@builder(key="absolute")
+def _epochs_absolute(
     epochs: mne.BaseEpochs,
-    crop_mode: Annotated[str, _crop_mode] = "absolute",
     tmin: Annotated[float, _tmin] = 0.0,
     tmax: Annotated[float, _tmax] = 0.0,
+    **kwargs,
+) -> mne.BaseEpochs:
+    epochs.crop(tmin=tmin, tmax=tmax, **kwargs)
+    return epochs
+
+
+@builder(key="trim")
+def _epochs_trim(
+    epochs: mne.BaseEpochs,
     trim_start: Annotated[float, _trim_start] = 0.0,
     trim_end: Annotated[float, _trim_end] = 0.0,
     **kwargs,
 ) -> mne.BaseEpochs:
-    if crop_mode == "trim":
-        epochs.crop(tmin=epochs.times[0] + trim_start, tmax=epochs.times[-1] - trim_end, **kwargs)
-    else:
-        epochs.crop(tmin=tmin, tmax=tmax, **kwargs)
+    epochs.crop(tmin=epochs.times[0] + trim_start, tmax=epochs.times[-1] - trim_end, **kwargs)
     return epochs
 
 
-@builder
-def crop_evoked(
+# ---------- Evoked variants ----------
+
+@builder(key="absolute")
+def _evoked_absolute(
     evoked: mne.Evoked,
-    crop_mode: Annotated[str, _crop_mode] = "absolute",
     tmin: Annotated[float, _tmin] = 0.0,
     tmax: Annotated[float, _tmax] = 0.0,
+    **kwargs,
+) -> mne.Evoked:
+    evoked.crop(tmin=tmin, tmax=tmax, **kwargs)
+    return evoked
+
+
+@builder(key="trim")
+def _evoked_trim(
+    evoked: mne.Evoked,
     trim_start: Annotated[float, _trim_start] = 0.0,
     trim_end: Annotated[float, _trim_end] = 0.0,
     **kwargs,
 ) -> mne.Evoked:
-    if crop_mode == "trim":
-        evoked.crop(tmin=evoked.times[0] + trim_start, tmax=evoked.times[-1] - trim_end, **kwargs)
-    else:
-        evoked.crop(tmin=tmin, tmax=tmax, **kwargs)
+    evoked.crop(tmin=evoked.times[0] + trim_start, tmax=evoked.times[-1] - trim_end, **kwargs)
     return evoked

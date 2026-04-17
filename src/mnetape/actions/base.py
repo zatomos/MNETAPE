@@ -6,7 +6,8 @@ This module contains the building blocks used to define preprocessing actions:
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass, field
+from collections import defaultdict
+from dataclasses import dataclass, field, replace as dataclass_replace
 import importlib.util
 import inspect
 import logging
@@ -110,6 +111,8 @@ def extract_schema_from_signature(fn: Callable) -> dict[str, dict]:
         if name.endswith("_kwargs"):
             continue
 
+        # Strip single leading underscore (schema-builder convention: _param signals intentionally unused)
+        schema_name = name[1:] if name.startswith("_") and not name.startswith("__") else name
         annotation = hints.get(name)
         raw_default = param.default
         has_default = raw_default is not inspect.Parameter.empty
@@ -139,7 +142,7 @@ def extract_schema_from_signature(fn: Callable) -> dict[str, dict]:
         if "default" not in meta:
             meta["default"] = default
 
-        result[name] = meta
+        result[schema_name] = meta
 
     return result
 
@@ -210,18 +213,12 @@ class ActionBuilder:
     output_type: DataType = field(default_factory=lambda: DataType.RAW)
     kwargs_groups: list = field(default_factory=list)
     kwargs_targets: dict = field(default_factory=dict)  # group_name -> dotted call name
+    key: str | None = None  # variant key when used with @builder(key="value")
 
-def builder(fn: Callable) -> ActionBuilder:
-    """Mark a function as the body template for an action.
 
-    Scope variables should be declared as the first positional parameters of the function. They are automatically
-    excluded from param_names and used to infer input_type and output_type.
-
-    Args ending with '_kwargs' or **kwargs are detected and stored in kwargs_groups.
-    They are excluded from param_names. The body AST is scanned to build kwargs_targets: a mapping from group_name
-    to the dotted call name that unpacks it.
-    """
-    ab = ActionBuilder(fn=fn)
+def _build_action_builder(fn: Callable, key: str | None = None) -> ActionBuilder:
+    """Populate an ActionBuilder by introspecting fn's source and signature."""
+    ab = ActionBuilder(fn=fn, key=key)
 
     source = textwrap.dedent(inspect.getsource(fn))
     tree = ast.parse(source)
@@ -239,22 +236,18 @@ def builder(fn: Callable) -> ActionBuilder:
 
     # Detect kwargs groups
     kwargs_groups: list[str] = []
-
-    # Named *_kwargs args
     for a in func_def.args.args:
         if a.arg not in SCOPE_VARS and a.arg.endswith("_kwargs"):
             kwargs_groups.append(a.arg)
-
-    # **kwargs VAR_KEYWORD
     if func_def.args.kwarg is not None and func_def.args.kwarg.arg == "kwargs":
         kwargs_groups.append("kwargs")
-
     ab.kwargs_groups = kwargs_groups
 
-    # param_names excludes scope vars and kwargs groups
+    # param_names excludes scope vars and kwargs groups; strip single leading _
     kwargs_group_set = set(kwargs_groups)
     ab.param_names = [
-        a for a in all_args
+        (a[1:] if a.startswith("_") and not a.startswith("__") else a)
+        for a in all_args
         if a not in SCOPE_VARS and a not in kwargs_group_set
     ]
 
@@ -275,6 +268,33 @@ def builder(fn: Callable) -> ActionBuilder:
     ab.kwargs_targets = kwargs_targets
 
     return ab
+
+
+def builder(_fn: Callable | None = None, *, key: str | None = None):
+    """Mark a function as the body template for an action.
+
+    Can be used as a plain decorator (@builder) or with a variant key (@builder(key="value")).
+
+    When key is provided, this builder defines a named variant body. The matching variant_param in action_from_templates
+    determines which action param value selects each variant at code-gen time.
+
+    A bare @builder (no key) acts as a schema-only builder: its Annotated signature defines params_schema and
+    param_names for the UI form and generated function signature. Its body is used only as a fallback if no keyed
+    variant matches; when all valid param values are covered by keyed variants, write `pass` as the body.
+    If no bare @builder is present, the first keyed builder provides the schema.
+
+    Scope variables should be declared as the first positional parameters of the function. They are automatically
+    excluded from param_names and used to infer input_type and output_type.
+
+    Args ending with '_kwargs' or **kwargs are detected and stored in kwargs_groups.
+    They are excluded from param_names. The body AST is scanned to build kwargs_targets: a mapping
+    from group_name to the dotted call name that unpacks it.
+    """
+    if _fn is None:
+        # @builder(key="something") form, return a decorator
+        return lambda fn: _build_action_builder(fn, key=key)
+    # @builder form, decorate directly
+    return _build_action_builder(_fn, key=None)
 
 # -------- Action definitions --------
 
@@ -347,6 +367,8 @@ class ActionDefinition:
     widget_bindings: tuple = ()
     advanced_schema: dict = field(default_factory=dict)
     variants: dict = field(default_factory=dict)
+    param_variants: dict = field(default_factory=dict)  # maps param_value to body_source string
+    variant_param: str | None = None  # param name whose value selects the active body variant
     input_type: DataType = field(default_factory=lambda: DataType.RAW)
     output_type: DataType = field(default_factory=lambda: DataType.RAW)
     hidden: bool = False
@@ -369,17 +391,40 @@ class ActionDefinition:
             sig += f"{sep}**kwargs"
         return sig + "):"
 
-    def build_function_def(self, func_name: str, context_type: DataType | None = None) -> str:
+    def wrap_body(self, func_name: str, body: str) -> str:
+        return f"{self.build_signature(func_name)}\n{textwrap.indent(body, '    ')}"
+
+    def resolve_body(self, context_type: DataType | None = None, params: dict | None = None) -> str:
+        """Return the active body source, resolving type and param variants.
+
+        Delegates to the matching type-variant first, then selects among param-variant bodies.
+        Falls back to body_source when no matching variant is found.
+        """
+        if self.variants and context_type is not None:
+            variant = self.variants.get(context_type)
+            if variant is not None:
+                return variant.resolve_body(params=params)
+        if self.param_variants and self.variant_param and params is not None:
+            body = self.param_variants.get(params.get(self.variant_param))
+            if body is not None:
+                return body
+        return self.body_source
+
+    def build_function_def(self, func_name: str, context_type: DataType | None = None, params: dict | None = None
+                           )-> str:
         """Generate a Python function definition for this action.
 
         The signature starts with the data input args, followed by primary param names, then any named _kwargs groups
         (with {} defaults), then **kwargs if present.
 
-        When this action has variants, delegates to the matching variant for the given context_type.
+        When this action has type variants, delegates to the matching variant for context_type. Within a
+        variant (or on a flat action), if param_variants is populated the body whose key matches
+        params[variant_param] is used; otherwise body_source is the fallback.
 
         Args:
             func_name: Name to give the generated function.
             context_type: The DataType flowing through the pipeline at this point.
+            params: Full action params dict, used to select the active param variant body.
 
         Returns:
             Complete Python function definition as a string.
@@ -387,21 +432,25 @@ class ActionDefinition:
         if self.variants and context_type is not None:
             variant = self.variants.get(context_type)
             if variant is not None:
-                return variant.build_function_def(func_name)
-        return f"{self.build_signature(func_name)}\n{textwrap.indent(self.body_source, '    ')}"
+                return variant.build_function_def(func_name, params=params)
+        return self.wrap_body(func_name, self.resolve_body(params=params))
 
-    def build_function_def_with_body(self, func_name: str, body: str, context_type: DataType | None = None) -> str:
+    def build_function_def_with_body(self,
+                                     func_name: str,
+                                     body: str,
+                                     context_type: DataType | None = None,
+                                     params: dict | None = None
+                                     ) -> str:
         """Generate a function definition using the canonical signature but a custom body.
 
         Used when the user has edited a function body in the code panel. The signature stays canonical so the call site
-        remains valid.
-
-        When this action has variants, delegates to the matching variant for the given context_type.
+        remains valid. When this action has type variants, delegates to the matching variant's signature.
 
         Args:
             func_name: Name to give the generated function.
             body: Replacement function body source string.
             context_type: The DataType flowing through the pipeline at this point.
+            params: Unused for custom bodies; accepted for a consistent call signature.
 
         Returns:
             Complete Python function definition as a string.
@@ -409,8 +458,8 @@ class ActionDefinition:
         if self.variants and context_type is not None:
             variant = self.variants.get(context_type)
             if variant is not None:
-                return variant.build_function_def_with_body(func_name, body)
-        return f"{self.build_signature(func_name)}\n{textwrap.indent(body, '    ')}"
+                return variant.build_function_def_with_body(func_name, body, params=params)
+        return self.wrap_body(func_name, body)
 
     def build_call_site(self, func_name: str, params: dict, advanced_params: dict | None = None, context_type: DataType | None = None) -> str:
         """Generate a call-site assignment statement for this action.
@@ -457,6 +506,8 @@ def action_from_templates(
     action_id: str,
     title: str,
     doc: str,
+    variant_param: str | None = None,
+    variant_param_meta: ParamMeta | None = None,
     extra_imports: tuple[str, ...] = (),
     mne_doc_urls: dict[str, str] | None = None,
     hidden: bool = False,
@@ -464,19 +515,31 @@ def action_from_templates(
 ) -> ActionDefinition:
     """Build an ActionDefinition by loading and introspecting a templates.py module.
 
-    Discovers the single builder function in the template module.
-    input_type and output_type are inferred automatically from the function signature (scope vars as first params)
-    and the return statement.
+    Discovers @builder functions in the template module and wires them into an ActionDefinition.
+    input_type and output_type are inferred automatically from the function signature and the return statement.
 
-    If a widgets.py file exists, it is autoloaded and its WIDGET_BINDINGS list is used to bind custom widget factories
-    to parameters by name.
+    If a widgets.py file exists, it is autoloaded and its WIDGET_BINDINGS list is used to bind
+    custom widget factories to parameters by name.
+
+    Variant dispatch:
+      - Multiple builders with different input_types -> type variants.
+      - Multiple builders with keys + variant_param -> param variants: at code-gen time the body whose key matches
+      action.params[variant_param] is injected into the function.
+      - Both: each type-variant group may contain keyed builders, creating a two-level dispatch.
+
+    The first builder by declaration order is the primary: its full parameter signature defines params_schema
+    and param_names used by the UI form and generated function signature. Subsequent keyed builders
+    only need scope-var + return annotations; their param declarations are ignored.
 
     Args:
         action_id: Unique identifier string for the action.
         title: Human-readable display name shown in the UI.
         doc: Short description shown in the action editor dialog.
+        variant_param: Name of the param whose value selects the active body variant when keyed
+            @builder functions are present.
         extra_imports: Tuple of additional import statements to include in the generated function.
         mne_doc_urls: Optional dict mapping label strings to MNE documentation URLs.
+        hidden: controls whether the action appears in the Add Action dialog.
         prerequisites: Tuple of Prerequisite objects checked before running.
 
     Returns:
@@ -509,14 +572,43 @@ def action_from_templates(
     )
     rb_fn = result_builder_instance.fn if result_builder_instance else None
 
-    primary_ab = action_builders[0]
-    params_schema: dict[str, dict] = extract_schema_from_signature(primary_ab.fn)
+    primary_ab = next((ab for ab in action_builders if ab.key is None), action_builders[0])
+    keyed_abs_all = [ab for ab in action_builders if ab.key is not None]
 
-    # Populate advanced_schema by introspecting MNE function signatures
+    if variant_param and variant_param_meta and keyed_abs_all:
+        # Distributed schema: merge params from all keyed builders.
+        per_builder_schemas = {ab.key: extract_schema_from_signature(ab.fn) for ab in keyed_abs_all}
+        param_to_keys: dict[str, set[str]] = {}
+        for ab in keyed_abs_all:
+            for name in per_builder_schemas[ab.key]:
+                param_to_keys.setdefault(name, set()).add(ab.key)
+        all_unique_keys = list(dict.fromkeys(ab.key for ab in keyed_abs_all))
+
+        params_schema: dict[str, dict] = {variant_param: variant_param_meta.to_dict()}
+        seen: set[str] = set()
+        for ab in keyed_abs_all:
+            for name, meta in per_builder_schemas[ab.key].items():
+                if name in seen:
+                    continue
+                seen.add(name)
+                keys_with_param = param_to_keys[name]
+                if len(keys_with_param) < len(all_unique_keys) and "visible_when" not in meta:
+                    meta = dict(meta, visible_when={variant_param: sorted(keys_with_param)})
+                params_schema[name] = meta
+        effective_param_names = list(params_schema.keys())
+    else:
+        params_schema = extract_schema_from_signature(primary_ab.fn)
+        effective_param_names = primary_ab.param_names
+
+    # Populate advanced_schema by introspecting MNE function signatures.
+    # If the schema/primary builder has no kwargs_targets, fall back to first keyed builder.
     advanced_schema: dict[str, dict[str, dict]] = {}
-    if primary_ab.kwargs_targets:
+    kwargs_source = primary_ab if primary_ab.kwargs_targets else next(
+        (ab for ab in action_builders if ab.key is not None and ab.kwargs_targets), None
+    )
+    if kwargs_source:
         primary_names = frozenset(params_schema.keys())
-        for group_name, dotted_name in primary_ab.kwargs_targets.items():
+        for group_name, dotted_name in kwargs_source.kwargs_targets.items():
             adv = get_advanced_params(dotted_name, primary_names)
             if adv:
                 advanced_schema[group_name] = adv
@@ -554,56 +646,58 @@ def action_from_templates(
         if isinstance(ir, InteractiveRunner):
             interactive_runner = ir
 
-    if len(action_builders) == 1:
-        # Single-type action
-        ab = action_builders[0]
+    # Group builders by input_type to detect multi-type vs pure-param variants
+    builders_by_type: defaultdict[DataType, list[ActionBuilder]] = defaultdict(list)
+    for ab in action_builders:
+        builders_by_type[ab.input_type].append(ab)
+
+    any_keyed = any(ab.key is not None for ab in action_builders)
+
+    def make_inner_variant(abs_list: list[ActionBuilder]) -> ActionDefinition:
+        """Build an inner ActionDefinition for one input-type group of builders."""
+        schema_ab = next((ab for ab in abs_list if ab.key is None), None)
+        keyed_abs = [ab for ab in abs_list if ab.key is not None]
+        inner_primary = schema_ab or abs_list[0]
+        # If a schema-only builder exists, use the first keyed body as fallback instead of the schema's `pass`
+        fallback_body = keyed_abs[0].body_source if (schema_ab and keyed_abs) else inner_primary.body_source
+        # Inherit kwargs groups/targets from the first keyed builder when the schema builder has none (body is `pass`)
+        first_keyed = keyed_abs[0] if keyed_abs else None
+        effective_kwargs_groups = tuple(inner_primary.kwargs_groups) or (tuple(first_keyed.kwargs_groups) if first_keyed else ())
+        effective_kwargs_targets = inner_primary.kwargs_targets or (first_keyed.kwargs_targets if first_keyed else {})
+        pv: dict[str, str] = {}
+        if any_keyed and variant_param:
+            pv = {ab.key: ab.body_source for ab in abs_list if ab.key is not None}  # type: ignore[misc]
         return ActionDefinition(
             action_id=action_id,
             title=title,
             params_schema=params_schema,
-            body_source=ab.body_source,
-            input_vars=ab.input_vars,
-            param_names=ab.param_names,
-            kwargs_groups=tuple(ab.kwargs_groups),
-            kwargs_targets=ab.kwargs_targets,
-            extra_imports=extra_imports,
             doc=doc,
+            body_source=fallback_body,
+            input_vars=inner_primary.input_vars,
+            param_names=effective_param_names,
+            kwargs_groups=effective_kwargs_groups,
+            kwargs_targets=effective_kwargs_targets,
+            extra_imports=extra_imports,
             mne_doc_urls=mne_doc_urls or {},
             prerequisites=prerequisites,
             widget_bindings=widget_bindings,
             advanced_schema=advanced_schema,
             variants={},
-            input_type=ab.input_type,
-            output_type=ab.output_type,
+            param_variants=pv,
+            variant_param=variant_param if pv else None,
+            input_type=inner_primary.input_type,
+            output_type=inner_primary.output_type,
             hidden=hidden,
-            result_builder_fn=rb_fn,
-            interactive_runner=interactive_runner,
         )
+
+    if len(builders_by_type) == 1:
+        # All builders share one input_type: single-type action or pure param variants
+        abs_list = next(iter(builders_by_type.values()))
+        inner = make_inner_variant(abs_list)
+        return dataclass_replace(inner, result_builder_fn=rb_fn, interactive_runner=interactive_runner)
     else:
-        # Multi-type action. Build a variant ActionDefinition for each builder
-        variants: dict = {}
-        for ab in action_builders:
-            variant = ActionDefinition(
-                action_id=action_id,
-                title=title,
-                params_schema=params_schema,
-                doc=doc,
-                body_source=ab.body_source,
-                input_vars=ab.input_vars,
-                param_names=ab.param_names,
-                kwargs_groups=tuple(ab.kwargs_groups),
-                kwargs_targets=ab.kwargs_targets,
-                extra_imports=extra_imports,
-                mne_doc_urls=mne_doc_urls or {},
-                prerequisites=prerequisites,
-                widget_bindings=widget_bindings,
-                advanced_schema=advanced_schema,
-                variants={},
-                input_type=ab.input_type,
-                output_type=ab.output_type,
-                hidden=hidden,
-            )
-            variants[ab.input_type] = variant
+        # Multiple input types: build one variant ActionDefinition per type
+        type_variants: dict = {dt: make_inner_variant(abs_list) for dt, abs_list in builders_by_type.items()}
 
         return ActionDefinition(
             action_id=action_id,
@@ -612,7 +706,7 @@ def action_from_templates(
             doc=doc,
             body_source=primary_ab.body_source,
             input_vars=primary_ab.input_vars,
-            param_names=primary_ab.param_names,
+            param_names=effective_param_names,
             kwargs_groups=tuple(primary_ab.kwargs_groups),
             kwargs_targets=primary_ab.kwargs_targets,
             extra_imports=extra_imports,
@@ -620,7 +714,9 @@ def action_from_templates(
             prerequisites=prerequisites,
             widget_bindings=widget_bindings,
             advanced_schema=advanced_schema,
-            variants=variants,
+            variants=type_variants,
+            param_variants={},
+            variant_param=None,
             input_type=DataType.ANY,
             output_type=DataType.ANY,
             hidden=hidden,

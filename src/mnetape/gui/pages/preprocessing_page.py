@@ -918,7 +918,7 @@ class PreprocessingPage(QWidget):
         context_type = self.runner.get_data_type_at(index)
 
         if action.is_custom and action.custom_code:
-            func_defs = action_def.build_function_def_with_body(action.action_id, action.custom_code, context_type)
+            func_defs = action_def.build_function_def_with_body(action.action_id, action.custom_code, context_type, params=action.params)
             params = {**action_def.default_params(), **action.params}
             adv = action.advanced_params or None
             call_site = action_def.build_call_site(action.action_id, params, adv, context_type)
@@ -926,7 +926,7 @@ class PreprocessingPage(QWidget):
 
         params = {**action_def.default_params(), **action.params}
         adv = action.advanced_params or None
-        func_defs = action_def.build_function_def(action.action_id, context_type)
+        func_defs = action_def.build_function_def(action.action_id, context_type, params=params)
         call_site = action_def.build_call_site(action.action_id, params, adv, context_type)
         return call_site, func_defs
 

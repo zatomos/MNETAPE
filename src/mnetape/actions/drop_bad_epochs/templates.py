@@ -1,8 +1,8 @@
 """Drop bad epochs action templates.
 
-Two methods:
-  - manual: user-specified amplitude thresholds
-  - autoreject: data-driven thresholds + interpolation via the autoreject library
+Variants:
+  manual: user-specified amplitude thresholds via epochs.drop_bad
+  autoreject: data-driven thresholds + interpolation via the autoreject library
 """
 
 from __future__ import annotations
@@ -12,26 +12,16 @@ from typing import Annotated
 import mne
 from mnetape.actions.base import ParamMeta, builder, result_builder
 
-@builder
-def template_builder(
+
+@builder(key="manual")
+def _body_manual(
     epochs: mne.BaseEpochs,
-    method: Annotated[
-        str,
-        ParamMeta(
-            type="choice",
-            label="Method",
-            description="Manual: set amplitude thresholds. AutoReject: auto-learn thresholds.",
-            choices=["manual", "autoreject"],
-            default="manual",
-        ),
-    ] = "manual",
     reject: Annotated[
         dict | None,
         ParamMeta(
             label="Reject",
             description="Drop epochs where peak-to-peak amplitude exceeds this threshold. None = disabled.",
             default=None,
-            visible_when={"method": ["manual"]},
         ),
     ] = None,
     flat: Annotated[
@@ -40,18 +30,21 @@ def template_builder(
             label="Flat",
             description="Drop epochs where peak-to-peak amplitude is below this threshold. None = disabled.",
             default=None,
-            visible_when={"method": ["manual"]},
         ),
     ] = None,
     **kwargs,
 ) -> mne.BaseEpochs:
-    if method == "autoreject":
-        from autoreject import AutoReject
-        ar = AutoReject(verbose=False)
-        epochs = ar.fit_transform(epochs)
-    else:
-        epochs.drop_bad(reject=reject, flat=flat, **kwargs)
+    epochs.drop_bad(reject=reject, flat=flat, **kwargs)
     return epochs
+
+
+@builder(key="autoreject")
+def _body_autoreject(epochs: mne.BaseEpochs) -> mne.BaseEpochs:
+    from autoreject import AutoReject
+    ar = AutoReject(verbose=False)
+    epochs = ar.fit_transform(epochs)
+    return epochs
+
 
 @result_builder
 def build_result(data):
@@ -97,7 +90,6 @@ def build_result(data):
                     return flat
             return auto
 
-        # Collect which rows  appear in drop_log
         row_order: list[str] = []
         row_index: dict[str, int] = {}
         epoch_entries: list[dict[str, int]] = [{} for _ in range(n_total)]
@@ -110,7 +102,6 @@ def build_result(data):
                     row_order.append(r)
                 epoch_entries[ep_idx][r] = max(epoch_entries[ep_idx].get(r, 0), cat)
 
-        # Sort rows by channel order then unknown strings
         ch_order = {ch: i for i, ch in enumerate(data.ch_names)}
         row_order.sort(key=lambda r: (ch_order.get(r, len(data.ch_names)), r))
         row_index = {r: i for i, r in enumerate(row_order)}
@@ -148,7 +139,6 @@ def build_result(data):
             return ""
 
         ax.format_coord = formatter
-
         fig.tight_layout()
 
     summary = f"{n_dropped} of {n_total} epochs dropped ({n_kept} kept)"

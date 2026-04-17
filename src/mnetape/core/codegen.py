@@ -37,9 +37,26 @@ def bodies_match(actual: str, canonical: str) -> bool:
     """Return True when two body strings have the same AST structure."""
     return normalize_body(actual) == normalize_body(canonical)
 
-def get_canonical_body(action_def) -> str:
-    """Return the action body source (advanced params are now encoded in the function signature)."""
-    return action_def.body_source
+def get_canonical_body(action_def, context_type=None, params=None) -> str:
+    """Return the body source for an action, resolving type and param variants when possible."""
+    return action_def.resolve_body(context_type=context_type, params=params)
+
+
+def all_canonical_bodies(action_def) -> list[str]:
+    """Collect every possible canonical body across type and param variants.
+
+    Used by the parser to decide whether a function body was user-modified.
+    """
+    bodies: list[str] = []
+
+    def _collect(adef) -> None:
+        bodies.append(adef.body_source)
+        bodies.extend(adef.param_variants.values())
+        for variant in adef.variants.values():
+            _collect(variant)
+
+    _collect(action_def)
+    return bodies
 
 def get_types_for_actions(actions: list[ActionConfig]) -> list[DataType]:
     """Return the input DataType for each action in the pipeline.
@@ -77,13 +94,13 @@ def assign_func_names(actions: list[ActionConfig], types: list[DataType] | None 
             continue
 
         context_type = types[idx] if types else DataType.RAW
+        is_any = action_def and action_def.input_type == DataType.ANY and not (action.is_custom and action.custom_code)
 
         if action.is_custom and action.custom_code:
             body = action.custom_code
         else:
-            body = get_canonical_body(action_def)
+            body = get_canonical_body(action_def, context_type=context_type, params=action.params)
 
-        is_any = action_def and action_def.input_type == DataType.ANY and not (action.is_custom and action.custom_code)
         body_key = (normalize_body(body), context_type if is_any else None)
 
         if action.action_id not in seen:
@@ -122,7 +139,7 @@ def generate_action_code(action: ActionConfig, context_type: DataType | None = N
     if not action_def:
         return ""
 
-    return action_def.build_function_def(action.action_id, context_type)
+    return action_def.build_function_def(action.action_id, context_type, params=action.params)
 
 def collect_func_defs(actions: list[ActionConfig], func_names: list[str], types: list[DataType]) -> dict[str, str]:
     """Collect unique function definitions for a list of actions, preserving first occurrence order."""
@@ -136,9 +153,9 @@ def collect_func_defs(actions: list[ActionConfig], func_names: list[str], types:
         if not action_def:
             continue
         if action.is_custom and action.custom_code:
-            emitted[func_name] = action_def.build_function_def_with_body(func_name, action.custom_code, context_type)
+            emitted[func_name] = action_def.build_function_def_with_body(func_name, action.custom_code, context_type, params=action.params)
         else:
-            emitted[func_name] = action_def.build_function_def(func_name, context_type)
+            emitted[func_name] = action_def.build_function_def(func_name, context_type, params=action.params)
     return emitted
 
 def extract_custom_preamble(script: str, actions: list[ActionConfig]) -> list[str]:
@@ -360,12 +377,7 @@ def parse_script_to_actions(script: str) -> list[ActionConfig]:
 
                 if func_name and func_name in func_defs:
                     actual_body = func_defs[func_name]
-                    canonical_bodies = [get_canonical_body(action_def)]
-                    if action_def.variants:
-                        canonical_bodies.extend(
-                            get_canonical_body(v) for v in action_def.variants.values()
-                        )
-                    if not any(bodies_match(actual_body, cb) for cb in canonical_bodies):
+                    if not any(bodies_match(actual_body, cb) for cb in all_canonical_bodies(action_def)):
                         action.custom_code = actual_body
                         action.is_custom = True
 
