@@ -7,6 +7,7 @@ a stacked detail panel on the right.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import logging
 from pathlib import Path
 
@@ -40,7 +41,7 @@ from PyQt6.QtWidgets import (
 )
 
 from mnetape.actions.registry import get_action_by_id
-from mnetape.core.codegen import generate_full_script
+from mnetape.core.codegen import extract_custom_preamble, generate_full_script, parse_script_to_actions, pipeline_canonical_code
 from mnetape.core.project import (
     Participant,
     ParticipantStatus,
@@ -48,8 +49,10 @@ from mnetape.core.project import (
     ProjectContext,
     Session,
     STATUS_COLORS,
+    STATUS_DESCRIPTIONS,
     STATUS_ICONS,
     STATUS_LABELS,
+    aggregate_participant_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,9 +94,32 @@ def add_recent_project(path: str):
     settings.setValue("project/recent", recent[:10])
 
 
-def make_participant_item(p: Participant, expanded: bool = True) -> QTreeWidgetItem:
+def compute_session_pipeline_hash(project: Project, project_dir: Path, participant: Participant, session: Session) -> str:
+    """Return an MD5 hex digest of the normalized generated script for the pipeline in effect.
+
+    Normalizes via parse_script_to_actions → generate_full_script so the hash matches
+    the one stored at run time (which is also computed from the generated script).
+    Returns empty string when no pipeline file is recorded or the file is missing.
+    """
+    if session.has_custom_pipeline:
+        path = project.participant_pipeline_path(project_dir, participant, session)
+    elif project.has_default_pipeline:
+        path = project.pipeline_path(project_dir)
+    else:
+        return ""
+    try:
+        code = path.read_text(encoding="utf-8")
+        actions = parse_script_to_actions(code)
+        normalized = pipeline_canonical_code(actions, extra_preamble=extract_custom_preamble(code, actions) or None)
+        return hashlib.md5(normalized.encode()).hexdigest()
+    except Exception:
+        return ""
+
+
+def make_participant_item(p: Participant, status: ParticipantStatus | None = None, expanded: bool = True) -> QTreeWidgetItem:
     arrow = "▾" if expanded else "▸"
-    status = p.participant_status
+    if status is None:
+        status = p.participant_status
     icon = STATUS_ICONS.get(status, "◌")
     text = f"{arrow}  {icon}  {p.id}"
     color = QColor(STATUS_COLORS.get(status, "#888888"))
@@ -114,10 +140,10 @@ def session_pipeline_state(s: Session) -> str:
     return "custom" if s.has_custom_pipeline else "none"
 
 
-def make_session_item(p: Participant, s: Session, pipeline_state: str = "none") -> QTreeWidgetItem:
-    status = s.session_status
+def make_session_item(p: Participant, s: Session, pipeline_state: str = "none", current_pipeline_hash: str = "") -> QTreeWidgetItem:
+    status = s.effective_status(current_pipeline_hash)
     icon = STATUS_ICONS.get(status, "◌")
-    label = STATUS_LABELS.get(status, s.status)
+    label = STATUS_LABELS.get(status, str(status))
     is_custom = pipeline_state == "custom"
     text = f"   ses-{s.id}  {icon} {label}  {CUSTOM_PIPELINE_ICON}" if is_custom else f"   ses-{s.id}  {icon} {label}"
     color = QColor(STATUS_COLORS.get(status, "#888888"))
@@ -700,11 +726,16 @@ class ProjectPage(QWidget):
         self.participant_tree.clear()
         if self.project and self.project_dir:
             for p in self.project.participants:
-                p_item = make_participant_item(p)
-                self.participant_tree.addTopLevelItem(p_item)
+                session_items = []
+                session_statuses = []
                 for s in p.sessions:
-                    state = session_pipeline_state(s)
-                    s_item = make_session_item(p, s, state)
+                    h = compute_session_pipeline_hash(self.project, self.project_dir, p, s)
+                    session_statuses.append(s.effective_status(h))
+                    s_item = make_session_item(p, s, session_pipeline_state(s), h)
+                    session_items.append(s_item)
+                p_item = make_participant_item(p, aggregate_participant_status(session_statuses))
+                self.participant_tree.addTopLevelItem(p_item)
+                for s_item in session_items:
                     p_item.addChild(s_item)
                 p_item.setExpanded(True)
         self.participant_tree.blockSignals(False)
@@ -722,10 +753,7 @@ class ProjectPage(QWidget):
             if not p_item:
                 continue
             if p_item.data(0, ROLE_PID) == participant_id:
-                new_p = make_participant_item(p, expanded=p_item.isExpanded())
-                p_item.setText(0, new_p.text(0))
-                p_item.setForeground(0, new_p.foreground(0))
-                p_item.setFont(0, new_p.font(0))
+                session_statuses = []
                 for j in range(p_item.childCount()):
                     s_item = p_item.child(j)
                     if not s_item:
@@ -733,11 +761,18 @@ class ProjectPage(QWidget):
                     sid = s_item.data(0, ROLE_SID)
                     s = p.get_session(sid)
                     if s:
-                        state = session_pipeline_state(s)
-                        new_s = make_session_item(p, s, state)
+                        h = compute_session_pipeline_hash(self.project, self.project_dir or Path(), p, s)
+                        s_status = s.effective_status(h)
+                        session_statuses.append(s_status)
+                        new_s = make_session_item(p, s, session_pipeline_state(s), h)
                         s_item.setText(0, new_s.text(0))
                         s_item.setForeground(0, new_s.foreground(0))
                         s_item.setToolTip(0, new_s.toolTip(0))
+                p_status = aggregate_participant_status(session_statuses) if session_statuses else p.participant_status
+                new_p = make_participant_item(p, p_status, expanded=p_item.isExpanded())
+                p_item.setText(0, new_p.text(0))
+                p_item.setForeground(0, new_p.foreground(0))
+                p_item.setFont(0, new_p.font(0))
                 break
 
     def get_selected_item_data(self) -> tuple[str | None, str | None, str | None]:
@@ -815,7 +850,12 @@ class ProjectPage(QWidget):
     def populate_participant_detail(self, p: Participant):
         refs = self.participant_detail_refs
         refs["id_label"].setText(f"<b>{p.id}</b>")
-        status = p.participant_status
+        project_dir = self.project_dir or Path()
+        session_statuses = [
+            s.effective_status(compute_session_pipeline_hash(self.project, project_dir, p, s))
+            for s in p.sessions
+        ] if self.project else []
+        status = aggregate_participant_status(session_statuses) if session_statuses else p.participant_status
         color = STATUS_COLORS.get(status, "#888888")
         label = STATUS_LABELS.get(status, str(status))
         refs["status_label"].setText(
@@ -827,12 +867,12 @@ class ProjectPage(QWidget):
         refs["notes_edit"].blockSignals(False)
 
         session_lines = []
-        for s in p.sessions:
-            icon = STATUS_ICONS.get(s.session_status, "◌")
+        for s, s_status in (zip(p.sessions, session_statuses) if session_statuses else []):
+            icon = STATUS_ICONS.get(s_status, "◌")
             n_runs = len(s.data_files)
             runs_str = f"  [{n_runs} run{'s' if n_runs != 1 else ''}]" if n_runs else ""
             session_lines.append(
-                f"ses-{s.id}  {icon}  {STATUS_LABELS.get(s.session_status, s.status)}{runs_str}"
+                f"ses-{s.id}  {icon}  {STATUS_LABELS.get(s_status, str(s_status))}{runs_str}"
             )
         refs["sessions_list_label"].setText("\n".join(session_lines) if session_lines else "No sessions")
 
@@ -849,6 +889,8 @@ class ProjectPage(QWidget):
             item = runs_layout.takeAt(0)
             if item and (w := item.widget()):
                 w.deleteLater()
+
+        pipeline_hash = compute_session_pipeline_hash(self.project, self.project_dir or Path(), p, s) if self.project else ""
 
         if self.project and (project_dir := self.project_dir):
             resolved = self.project.resolve_data_files(project_dir, s)
@@ -894,14 +936,18 @@ class ProjectPage(QWidget):
 
             if s.merge_runs:
                 n = len(s.data_files)
-                is_processed = bool(s.processed_files)
-                run_icon = "●" if is_processed else "○"
+                run_st = s.run_status(0, pipeline_hash) if any(s.processed_files) else ParticipantStatus.PENDING
+                run_icon = STATUS_ICONS.get(run_st, "○")
                 run_label = f"run{'s' if n != 1 else ''}"
                 run_btn = RunFileButton(f"{run_icon}  Merged  ({n} {run_label})")
                 run_btn.setCheckable(True)
                 run_btn.setChecked(True)
                 any_missing = any(not rpath.exists() for rpath in resolved)
-                run_btn.setStyleSheet(btn_style.format(text_color="#C62828" if any_missing else "inherit"))
+                if any_missing:
+                    text_color = "#C62828"
+                else:
+                    text_color = STATUS_COLORS.get(run_st, "inherit")
+                run_btn.setStyleSheet(btn_style.format(text_color=text_color))
                 run_btn.doubleClicked.connect(self.open_preprocessing)
                 button_group.addButton(run_btn, 0)
                 qc_path = self.project.qc_report_path(project_dir, p, s, None)
@@ -909,27 +955,28 @@ class ProjectPage(QWidget):
             else:
                 for i, (raw_str, resolved_path) in enumerate(zip(s.data_files, resolved)):
                     filename = Path(raw_str).name
-                    is_processed = (
-                        i < len(s.processed_files) and bool(s.processed_files[i])
-                    )
-                    run_icon = "●" if is_processed else "○"
+                    run_st = s.run_status(i, pipeline_hash)
+                    run_icon = STATUS_ICONS.get(run_st, "○")
                     run_btn = RunFileButton(f"{run_icon}  {filename}")
                     run_btn.setCheckable(True)
-                    run_btn.setStyleSheet(btn_style.format(
-                        text_color="#C62828" if not resolved_path.exists() else "inherit"
-                    ))
+                    if not resolved_path.exists():
+                        text_color = "#C62828"
+                    else:
+                        text_color = STATUS_COLORS.get(run_st, "inherit")
+                    run_btn.setStyleSheet(btn_style.format(text_color=text_color))
                     run_btn.doubleClicked.connect(self.open_preprocessing)
                     button_group.addButton(run_btn, i)
                     qc_path = self.project.qc_report_path(project_dir, p, s, i)
                     runs_layout.addWidget(make_run_row(run_btn, qc_path))
 
-        status = s.session_status
+        status = s.effective_status(pipeline_hash)
         color = STATUS_COLORS.get(status, "#888888")
-        label = STATUS_LABELS.get(status, s.status)
+        label = STATUS_LABELS.get(status, str(status))
         msg = f"<span style='color:{color};'>{STATUS_ICONS.get(status, '')} {label}</span>"
         if s.error_msg:
             msg += f"<br><small style='color:#C62828;'>{s.error_msg}</small>"
         refs["status_label"].setText(msg)
+        refs["status_label"].setToolTip(STATUS_DESCRIPTIONS.get(status, ""))
 
         refs["merge_runs_check"].blockSignals(True)
         refs["merge_runs_check"].setChecked(s.merge_runs)

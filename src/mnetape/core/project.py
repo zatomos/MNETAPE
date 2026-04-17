@@ -23,6 +23,7 @@ class ParticipantStatus(str, Enum):
     DONE = "done"
     ERROR = "error"
     INCOMPLETE = "incomplete"
+    STALE = "stale"
 
 
 STATUS_COLORS: dict[ParticipantStatus, str] = {
@@ -31,6 +32,7 @@ STATUS_COLORS: dict[ParticipantStatus, str] = {
     ParticipantStatus.DONE: "#2E7D32",
     ParticipantStatus.ERROR: "#C62828",
     ParticipantStatus.INCOMPLETE: "#E65100",
+    ParticipantStatus.STALE: "#DF8C06",
 }
 
 STATUS_LABELS: dict[ParticipantStatus, str] = {
@@ -39,6 +41,7 @@ STATUS_LABELS: dict[ParticipantStatus, str] = {
     ParticipantStatus.DONE: "Done",
     ParticipantStatus.ERROR: "Error",
     ParticipantStatus.INCOMPLETE: "Incomplete",
+    ParticipantStatus.STALE: "Stale",
 }
 
 STATUS_ICONS: dict[ParticipantStatus, str] = {
@@ -47,7 +50,34 @@ STATUS_ICONS: dict[ParticipantStatus, str] = {
     ParticipantStatus.DONE: "●",
     ParticipantStatus.ERROR: "✕",
     ParticipantStatus.INCOMPLETE: "◑",
+    ParticipantStatus.STALE: "◔",
 }
+
+STATUS_DESCRIPTIONS: dict[ParticipantStatus, str] = {
+    ParticipantStatus.PENDING: "No runs have been processed yet.",
+    ParticipantStatus.RUNNING: "Processing is currently in progress.",
+    ParticipantStatus.DONE: "All runs have been processed successfully.",
+    ParticipantStatus.ERROR: "An error occurred during the last processing run.",
+    ParticipantStatus.INCOMPLETE: "Some runs have been processed; others are still pending.",
+    ParticipantStatus.STALE: "The pipeline has changed since this session was last processed.\nRe-run to bring outputs up to date.",
+}
+
+
+def aggregate_participant_status(statuses: list["ParticipantStatus"]) -> "ParticipantStatus":
+    """Aggregate a list of per-session statuses into a single participant-level status."""
+    if not statuses:
+        return ParticipantStatus.PENDING
+    if any(s == ParticipantStatus.ERROR for s in statuses):
+        return ParticipantStatus.ERROR
+    if any(s == ParticipantStatus.RUNNING for s in statuses):
+        return ParticipantStatus.RUNNING
+    if any(s == ParticipantStatus.STALE for s in statuses):
+        return ParticipantStatus.STALE
+    if all(s == ParticipantStatus.DONE for s in statuses):
+        return ParticipantStatus.DONE
+    if any(s in (ParticipantStatus.DONE, ParticipantStatus.INCOMPLETE) for s in statuses):
+        return ParticipantStatus.INCOMPLETE
+    return ParticipantStatus.PENDING
 
 
 @dataclass
@@ -69,6 +99,7 @@ class Session:
     merge_runs: bool = False
     processed_files: list[str] = field(default_factory=list)
     has_custom_pipeline: bool = False
+    pipeline_hashes: list[str] = field(default_factory=list)
 
     @property
     def session_status(self) -> ParticipantStatus:
@@ -88,6 +119,42 @@ class Session:
             return ParticipantStatus.PENDING
         return ParticipantStatus.DONE if done_count >= len(self.data_files) else ParticipantStatus.INCOMPLETE
 
+    def run_status(self, run_idx: int, current_pipeline_hash: str) -> ParticipantStatus:
+        """Compute the effective status for a single run index."""
+        is_processed = run_idx < len(self.processed_files) and bool(self.processed_files[run_idx])
+        if not is_processed:
+            return ParticipantStatus.PENDING
+        stored = self.pipeline_hashes[run_idx] if run_idx < len(self.pipeline_hashes) else ""
+        if stored and current_pipeline_hash and stored != current_pipeline_hash:
+            return ParticipantStatus.STALE
+        return ParticipantStatus.DONE
+
+    def effective_status(self, current_pipeline_hash: str = "") -> ParticipantStatus:
+        """Return the session status with per-run staleness awareness.
+
+        - If any run is stale and all others are processed: STALE
+        - If any run is stale and some runs are unprocessed: INCOMPLETE
+        - Otherwise falls back to session_status
+        """
+        if self.status in (ParticipantStatus.ERROR, ParticipantStatus.RUNNING):
+            return self.status
+        if not self.data_files:
+            return ParticipantStatus.PENDING
+        if self.merge_runs:
+            return self.run_status(0, current_pipeline_hash) if any(self.processed_files) else ParticipantStatus.PENDING
+        run_statuses = [self.run_status(i, current_pipeline_hash) for i in range(len(self.data_files))]
+        has_stale = any(s == ParticipantStatus.STALE for s in run_statuses)
+        has_pending = any(s == ParticipantStatus.PENDING for s in run_statuses)
+        if has_stale and has_pending:
+            return ParticipantStatus.INCOMPLETE
+        if has_stale:
+            return ParticipantStatus.STALE
+        if not has_pending:
+            return ParticipantStatus.DONE
+        if any(s == ParticipantStatus.DONE for s in run_statuses):
+            return ParticipantStatus.INCOMPLETE
+        return ParticipantStatus.PENDING
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -97,6 +164,7 @@ class Session:
             "merge_runs": self.merge_runs,
             "processed_files": self.processed_files,
             "has_custom_pipeline": self.has_custom_pipeline,
+            "pipeline_hashes": self.pipeline_hashes,
         }
 
     @classmethod
@@ -114,6 +182,7 @@ class Session:
             merge_runs=d.get("merge_runs", False),
             processed_files=d.get("processed_files") or [],
             has_custom_pipeline=d.get("has_custom_pipeline", False),
+            pipeline_hashes=d.get("pipeline_hashes") or [],
         )
 
 

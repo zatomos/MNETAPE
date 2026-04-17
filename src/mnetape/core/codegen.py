@@ -10,6 +10,7 @@ Script format:
 """
 
 import ast
+import dataclasses
 import logging
 import re
 
@@ -188,6 +189,18 @@ def extract_custom_preamble(script: str, actions: list[ActionConfig]) -> list[st
             standard.update(action_def.extra_imports)
 
     return [ln.strip() for ln in preamble.split("\n") if ln.strip() and ln.strip() not in standard]
+
+
+def pipeline_canonical_code(actions: list[ActionConfig], extra_preamble: list[str] | None = None) -> str:
+    """Return the generated script with participant-specific values cleared.
+    """
+    clean: list[ActionConfig] = []
+    for a in actions:
+        if a.action_id == "load_file" and a.params.get("file_path"):
+            clean.append(dataclasses.replace(a, params={**a.params, "file_path": ""}))
+        else:
+            clean.append(a)
+    return generate_full_script(clean, extra_preamble=extra_preamble)
 
 
 def generate_full_script(actions: list[ActionConfig], extra_preamble: list[str] | None = None) -> str:

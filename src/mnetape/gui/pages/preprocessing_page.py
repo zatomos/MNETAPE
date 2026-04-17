@@ -7,6 +7,7 @@ code panel, and visualization panel in sync.
 """
 
 import ast
+import hashlib
 import logging
 import re
 import tempfile
@@ -33,9 +34,9 @@ from PyQt6.QtWidgets import (
 )
 
 from mnetape.actions.registry import get_action_by_id, get_action_title
-from mnetape.core.codegen import extract_custom_preamble, generate_full_script, parse_script_to_actions
+from mnetape.core.codegen import extract_custom_preamble, generate_full_script, parse_script_to_actions, pipeline_canonical_code
 from mnetape.core.models import CUSTOM_ACTION_ID, DataType, ICASolution
-from mnetape.core.project import ParticipantStatus, ProjectContext
+from mnetape.core.project import ParticipantStatus, ProjectContext, STATUS_COLORS, STATUS_LABELS
 from mnetape.gui.controllers.action_controller import ActionController, PROTECTED_ACTION_IDS
 from mnetape.gui.controllers.file_handler import FileHandler
 from mnetape.gui.controllers.nav_controller import NavController
@@ -516,23 +517,37 @@ class PreprocessingPage(QWidget):
             return
         self.update_status_label(ctx.session, ctx.run_index)
 
+    def _current_pipeline_hash(self, s) -> str:
+        """Compute the canonical pipeline hash for the given session using the current project context."""
+        ctx = self.project_context
+        if not ctx:
+            return ""
+        if s.has_custom_pipeline:
+            path = ctx.project.participant_pipeline_path(ctx.project_dir, ctx.participant, s)
+        elif ctx.project.has_default_pipeline:
+            path = ctx.project.pipeline_path(ctx.project_dir)
+        else:
+            return ""
+        try:
+            code = path.read_text(encoding="utf-8")
+            actions = parse_script_to_actions(code)
+            normalized = pipeline_canonical_code(actions, extra_preamble=extract_custom_preamble(code, actions) or None)
+            return hashlib.md5(normalized.encode()).hexdigest()
+        except Exception:
+            return ""
+
     def update_status_label(self, s, run_index: int | None = None):
         """Update the preprocessing header status label. Called externally by ProjectPage."""
+        pipeline_hash = self._current_pipeline_hash(s)
         if run_index is not None and not s.merge_runs:
-            is_processed = (
-                run_index < len(s.processed_files) and bool(s.processed_files[run_index])
-            )
-            text = "Preprocessed" if is_processed else "Pending"
-            color = "#2E7D32" if is_processed else "#888888"
+            status = s.run_status(run_index, pipeline_hash)
         else:
-            _display = {
-                "done": ("Preprocessed", "#2E7D32"),
-                "error": ("Error", "#C62828"),
-                "pending": ("Pending", "#888888"),
-                "incomplete": ("Incomplete", "#E65100"),
-            }
-            text, color = _display.get(s.status, (s.status.title(), "#888888"))
-        self.status_label.setText(f"Status: {text}")
+            status = s.effective_status(pipeline_hash)
+        label = STATUS_LABELS.get(status, str(status))
+        if status == ParticipantStatus.DONE:
+            label = "Preprocessed"
+        color = STATUS_COLORS.get(status, "#888888")
+        self.status_label.setText(f"Status: {label}")
         self.status_label.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: bold;")
 
     def set_default_pipeline_stub(self, *, confirm: bool = True):
@@ -1141,6 +1156,14 @@ class PreprocessingPage(QWidget):
                 s.processed_files[ctx.run_index] = out_str
             elif out_str not in s.processed_files:
                 s.processed_files.append(out_str)
+
+        # Hash the canonical pipeline (file_path cleared) so the hash is not tied to
+        # this participant's data file, and matches the comparison-side normalization.
+        run_code = pipeline_canonical_code(self.state.actions, extra_preamble=self.state.custom_preamble or None)
+        run_idx = ctx.run_index if ctx.run_index is not None else 0
+        while len(s.pipeline_hashes) <= run_idx:
+            s.pipeline_hashes.append("")
+        s.pipeline_hashes[run_idx] = hashlib.md5(run_code.encode()).hexdigest()
 
         ctx.on_status_update(ParticipantStatus.DONE)
 
