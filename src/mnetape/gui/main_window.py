@@ -110,7 +110,7 @@ class MainWindow(QMainWindow):
         self.project_page.close_project_action = close_project_action
 
         proj_file.addSeparator()
-        standalone_action = QAction("Open Without Project...", self)
+        standalone_action = QAction("Open Single EEG File...", self)
         standalone_action.triggered.connect(self.project_page.open_standalone)
         proj_file.addAction(standalone_action)
 

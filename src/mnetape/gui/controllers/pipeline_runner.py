@@ -73,7 +73,7 @@ class PipelineRunner:
     def require_data(self) -> bool:
         """Show a warning and return False when no EEG file is loaded."""
         if self.state.raw_original is None:
-            QMessageBox.warning(self.w, "No Data", "Load a FIF file first.")
+            QMessageBox.warning(self.w, "No Data", "Load an EEG file first.")
             return False
         return True
 

@@ -77,17 +77,27 @@ class FileHandler:
         """No-op: recent menu is rebuilt lazily via MainWindow's aboutToShow signal."""
         pass
 
-    def ensure_load_file_action(self, file_path: str) -> None:
-        """Ensure state.actions[0] is a load_file ActionConfig with the given path.
+    def ensure_load_file_action(self, file_path: str = "") -> None:
+        """Ensure state.actions starts with a single load_file action.
 
-        Updates params in-place if load_file already occupies index 0; otherwise inserts it.
+        Preserves an existing load_file action (including custom_code/is_custom) and
+        moves it to index 0. If none exists, creates a new one.
         """
-        params = {"file_path": file_path, "preload": True}
-        if self.state.actions and self.state.actions[0].action_id == "load_file":
-            self.state.actions[0].params = params
-            self.state.actions[0].reset()
+        existing = next((a for a in self.state.actions if a.action_id == "load_file"), None)
+        existing_path = ""
+        if existing:
+            existing_path = str(existing.params.get("file_path", "") or "")
+        resolved_path = file_path or (str(self.state.data_filepath) if self.state.data_filepath else existing_path)
+
+        if existing:
+            existing.params = {**existing.params, "file_path": resolved_path, "preload": True}
+            existing.reset()
+            load_file_action = existing
         else:
-            self.state.actions.insert(0, ActionConfig("load_file", params))
+            load_file_action = ActionConfig("load_file", {"file_path": resolved_path, "preload": True})
+
+        self.state.actions = [a for a in self.state.actions if a.action_id != "load_file"]
+        self.state.actions.insert(0, load_file_action)
 
     def mark_load_file_complete(self, raw) -> None:
         """Mark the load_file action as complete and store raw in data_states[0].
@@ -234,8 +244,11 @@ class FileHandler:
             QMessageBox.critical(self.w.window(), "Error", f"Export failed:\n{e}")
 
     def new_pipeline(self):
-        """Clear all actions and computed states to start a fresh pipeline."""
+        """Reset pipeline steps while preserving the required load_file action."""
+        self.state.push_undo()
+        self.w.mark_pipeline_dirty()
         self.state.actions = []
+        self.ensure_load_file_action()
         self.state.data_states.clear()
         self.w.update_action_list()
         self.w.update_visualization()

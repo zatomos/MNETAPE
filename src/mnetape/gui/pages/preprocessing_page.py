@@ -6,7 +6,9 @@ Builds the header bar, action list, code/visualization panels, and provides upda
 code panel, and visualization panel in sync.
 """
 
+import ast
 import logging
+import re
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -31,7 +33,7 @@ from PyQt6.QtWidgets import (
 )
 
 from mnetape.actions.registry import get_action_by_id, get_action_title
-from mnetape.core.codegen import generate_full_script, parse_script_to_actions
+from mnetape.core.codegen import extract_custom_preamble, generate_full_script, parse_script_to_actions
 from mnetape.core.models import CUSTOM_ACTION_ID, DataType, ICASolution
 from mnetape.core.project import ParticipantStatus, ProjectContext
 from mnetape.gui.controllers.action_controller import ActionController, PROTECTED_ACTION_IDS
@@ -45,6 +47,62 @@ from mnetape.gui.panels import CodePanel, VisualizationPanel
 from mnetape.gui.widgets import ActionListItem, ActionListWidget
 
 logger = logging.getLogger(__name__)
+
+FUNCS_HEADER_RE = re.compile(r"^#\s*---\s*Functions\s*---[ \t]*$", re.MULTILINE)
+PIPE_HEADER_RE = re.compile(r"^#\s*---\s*Pipeline\s*---[ \t]*$", re.MULTILINE)
+BLOCK_HEADER_RE = re.compile(r"^#\s*\[\d+\]\s*(.+)$", re.MULTILINE)
+
+
+def remove_func_def_from_text(text: str, func_name: str) -> str:
+    """Remove a named function definition from a block of Python source.
+    Uses the AST to find accurate line bounds; returns text unchanged on parse error."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return text
+    lines = text.splitlines(keepends=True)
+    for node in tree.body:
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == func_name
+            and node.lineno is not None
+            and node.end_lineno is not None
+        ):
+            start: int = node.lineno - 1
+            end: int = node.end_lineno
+            while end < len(lines) and lines[end].strip() == "":
+                end += 1
+            return "".join(lines[:start]) + "".join(lines[end:])
+    return text
+
+
+def remove_pipeline_action_block(pipe_text: str, title: str) -> str:
+    """Remove all '# [N] <title>' blocks (header + body until next header) from pipeline text."""
+    block_re = re.compile(
+        r"^#\s*\[\d+\]\s*" + re.escape(title) + r"\s*$",
+        re.MULTILINE | re.IGNORECASE,
+    )
+    next_re = re.compile(r"^#\s*\[\d+\]", re.MULTILINE)
+    result = pipe_text
+    m = block_re.search(result)
+    while m:
+        next_m = next_re.search(result, m.end())
+        end = next_m.start() if next_m else len(result)
+        result = result[: m.start()] + result[end:]
+        m = block_re.search(result)
+    return result
+
+
+def renumber_action_blocks(pipe_text: str) -> str:
+    """Renumber # [N] Title markers sequentially from 1."""
+    n = 0
+
+    def repl(m: re.Match) -> str:
+        nonlocal n
+        n += 1
+        return f"# [{n}] {m.group(1)}"
+
+    return BLOCK_HEADER_RE.sub(repl, pipe_text)
 
 
 def make_type_header(data_type: DataType) -> QListWidgetItem:
@@ -127,6 +185,9 @@ class PreprocessingPage(QWidget):
         self.btn_add_action = QPushButton()
         self.btn_undo = QPushButton()
         self.btn_redo = QPushButton()
+        self.load_file_warning = QWidget()
+        self.load_file_warning_label = QLabel()
+        self.btn_restore_load_file = QPushButton()
         self.action_list = ActionListWidget()
         self.btn_move_up = QPushButton()
         self.btn_move_down = QPushButton()
@@ -152,7 +213,7 @@ class PreprocessingPage(QWidget):
                 else None
             )
 
-        self.emit_status("Ready - Open a FIF file to begin")
+        self.emit_status("Ready - Open an EEG file to begin")
 
     # -------- Status bar helpers --------
 
@@ -280,6 +341,23 @@ class PreprocessingPage(QWidget):
         action_bar.addWidget(self.btn_redo)
 
         left_layout.addLayout(action_bar)
+
+        self.load_file_warning = QFrame()
+        self.load_file_warning.setStyleSheet(
+            "QFrame { background: #FFF3CD; border: 1px solid #FFDA6A; border-radius: 4px; }"
+            "QLabel { color: #664D03; }"
+        )
+        warning_layout = QHBoxLayout(self.load_file_warning)
+        warning_layout.setContentsMargins(8, 6, 8, 6)
+        warning_layout.setSpacing(8)
+        self.load_file_warning_label = QLabel("Missing Load File!")
+        self.load_file_warning_label.setWordWrap(True)
+        warning_layout.addWidget(self.load_file_warning_label, 1)
+        self.btn_restore_load_file = QPushButton("Restore Load File")
+        self.btn_restore_load_file.clicked.connect(self.restore_load_file_action)
+        warning_layout.addWidget(self.btn_restore_load_file)
+        self.load_file_warning.setVisible(False)
+        left_layout.addWidget(self.load_file_warning)
 
         self.action_list = ActionListWidget()
         self.action_list.itemClicked.connect(self.action_ctrl.on_action_clicked)
@@ -544,7 +622,109 @@ class PreprocessingPage(QWidget):
         self.viz_panel.update_step_list(self.state.actions)
         if sync_code:
             self.update_code()
+        if not self.has_load_file_function() or not self.has_load_file_call_site():
+            self.load_file_warning.setVisible(True)
+        else:
+            self.load_file_warning.setVisible(False)
         self.update_button_states()
+
+    def has_load_file_function(self) -> bool:
+        """Return True when the code panel contains a load_file function definition."""
+        code = self.code_panel.get_code()
+        return bool(re.search(r"^\s*def\s+load_file(?:_\d+)?\s*\(", code, re.MULTILINE))
+
+    def has_load_file_call_site(self) -> bool:
+        """Return True when the code panel contains a load_file call site."""
+        code = self.code_panel.get_code()
+        return bool(re.search(r"\braw\s*=\s*load_file(?:_\d+)?\s*\(", code))
+
+    def restore_load_file_action(self) -> None:
+        """Surgically insert load_file back without regenerating the whole script.
+
+        Locates the # --- Functions --- and # --- Pipeline --- markers, removes any
+        existing load_file entries, then inserts a fresh function def (after the
+        Functions header) and a fresh call-site block (as the first block after the
+        Pipeline header). Everything else — custom code, imports, comments, helper
+        functions — is left exactly as-is. Falls back to a manual instructions
+        dialog if either section marker is missing.
+        """
+        action_def = get_action_by_id("load_file")
+        if not action_def:
+            return
+
+        # Resolve the file path from current state
+        existing_load = next(
+            (a for a in self.state.actions if a.action_id == "load_file"), None
+        )
+        file_path = (
+            str(existing_load.params.get("file_path") or "")
+            if existing_load
+            else str(self.state.data_filepath or "")
+        )
+        load_params = {**action_def.default_params(), "file_path": file_path, "preload": True}
+        func_def_text = action_def.build_function_def("load_file")
+        call_site_text = action_def.build_call_site("load_file", load_params)
+
+        code = self.code_panel.get_code()
+        funcs_m = FUNCS_HEADER_RE.search(code)
+        pipe_m = PIPE_HEADER_RE.search(code)
+
+        if not funcs_m or not pipe_m:
+            missing = [h for h, m in [
+                ("# --- Functions ---", funcs_m), ("# --- Pipeline ---", pipe_m)
+            ] if not m]
+            QMessageBox.warning(
+                self.window(),
+                "Cannot Restore Load File",
+                "Missing section header(s): " + ", ".join(missing) + ".\n\n"
+                "Add the following manually:\n\n"
+                "In the # --- Functions --- section:\n" + func_def_text + "\n\n"
+                "In the # --- Pipeline --- section (first block):\n"
+                "# [1] Load File\n" + call_site_text,
+            )
+            return
+
+        self.state.push_undo()
+        self.mark_pipeline_dirty()
+
+        preamble = code[: funcs_m.start()]
+        funcs_section = code[funcs_m.start() : pipe_m.start()]
+        pipe_section = code[pipe_m.start() :]
+
+        # Functions section: remove old load_file def; insert new one right after header.
+        # Strip leading blank lines from the remainder so we control spacing exactly.
+        funcs_section = remove_func_def_from_text(funcs_section, "load_file")
+        header_end_m = re.search(r"#\s*---\s*Functions\s*---[ \t]*\n", funcs_section)
+        if header_end_m:
+            pos = header_end_m.end()
+            rest = funcs_section[pos:].lstrip("\n")
+            funcs_section = funcs_section[:pos] + "\n" + func_def_text + "\n\n" + rest
+
+        # Pipeline section: remove old load_file block; insert new one as first block; renumber.
+        # Same blank-line control: strip leading newlines from the remainder.
+        pipe_section = remove_pipeline_action_block(pipe_section, "Load File")
+        header_end_m = re.search(r"#\s*---\s*Pipeline\s*---[ \t]*\n", pipe_section)
+        if header_end_m:
+            pos = header_end_m.end()
+            rest = pipe_section[pos:].lstrip("\n")
+            new_block = "\n# [1] Load File\n" + call_site_text + "\n\n"
+            pipe_section = pipe_section[:pos] + new_block + rest
+        pipe_section = renumber_action_blocks(pipe_section)
+
+        new_code = preamble + funcs_section + pipe_section
+
+        # Re-sync state from the modified code
+        new_actions = parse_script_to_actions(new_code)
+        self.state.actions = new_actions
+        self.state.custom_preamble = extract_custom_preamble(new_code, new_actions)
+        self.state.data_states.clear()
+        if self.state.raw_original is not None and new_actions:
+            self.files.mark_load_file_complete(self.state.raw_original)
+
+        self.code_panel.set_code(new_code)
+        self.update_action_list(sync_code=False)
+        self.update_visualization()
+        self.emit_status("Restored load_file action")
 
     def get_selected_action_row(self) -> int:
         """Return the action index of the currently selected list item, or -1."""

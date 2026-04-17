@@ -329,10 +329,10 @@ class ProjectPage(QWidget):
 
         btn_layout = QHBoxLayout()
         btn_new = QPushButton("New Project...")
-        btn_new.setFixedWidth(170)
+        btn_new.setFixedWidth(180)
         btn_new.clicked.connect(self.new_project)
-        btn_open = QPushButton("Open Project...")
-        btn_open.setFixedWidth(170)
+        btn_open = QPushButton("Open MNETAPE Project...")
+        btn_open.setFixedWidth(180)
         btn_open.clicked.connect(self.open_project)
         btn_layout.addStretch()
         btn_layout.addWidget(btn_new)
@@ -342,7 +342,7 @@ class ProjectPage(QWidget):
         layout.addLayout(btn_layout)
 
         layout.addSpacing(8)
-        btn_standalone = QPushButton("Open Without Project...")
+        btn_standalone = QPushButton("Open Single EEG File...")
         btn_standalone.setFixedWidth(200)
         btn_standalone.clicked.connect(self.open_standalone)
         btn_row2 = QHBoxLayout()
@@ -354,9 +354,32 @@ class ProjectPage(QWidget):
         return w
 
     def open_standalone(self):
-        """Open the standalone preprocessing window (no project context)."""
+        """Open standalone preprocessing after requiring an EEG file selection."""
+        from mnetape.core.data_io import open_file_dialog_filter
         from mnetape.gui.pages.preprocessing_page import PreprocessingPage
         from PyQt6.QtWidgets import QMainWindow
+
+        selected_path = ""
+        while not selected_path:
+            selected_path, _ = QFileDialog.getOpenFileName(
+                self.window(),
+                "Select EEG File",
+                "",
+                open_file_dialog_filter(),
+            )
+            if selected_path:
+                break
+            retry = QMessageBox.question(
+                self.window(),
+                "EEG File Required",
+                "You must select an EEG file before opening preprocessing.\n"
+                "Do you want to select a file now?",
+                QMessageBox.StandardButton.Retry | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Retry,
+            )
+            if retry == QMessageBox.StandardButton.Cancel:
+                return
+
         w = QMainWindow()
         w.setWindowTitle("MNETAPE")
         w.resize(1400, 900)
@@ -378,7 +401,7 @@ class ProjectPage(QWidget):
         # Keep a reference so the window isn't garbage collected
         self._standalone_window = w
         w.show()
-        page.auto_load()
+        page.files.load_data_path(selected_path)
 
     @staticmethod
     def make_detail_scroll(inner_name: str) -> tuple[QScrollArea, QVBoxLayout, QLabel]:
@@ -769,14 +792,14 @@ class ProjectPage(QWidget):
                 row_layout.setContentsMargins(0, 0, 0, 0)
                 row_layout.setSpacing(4)
                 row_layout.addWidget(btn, 1)
-                qc_btn = QPushButton("QC")
-                qc_btn.setFixedWidth(32)
+                qc_btn = QPushButton("Report")
+                qc_btn.setFixedWidth(50)
                 qc_btn.setToolTip(f"Open QC Report: {report_path.name}")
                 qc_btn.setVisible(report_path.exists())
                 qc_btn.setStyleSheet(
-                    "QPushButton { background: #E3F2FD; border: 1px solid #90CAF9;"
+                    "QPushButton { background: #2E7D32; color: white; border: 1px solid #2E7D32;"
                     " border-radius: 3px; font-size: 11px; padding: 0; }"
-                    "QPushButton:hover { background: #BBDEFB; }"
+                    "QPushButton:hover { background: #256A2A; color: white; }"
                 )
                 qc_btn.clicked.connect(
                     lambda _checked, open_path=report_path: QDesktopServices.openUrl(
