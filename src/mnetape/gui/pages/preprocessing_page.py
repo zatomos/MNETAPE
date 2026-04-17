@@ -760,7 +760,8 @@ class PreprocessingPage(QWidget):
         """Mark the pipeline as having unsaved changes and show the dirty indicator."""
         self.state.pipeline_dirty = True
         self.state.pipeline_modified_this_session = True
-        self._dirty_indicator.setVisible(True)
+        if self.project_context is not None:
+            self._dirty_indicator.setVisible(True)
 
     def clear_pipeline_dirty(self):
         """Mark the pipeline as saved and hide the dirty indicator."""
@@ -797,8 +798,9 @@ class PreprocessingPage(QWidget):
         """Return True if it is safe to leave (saved or user chose to discard).
 
         Shows a Save / Discard / Cancel dialog when the pipeline has unsaved changes.
+        Only active in project mode — standalone windows never prompt for save.
         """
-        if not self.state.pipeline_dirty:
+        if self.project_context is None or not self.state.pipeline_dirty:
             return True
         reply = QMessageBox.question(
             self.window(),

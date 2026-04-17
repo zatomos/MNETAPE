@@ -662,7 +662,7 @@ class ProjectPage(QWidget):
             self.pipeline_status_label.setText("No default pipeline")
             self.pipeline_status_label.setStyleSheet(
                 "QPushButton { font-size: 11px; color: #888; text-align: left;"
-                " padding: 0 0 0 13px; border: none; }"
+                " padding: 0 0 0 13px; border: none; background-color: #FAFAFA; }"
             )
             self.pipeline_status_label.setEnabled(False)
         self.pipeline_status_label.setVisible(True)
