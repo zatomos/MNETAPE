@@ -981,6 +981,7 @@ class ProjectPage(QWidget):
         refs["merge_runs_check"].blockSignals(True)
         refs["merge_runs_check"].setChecked(s.merge_runs)
         refs["merge_runs_check"].blockSignals(False)
+        refs["merge_runs_check"].setVisible(len(s.data_files) > 1)
 
     # Detail editing
 
@@ -1016,9 +1017,21 @@ class ProjectPage(QWidget):
         row = button_group.checkedId()
         if row < 0 or row >= len(s.data_files):
             return
+        filename = Path(s.data_files[row]).name
+        reply = QMessageBox.question(
+            self.window(),
+            "Remove Run",
+            f'Remove "{filename}" from this session?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
         s.data_files.pop(row)
         if row < len(s.processed_files):
             s.processed_files.pop(row)
+        if row < len(s.pipeline_hashes):
+            s.pipeline_hashes.pop(row)
         self.save_project()
         self.populate_session_detail(p, s)
 
@@ -1693,6 +1706,8 @@ class ProjectPage(QWidget):
         """Save current pipeline as the project default; optionally reset participant overrides."""
         if not self.active_prep_page or not self.project or not self.project_dir:
             return
+        # Auto-save participant pipeline before promoting to default
+        self.active_prep_page.files.save_pipeline_default()
         code = strip_managed_params(self.active_prep_page.state.actions)
         if not code:
             return

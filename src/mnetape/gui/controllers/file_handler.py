@@ -245,6 +245,17 @@ class FileHandler:
 
     def new_pipeline(self):
         """Reset pipeline steps while preserving the required load_file action."""
+        non_load = [a for a in self.state.actions if a.action_id != "load_file"]
+        if non_load:
+            reply = QMessageBox.question(
+                self.w.window(),
+                "New Pipeline",
+                "Discard the current pipeline and start fresh?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
         self.state.push_undo()
         self.w.mark_pipeline_dirty()
         self.state.actions = []
