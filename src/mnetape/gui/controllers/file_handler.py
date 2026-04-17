@@ -272,7 +272,11 @@ class FileHandler:
             if not fp:
                 return self.save_pipeline()
         try:
-            fp.write_text(code)
+            fp.write_text(code, encoding="utf-8")
+            if self.w.project_context:
+                ctx = self.w.project_context
+                ctx.session.has_custom_pipeline = True
+                ctx.project.save(ctx.project_dir)
             self.w.code_panel.file_hash = hashlib.md5(code.encode()).hexdigest()
             self.state.pipeline_filepath = fp
             self.w.clear_pipeline_dirty()
@@ -310,21 +314,20 @@ class FileHandler:
         self.w.emit_status(f"Saved: {self.state.pipeline_filepath.name}")
         return True
 
-    def load_pipeline(self):
-        """Open a Python pipeline script and parse it back into actions."""
-        path, _ = QFileDialog.getOpenFileName(self.w.window(), "Load Pipeline", "", "Python Files (*.py)")
-        if not path:
-            return
+    def load_pipeline_file(self, path: str) -> None:
+        """Load a pipeline script from an explicit path without a file dialog.
 
+        Args:
+            path: Absolute path to the Python pipeline script.
+        """
         try:
-            code = Path(path).read_text()
+            code = Path(path).read_text(encoding="utf-8")
             self.state.actions = parse_script_to_actions(code)
             self.state.custom_preamble = extract_custom_preamble(code, self.state.actions)
             self.state.pipeline_filepath = Path(path)
             self.w.clear_pipeline_dirty()
             self.w.code_panel.set_file(self.state.pipeline_filepath)
             self.state.data_states.clear()
-
             self.w.update_action_list()
             self.w.update_visualization()
             self.w.emit_status(f"Loaded pipeline: {self.state.pipeline_filepath.name}")
@@ -332,6 +335,13 @@ class FileHandler:
         except Exception as e:
             logger.exception("Failed to load pipeline: %s", path)
             QMessageBox.critical(self.w, "Error", f"Failed to load pipeline:\n{e}")
+
+    def load_pipeline(self):
+        """Open a Python pipeline script and parse it back into actions."""
+        path, _ = QFileDialog.getOpenFileName(self.w.window(), "Load Pipeline", "", "Python Files (*.py)")
+        if not path:
+            return
+        self.load_pipeline_file(path)
 
     def reload_pipeline(self):
         """Reload the pipeline from the currently open file, discarding computed states."""

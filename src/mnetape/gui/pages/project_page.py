@@ -61,6 +61,9 @@ ROLE_TYPE = Qt.ItemDataRole.UserRole          # "participant" | "session"
 ROLE_PID = Qt.ItemDataRole.UserRole + 1       # participant id str
 ROLE_SID = Qt.ItemDataRole.UserRole + 2       # session id str
 
+CUSTOM_PIPELINE_ICON = "✎"
+CUSTOM_PIPELINE_TOOLTIP = "Custom pipeline (participant-specific override)"
+
 # Right panel page indices
 PAGE_WELCOME = 0
 PAGE_NO_SELECTION = 1
@@ -105,15 +108,24 @@ def make_participant_item(p: Participant, expanded: bool = True) -> QTreeWidgetI
     return item
 
 
-def make_session_item(p: Participant, s: Session) -> QTreeWidgetItem:
+
+def session_pipeline_state(s: Session) -> str:
+    """Return 'custom' if the session has a participant-specific pipeline, else 'none'."""
+    return "custom" if s.has_custom_pipeline else "none"
+
+
+def make_session_item(p: Participant, s: Session, pipeline_state: str = "none") -> QTreeWidgetItem:
     status = s.session_status
     icon = STATUS_ICONS.get(status, "◌")
     label = STATUS_LABELS.get(status, s.status)
-    text = f"   ses-{s.id}  {icon} {label}"
+    is_custom = pipeline_state == "custom"
+    text = f"   ses-{s.id}  {icon} {label}  {CUSTOM_PIPELINE_ICON}" if is_custom else f"   ses-{s.id}  {icon} {label}"
     color = QColor(STATUS_COLORS.get(status, "#888888"))
 
     item = QTreeWidgetItem([text])
     item.setForeground(0, QBrush(color))
+    if is_custom:
+        item.setToolTip(0, CUSTOM_PIPELINE_TOOLTIP)
     item.setData(0, ROLE_TYPE, "session")
     item.setData(0, ROLE_PID, p.id)
     item.setData(0, ROLE_SID, s.id)
@@ -121,9 +133,16 @@ def make_session_item(p: Participant, s: Session) -> QTreeWidgetItem:
 
 
 def strip_managed_params(actions) -> str:
-    """Generate pipeline code with run-specific params reset to their schema defaults."""
+    """Generate pipeline code with participant-specific params cleared.
+
+    Resets managed params (e.g. ICA exclusions) to schema defaults and clears
+    load_file's file_path so the default pipeline is not tied to any one file.
+    """
     clean = []
     for action in actions:
+        if action.action_id == "load_file":
+            clean.append(dataclasses.replace(action, params={**action.params, "file_path": ""}))
+            continue
         action_def = get_action_by_id(action.action_id)
         ir = action_def.interactive_runner if action_def else None
         if action_def and ir and ir.managed_params:
@@ -212,6 +231,7 @@ class ProjectPage(QWidget):
         self.participant_detail_refs = {}
         self.session_detail_widget = QWidget()
         self.session_detail_refs = {}
+        self.pipeline_status_label = QLabel()
 
         self.setup_ui()
 
@@ -246,6 +266,18 @@ class ProjectPage(QWidget):
         title.setObjectName("sidebar_title")
         title.setContentsMargins(12, 0, 0, 4)
         left_layout.addWidget(title)
+
+        self.pipeline_status_label = QPushButton()
+        self.pipeline_status_label.setFlat(True)
+        self.pipeline_status_label.setStyleSheet(
+            "QPushButton { font-size: 11px; color: #888; text-align: left;"
+            " padding: 0 0 0 13px; border: none; }"
+            "QPushButton:hover:enabled { text-decoration: underline; }"
+        )
+        self.pipeline_status_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pipeline_status_label.setVisible(False)
+        self.pipeline_status_label.clicked.connect(self.open_default_pipeline)
+        left_layout.addWidget(self.pipeline_status_label)
 
         self.participant_tree = QTreeWidget()
         self.participant_tree.setObjectName("participant_tree")
@@ -613,21 +645,70 @@ class ProjectPage(QWidget):
             if act := menu.addAction(path):
                 act.triggered.connect(lambda _, p=path: self.load_project(Path(p)))
 
+    def update_pipeline_status_label(self):
+        """Refresh the pipeline status label shown below the Participants title."""
+        if not self.project or not self.project_dir:
+            self.pipeline_status_label.setVisible(False)
+            return
+        if self.project.has_default_pipeline:
+            self.pipeline_status_label.setText("≡ Default pipeline set")
+            self.pipeline_status_label.setStyleSheet(
+                "QPushButton { font-size: 11px; color: #2E7D32; text-align: left;"
+                " padding: 0 0 0 13px; border: none; background-color: #FAFAFA; }"
+                "QPushButton:hover:enabled { text-decoration: underline; }"
+            )
+            self.pipeline_status_label.setEnabled(True)
+        else:
+            self.pipeline_status_label.setText("No default pipeline")
+            self.pipeline_status_label.setStyleSheet(
+                "QPushButton { font-size: 11px; color: #888; text-align: left;"
+                " padding: 0 0 0 13px; border: none; }"
+            )
+            self.pipeline_status_label.setEnabled(False)
+        self.pipeline_status_label.setVisible(True)
+
+    def open_default_pipeline(self):
+        """Show the default pipeline script in a read-only code viewer dialog."""
+        if not self.project or not self.project_dir or not self.project.has_default_pipeline:
+            return
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QDialogButtonBox
+        from mnetape.gui.widgets.code_editor import create_code_editor
+        pipeline_path = self.project.pipeline_path(self.project_dir)
+        try:
+            code = pipeline_path.read_text(encoding="utf-8")
+        except OSError:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Default Pipeline")
+        dialog.resize(800, 600)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(8, 8, 8, 8)
+        editor = create_code_editor(dialog)
+        editor.setReadOnly(True)
+        editor.setText(code)
+        layout.addWidget(editor)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, dialog)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
+
     # Tree building
 
     def rebuild_tree(self):
         """Repopulate the participant/session tree from project.participants."""
         self.participant_tree.blockSignals(True)
         self.participant_tree.clear()
-        if self.project:
+        if self.project and self.project_dir:
             for p in self.project.participants:
                 p_item = make_participant_item(p)
                 self.participant_tree.addTopLevelItem(p_item)
                 for s in p.sessions:
-                    s_item = make_session_item(p, s)
+                    state = session_pipeline_state(s)
+                    s_item = make_session_item(p, s, state)
                     p_item.addChild(s_item)
                 p_item.setExpanded(True)
         self.participant_tree.blockSignals(False)
+        self.update_pipeline_status_label()
 
     def refresh_participant_item(self, participant_id: str):
         """Refresh the display text of a participant and all its session items."""
@@ -652,9 +733,11 @@ class ProjectPage(QWidget):
                     sid = s_item.data(0, ROLE_SID)
                     s = p.get_session(sid)
                     if s:
-                        new_s = make_session_item(p, s)
+                        state = session_pipeline_state(s)
+                        new_s = make_session_item(p, s, state)
                         s_item.setText(0, new_s.text(0))
                         s_item.setForeground(0, new_s.foreground(0))
+                        s_item.setToolTip(0, new_s.toolTip(0))
                 break
 
     def get_selected_item_data(self) -> tuple[str | None, str | None, str | None]:
@@ -954,19 +1037,7 @@ class ProjectPage(QWidget):
         return project_dir
 
     def new_project(self):
-        project_dir = self._create_and_load_project()
-        if project_dir is None or not self.project:
-            return
-        pipeline_path = self.project.pipeline_path(project_dir)
-        if not pipeline_path.exists():
-            pipeline_path.write_text(
-                "# MNETAPE Pipeline\n"
-                "# This script is shared across all participants.\n"
-                "# Use --file to specify the EEG data file path.\n\n"
-                "import argparse\nimport mne\n\nparser = argparse.ArgumentParser()\n"
-                "parser.add_argument('--file', required=True)\nargs = parser.parse_args()\n\n"
-                "raw = mne.io.read_raw(args.file, preload=True)\n"
-            )
+        self._create_and_load_project()
 
     def open_project(self):
         project_dir = QFileDialog.getExistingDirectory(self.window(), "Open Project Folder")
@@ -1322,6 +1393,7 @@ class ProjectPage(QWidget):
         self.project = None
         self.project_dir = None
         self.participant_tree.clear()
+        self.pipeline_status_label.setVisible(False)
         self.left_panel.setVisible(False)
         self.left_sep.setVisible(False)
         self.right_stack.setCurrentWidget(self.welcome_widget)
@@ -1530,7 +1602,7 @@ class ProjectPage(QWidget):
         from mnetape.core.codegen import parse_script_to_actions
 
         default_path = ctx.project.pipeline_path(ctx.project_dir)
-        current_code = generate_full_script(self.active_prep_page.state.actions)
+        current_code = strip_managed_params(self.active_prep_page.state.actions)
         existing_code = default_path.read_text() if default_path.exists() else ""
 
         normalized_current = generate_full_script(
@@ -1565,7 +1637,10 @@ class ProjectPage(QWidget):
         )
         if reply == QMessageBox.StandardButton.Yes:
             default_path.parent.mkdir(parents=True, exist_ok=True)
-            default_path.write_text(current_code)
+            default_path.write_text(current_code, encoding="utf-8")
+            self.project.has_default_pipeline = True
+            self.save_project()
+            self.update_pipeline_status_label()
 
     def set_default_pipeline(self, *, confirm: bool = True):
         """Save current pipeline as the project default; optionally reset participant overrides."""
@@ -1589,26 +1664,26 @@ class ProjectPage(QWidget):
         ctx = self.active_prep_page.project_context
         current_key = (ctx.participant.id, ctx.session.id) if ctx else None
 
-        current_path: Path | None = None
-        other_sessions: list[tuple[str, str]] = []
-        other_paths: list[Path] = []
+        current_session: Session | None = None
+        other_custom: list[tuple[Session, Path]] = []
         for p in self.project.participants:
             for s in p.sessions:
-                path = self.project.participant_pipeline_path(self.project_dir, p, s)
-                if not path.exists():
+                if not s.has_custom_pipeline:
                     continue
+                path = self.project.participant_pipeline_path(self.project_dir, p, s)
                 if (p.id, s.id) == current_key:
-                    current_path = path
+                    current_session = s
                 else:
-                    other_sessions.append((p.id, s.id))
-                    other_paths.append(path)
+                    other_custom.append((s, path))
 
-        if other_sessions:
-            session_list = "\n".join(f"  \u2022 {pid} / ses-{sid}" for pid, sid in other_sessions)
+        if other_custom:
+            session_list = "\n".join(
+                f"  \u2022 {s.id}" for s, _ in other_custom
+            )
             reply = QMessageBox.question(
                 self.window(),
                 "Reset Participant Pipelines?",
-                f"The following {len(other_sessions)} session(s) have custom pipelines that will be overridden:\n\n"
+                f"The following {len(other_custom)} session(s) have custom pipelines that will be overridden:\n\n"
                 f"{session_list}\n\n"
                 "Reset them to the new default?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
@@ -1616,28 +1691,35 @@ class ProjectPage(QWidget):
             if reply == QMessageBox.StandardButton.Cancel:
                 return
             if reply == QMessageBox.StandardButton.Yes:
-                for path in other_paths:
+                for s, path in other_custom:
                     path.unlink(missing_ok=True)
+                    s.has_custom_pipeline = False
 
-        if current_path is not None:
-            current_path.unlink(missing_ok=True)
+        if current_session is not None:
+            self.project.participant_pipeline_path(
+                self.project_dir, ctx.participant, ctx.session
+            ).unlink(missing_ok=True)
+            current_session.has_custom_pipeline = False
 
         default_path = self.project.pipeline_path(self.project_dir)
         default_path.parent.mkdir(parents=True, exist_ok=True)
-        default_path.write_text(code)
+        default_path.write_text(code, encoding="utf-8")
+        self.project.has_default_pipeline = True
+        self.save_project()
+        self.update_pipeline_status_label()
         logger.info("Set default pipeline: %s", default_path)
 
     def use_default_pipeline(self):
         """Reset this participant's pipeline to the project default."""
         if not self.active_prep_page or not self.project or not self.project_dir:
             return
-        default_path = self.project.pipeline_path(self.project_dir)
-        if not default_path.exists():
+        if not self.project.has_default_pipeline:
             QMessageBox.information(self.window(), "No Default Pipeline", "No default pipeline found for this project.")
             return
+        default_path = self.project.pipeline_path(self.project_dir)
         try:
             from mnetape.core.codegen import parse_script_to_actions
-            code = default_path.read_text()
+            code = default_path.read_text(encoding="utf-8")
             actions = parse_script_to_actions(code)
             data_fp = self.active_prep_page.state.data_filepath
             if data_fp and actions and actions[0].action_id == "load_file":
@@ -1646,6 +1728,14 @@ class ProjectPage(QWidget):
             self.active_prep_page.state.data_states.clear()
             self.active_prep_page.code_panel.set_code(code)
             self.active_prep_page.update_action_list()
+            ctx = self.active_prep_page.project_context
+            if ctx and ctx.session.has_custom_pipeline:
+                self.project.participant_pipeline_path(
+                    self.project_dir, ctx.participant, ctx.session
+                ).unlink(missing_ok=True)
+                ctx.session.has_custom_pipeline = False
+                self.save_project()
+                self.refresh_participant_item(ctx.participant.id)
         except Exception as e:
             QMessageBox.critical(self.window(), "Error", f"Failed to load default pipeline:\n{e}")
 
@@ -1662,7 +1752,9 @@ class ProjectPage(QWidget):
         if not code:
             return
         try:
-            path.write_text(code)
+            path.write_text(code, encoding="utf-8")
+            ctx.session.has_custom_pipeline = True
+            self.save_project()
             self.active_prep_page.state.pipeline_filepath = path
             self.active_prep_page.code_panel.set_file(path)
             logger.info("Saved participant pipeline: %s", path)

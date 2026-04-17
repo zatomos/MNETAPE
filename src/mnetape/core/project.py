@@ -68,6 +68,7 @@ class Session:
     error_msg: str = ""
     merge_runs: bool = False
     processed_files: list[str] = field(default_factory=list)
+    has_custom_pipeline: bool = False
 
     @property
     def session_status(self) -> ParticipantStatus:
@@ -95,6 +96,7 @@ class Session:
             "error_msg": self.error_msg,
             "merge_runs": self.merge_runs,
             "processed_files": self.processed_files,
+            "has_custom_pipeline": self.has_custom_pipeline,
         }
 
     @classmethod
@@ -111,6 +113,7 @@ class Session:
             error_msg=d.get("error_msg", ""),
             merge_runs=d.get("merge_runs", False),
             processed_files=d.get("processed_files") or [],
+            has_custom_pipeline=d.get("has_custom_pipeline", False),
         )
 
 
@@ -197,31 +200,27 @@ class ProjectContext:
 
 @dataclass
 class Project:
-    """A study project grouping participants, conditions, and a shared pipeline.
+    """A study project grouping participants and a shared pipeline.
 
     The project serializes to ``project.json`` inside the project directory.
 
     Attributes:
         name: Human-readable project name.
         participants: Ordered list of study participants.
-        conditions: Mapping from condition id to human-readable label.
-        pipeline_file: Filename of the shared pipeline script (relative to project dir).
         created_at: ISO-format creation timestamp.
-        version: Schema version for future migrations.
+        has_default_pipeline: True once a valid default pipeline has been saved.
     """
 
     name: str
     participants: list[Participant] = field(default_factory=list)
-    conditions: dict[str, str] = field(default_factory=dict)
-    pipeline_file: str = "pipeline.py"
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
-    version: str = "2"
+    has_default_pipeline: bool = False
 
     # -------- Path helpers --------
 
     def pipeline_path(self, project_dir: Path) -> Path:
         """Absolute path to the shared pipeline script."""
-        return project_dir / self.pipeline_file
+        return project_dir / "pipeline.py"
 
     def participant_pipeline_path(self, project_dir: Path, participant: "Participant", session: "Session") -> Path:
         """Absolute path to the participant/session-specific pipeline override.
@@ -371,11 +370,9 @@ class Project:
 
     def to_dict(self) -> dict:
         return {
-            "version": self.version,
             "name": self.name,
-            "conditions": self.conditions,
-            "pipeline_file": self.pipeline_file,
             "created_at": self.created_at,
+            "has_default_pipeline": self.has_default_pipeline,
             "participants": [p.to_dict() for p in self.participants],
         }
 
@@ -404,8 +401,6 @@ class Project:
         return cls(
             name=d.get("name", ""),
             participants=[Participant.from_dict(p) for p in d.get("participants", [])],
-            conditions=d.get("conditions", {}),
-            pipeline_file=d.get("pipeline_file", "pipeline.py"),
             created_at=d.get("created_at", ""),
-            version=d.get("version", "1"),
+            has_default_pipeline=d.get("has_default_pipeline", False),
         )
