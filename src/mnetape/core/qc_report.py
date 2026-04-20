@@ -20,13 +20,13 @@ from mnetape.actions.registry import get_action_title
 from mnetape.core.models import ActionConfig, ActionStatus, ICASolution
 
 if TYPE_CHECKING:
-    from mnetape.gui.controllers.state import AppState
+    from mnetape.gui.controllers.pipeline_state import PipelineState
 
 logger = logging.getLogger(__name__)
 
 
 def generate_report(
-    state: AppState,
+    state: PipelineState,
     out_path: Path,
     title: str = "EEG QC Report",
     include_events_viewer: bool = True,
@@ -78,7 +78,7 @@ def generate_report(
 
 # -------- Data accessors --------
 
-def get_data_before(state: AppState, i: int):
+def get_data_before(state: PipelineState, i: int):
     if i == 0:
         return state.raw_original
     if i <= len(state.data_states):
@@ -88,7 +88,7 @@ def get_data_before(state: AppState, i: int):
     return state.raw_original
 
 
-def get_data_after(state: AppState, i: int):
+def get_data_after(state: PipelineState, i: int):
     if i < len(state.data_states):
         return state.data_states[i]
     return None
@@ -96,7 +96,7 @@ def get_data_after(state: AppState, i: int):
 
 # -------- Summary table --------
 
-def add_summary_table(report: mne.Report, state: AppState) -> None:
+def add_summary_table(report: mne.Report, state: PipelineState) -> None:
     rows = []
     for i, action in enumerate(state.actions):
         sym = {"COMPLETE": "✓", "ERROR": "✗", "PENDING": "○"}.get(action.status.name, "?")
@@ -453,7 +453,7 @@ def top_conditions(epoch_list: list[mne.BaseEpochs]) -> list[str]:
     return [cond for cond, _ in counts.most_common(MAX_EVO_CONDITIONS)]
 
 
-def get_epoch_params(state: AppState) -> tuple[float, float, tuple]:
+def get_epoch_params(state: PipelineState) -> tuple[float, float, tuple]:
     """Return (tmin, tmax, baseline) from the pipeline's epoch action, or sane defaults."""
     for action in state.actions:
         if action.action_id in ("epoch_fixed", "epoch_events"):
@@ -497,7 +497,7 @@ def resolve_to_epochs(
 
 def add_events_evolution_section(
     report: mne.Report,
-    state: AppState,
+    state: PipelineState,
 ) -> None:
     """Add Events Viewer section: per-condition ERP+TFR grid across every pipeline step.
 

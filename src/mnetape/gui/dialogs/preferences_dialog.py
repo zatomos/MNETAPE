@@ -17,13 +17,13 @@ from PyQt6.QtWidgets import (
 )
 
 if TYPE_CHECKING:
-    from mnetape.gui.controllers.state import AppState
+    from mnetape.gui.controllers.pipeline_state import PipelineState
 
 
 class PreferencesDialog(QDialog):
     """Modal dialog for editing persistent application preferences."""
 
-    def __init__(self, state: AppState | None = None, parent=None, *, settings: QSettings | None = None):
+    def __init__(self, state: PipelineState | None = None, parent=None, *, settings: QSettings | None = None):
         super().__init__(parent)
 
         self.cache_size_spin: QSpinBox

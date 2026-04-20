@@ -1,6 +1,6 @@
 """Preprocessing page widget for the EEG preprocessing pipeline.
 
-QWidget that hosts an active preprocessing session. It owns the shared AppState and instantiates the controller objects
+QWidget that hosts an active preprocessing session. It owns the shared PipelineState and instantiates the controller objects
 that implement all user-facing operations.
 Builds the header bar, action list, code/visualization panels, and provides update helpers that keep the action list,
 code panel, and visualization panel in sync.
@@ -41,7 +41,7 @@ from mnetape.gui.controllers.action_controller import ActionController, PROTECTE
 from mnetape.gui.controllers.file_handler import FileHandler
 from mnetape.gui.controllers.nav_controller import NavController
 from mnetape.gui.controllers.pipeline_runner import OperationCancelled, PipelineRunner
-from mnetape.gui.controllers.state import AppState
+from mnetape.gui.controllers.pipeline_state import PipelineState
 from mnetape.gui.dialogs.action_result_dialog import ActionResultDialog
 from mnetape.gui.dialogs.preferences_dialog import PreferencesDialog
 from mnetape.gui.panels import CodePanel, VisualizationPanel
@@ -163,7 +163,7 @@ class PreprocessingPage(QWidget):
         self._nav_list: list = nav_list
 
         # State
-        self.state = AppState.create_with_settings(settings)
+        self.state = PipelineState.create_with_settings(settings)
         self.state.data_states.close()
         self.open_dialogs: list = []
         self.generate_qc_after_pipeline = False
