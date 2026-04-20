@@ -51,7 +51,7 @@ class AddActionDialog(QDialog):
         self.action_tree.setIndentation(16)
         layout.addWidget(self.action_tree, 1)
 
-        # Build a lookup: action_id → action_def for all non-custom registered actions
+        # Build a lookup: action_id -> action_def for all non-custom registered actions
         all_actions = {
             a.action_id: a
             for a in list_actions()

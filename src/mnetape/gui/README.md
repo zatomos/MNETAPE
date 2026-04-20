@@ -1,163 +1,106 @@
 # GUI
 
-The `gui` package contains all Qt6 interface code. It is organized into four layers:
+The `gui` package contains the full Qt6 user interface built with PyQt6.
 
-| Layer       | Directory      | What it contains                                    |
-|-------------|----------------|-----------------------------------------------------|
-| Entry point | `app.py`       | Application bootstrap, stylesheet, `main()`         |
-| Controllers | `controllers/` | Business logic - own no widgets directly            |
-| Panels      | `panels/`      | Large persistent views (code editor, visualisation) |
-| Dialogs     | `dialogs/`     | Modal dialogs                                       |
-| Widgets     | `widgets/`     | Reusable leaf components                            |
+## Top-level layout
 
----
-
-## Application bootstrap - `app.py`
-
-`main()` is the console-script entry point (`mnetape`).
-
----
-
-## Shared state - `controllers/state.py`
-
-`AppState` is a plain dataclass that holds every piece of mutable application state. It is created once by `MainWindow`
-and passed by reference to every controller.
-
-
-`raw_states[i]` is the `Raw` object produced by `actions[i]`. Downstream actions always read from the last entry
-in `raw_states`.
-
----
-
-## MainWindow - `controllers/main_window.py`
-
-`MainWindow` is the top-level `QMainWindow`. It owns the layout and wires all controllers together.
-
-**Layout:**
-
-```
-┌─────────────────────────────────────────┐
-│  Menu bar                               │
-├───────────────┬─────────────────────────┤
-│  Action list  │  Code panel             │
-│               │      or                 │
-│               │  Visualisation panel    │
-├───────────────┴─────────────────────────┤
-│  Status bar                             │
-└─────────────────────────────────────────┘
+```text
+gui/
+├── app.py                     # QApplication entry point; sets up Fusion style, QSS, matplotlib backend, app icon
+├── main_window.py             # QMainWindow shell, hosts the pages on a QStackedWidget
+├── utils.py                   # Shared GUI helpers
+├── pages/
+│   ├── project_page.py        # Project management: participant/session tree, status badges, run selection
+│   └── preprocessing_page.py  # Pipeline editor and runner
+├── controllers/               # Logic for the different parts of the preprocessing page
+├── panels/
+├── dialogs/                   # Modal dialogs
+├── widgets/                   # Reusable custom widgets
+└── assets/                    # Icons, images, stylesheets
 ```
 
----
+## Interaction model
 
-## Controllers
+`MainWindow` hosts two pages on a `QStackedWidget`:
 
-Controllers hold the business logic for a specific concern. They receive `AppState` and `MainWindow` references
-but do not own any top-level widgets.
+1. **`ProjectPage`** — shown at startup, manages the participant/session roster.
+2. **`PreprocessingPage`** — created fresh each time a session is opened; destroyed when the user goes back.
 
-### FileHandler - `controllers/file_handler.py`
-
-Handles all file I/O.
-
-### PipelineRunner - `controllers/pipeline_runner.py`
-
-Executes actions and steps.
-
-**Threading model:**
-
-- Non-interactive steps and full-action runs execute in a background `QThread`. A modal `QProgressDialog` blocks the UI.
-- Interactive steps run on the **main Qt thread**. The background worker signals the main thread, waits for the user
-  to finish, then continues.
-- On completion, `state.raw_states` is updated and the visualization panel is refreshed.
-
-### ActionController - `controllers/action_controller.py`
-
-Manages the action sidebar and the code→action sync.
-
-| Operation     | Trigger                                       |
-|---------------|-----------------------------------------------|
-| Add action    | "+ Add action" -> `AddActionDialog`           |
-| Remove action | Delete key / context menu                     |
-| Edit action   | Double-click / context menu -> `ActionEditor` |
-| Reorder       | Up/Down buttons                               |
-| Run next step | Right-click context menu                      |
-| Reset steps   | Right-click context menu                      |
-
-When an action is removed or moved, all downstream actions are reset to `PENDING` because their input `raw` may
-have changed.
-
-`ActionController` also owns the code-action sync: it debounces manual code edits and reconciles the action list when
-the user edits the script directly.
-
-### NavController - `controllers/nav_controller.py`
-
-Manages the step selector combo box (prev/next navigation, selection sync with the action list) and provides
-the MNE browser shortcut.
-
----
-
-## Panels
-
-### CodePanel - `panels/code_panel.py`
-
-A `QScintilla`-based code editor with action-block highlighting.
-
-- Each action block (`# In[N]` ... `# End[N]`) is highlighted with a unique background color derived from the
-  action title.
-- A `QFileSystemWatcher` monitors the backing `.py` file for external edits.
-- An `internal_update` flag prevents feedback loops when `MainWindow` programmatically updates the editor.
-- When the user edits the code manually, we call a timer debounce. We then parse the script into actions and update
-  the action list to reflect any changes.
-
-### VisualizationPanel - `panels/visualization_panel.py`
-
-Displays the current `mne.io.Raw` object across four tabs (PSD, Time Series, Sensors, and Topomap) for the pipeline step
-selected in the combo box. Tabs render on demand when switched. <br>
-The Time Series tab embeds an MNE interactive browser widget. PSD and Topomap results are cached by raw object identity
-to skip unnecessary redraws.
-
----
-
-## Dialogs
-
-### ActionEditor - `dialogs/action_editor.py`
-
-The main parameter-editing dialog. Opens when the user double-clicks an action or a step.
-
-- Dynamically builds a form from the action's params schema.
-- Looks up custom widget factories. This allows actions to have custom editors for specific parameters.
-- Shows a collapsible "Advanced" section populated by advanced parameters. These are automatically determined
-  by introspecting the MNE function's signature at runtime and filtering out kwargs already owned by
-  the action's primary parameters.
-- A read-only code preview updates in real time as the user changes values.
-- When `step_idx` is provided, only the parameters for that specific step are shown.
-- MNE documentation links are shown at the bottom.
-
-### AddActionDialog - `dialogs/add_action_dialog.py`
-
-Lists all registered actions with their titles and descriptions. Returns the selected `action_id`.
-
-### MontageDialog - `dialogs/montage_dialog.py`
-
-Interactive channel montage editor used when importing an EEG file.
-
----
-
-## Code & UI synchronisation
-
-The bidirectional sync works as follows:
+`PreprocessingPage` owns one `PipelineState` instance and three controllers. Each controller stores `self.w` (the page) and `self.state` (the shared state). Controllers never call each other directly; they mutate state and then call `self.w` helpers (`refresh_action_list`, `update_code_panel`, `update_visualization`) to propagate changes to the UI.
 
 ```
-User edits GUI params
-    - ActionEditor.accept()
-    - action.params updated
-    - MainWindow.update_code()  [internal_update = True]
-    - CodePanel.set_code(new_script)  [signal blocked]
-
-User edits code panel
-    - debounce timer fires
-    - parse_script_to_actions(code)
-    - state.actions replaced
-    - MainWindow.update_action_list() [sync_code = False]
+PreprocessingPage
+│
+├── PipelineState      single source of truth for all controllers
+│
+├── FileHandler        reads/writes EEG files and pipeline scripts
+│
+├── PipelineRunner     runs actions on a QThread; emits progress signals
+│                      back to the page, which updates status icons
+│
+└── ActionController   adds/removes/reorders actions and reconciles
+                       hand-edited code back into the action list
 ```
 
-The `internal_update` / `sync_code = False` flags prevent each path from triggering the other.
+`open_browser()` (MNE interactive browser for the current step) lives directly on `PreprocessingPage`.
+
+The **action list** (left panel) and **code panel** (right panel) stay synchronized in both directions: any edit to the code panel is debounced, parsed by `parse_script_to_actions`, and reconciled back into `PipelineState.actions`, then the action list re-renders.
+
+The **visualization panel** updates whenever the current step changes; it reads the corresponding `data_states[i]` entry and renders the appropriate tabs for the data type.
+
+## Standalone mode
+
+**File > Open Single EEG File...** opens the preprocessing page without a project context.
+The loaded file is not associated with any participant or session; the pipeline can still be saved/loaded as `.py` scripts.
+
+---
+
+## PipelineState (`controllers/state.py`)
+
+Shared mutable state owned by `PreprocessingPage` and read by all controllers:
+
+| Field               | Type                                           | Purpose                                             |
+|---------------------|------------------------------------------------|-----------------------------------------------------|
+| `actions`           | `list[ActionConfig]`                           | Ordered pipeline steps                              |
+| `data_states`       | `list[Raw \| Epochs \| ICASolution \| None]`   | Per-step computed data (None = not yet run)         |
+| `raw_original`      | `Raw \| None`                                  | Unmodified source data, used for pipeline resets    |
+| `data_filepath`     | `Path \| None`                                 | Currently loaded EEG file path                      |
+| `pipeline_filepath` | `Path \| None`                                 | Currently loaded or saved pipeline script path      |
+| `pipeline_dirty`    | `bool`                                         | Unsaved edits exist in project mode                 |
+| `custom_preamble`   | `list[str] \| None`                            | Extra imports/setup lines from the script header    |
+| `recent_fif`        | `list[str]`                                    | Recently opened EEG files (for the recent menu)     |
+
+---
+
+## Visualization panel tabs
+
+| Data type | Tabs                                                        |
+|-----------|-------------------------------------------------------------|
+| `Raw`     | PSD, Time Series, Sensors, Topomap                          |
+| `Epochs`  | PSD, Epochs Browser, Sensors, Topomap, Image                |
+| `Evoked`  | PSD, Time Series, Sensors, Topomap                          |
+| `ICA`     | Renders the underlying `.raw` from the `ICASolution` bundle |
+
+The MNE Qt browser (mne-qt-browser) is used for interactive time series and epochs browsing.
+Static plots (PSD, Topomap, Sensor layout) use matplotlib rendered in `QtAgg` mode.
+
+---
+
+## Action list widget (`widgets/common.py`)
+
+`ActionListItem` is the custom row widget for each pipeline step:
+
+- Constructor: `(index, action, parent=None, type_mismatch=False)`
+- Shows the step index, title, status icon, and a **Run** button.
+- `type_mismatch=True` flags actions whose input type does not match the current pipeline data type.
+
+---
+
+## Threading
+
+Long-running operations (file load, pipeline execution) run on a `QThread` managed by `PipelineRunner`.
+The UI shows a cancelable progress dialog during execution.
+
+`data_store.py` uses `threading.current_thread() is threading.main_thread()` (not Qt API) for thread-safety checks to avoid Qt dependency in core code.
+
+---

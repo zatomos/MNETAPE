@@ -15,7 +15,7 @@ from mnetape.actions.base import ParamMeta, builder
 @builder
 def template_builder(
     ica: mne.preprocessing.ICA, raw: mne.io.Raw,
-    exclude: Annotated[list, ParamMeta(type="list", label="Exclude", default=[])],
+    exclude: Annotated[list | None, ParamMeta(type="list", label="Exclude", default=None, nullable=True)],
     **kwargs,
 ) -> mne.io.Raw:
     ica.exclude = list(exclude or [])

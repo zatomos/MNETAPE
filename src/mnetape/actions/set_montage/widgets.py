@@ -348,7 +348,7 @@ class MontageDialog(QDialog):
 
 # ── Inline param widget ──────────────────────────────────────────────────────
 
-# Shared cache: maps id(ActionEditor) → MontageConfigWidget
+# Shared cache: maps id(ActionEditor) -> MontageConfigWidget
 _compound_cache: dict = {}
 
 

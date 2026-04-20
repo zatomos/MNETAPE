@@ -39,13 +39,13 @@ from mnetape.core.models import CUSTOM_ACTION_ID, DataType, ICASolution
 from mnetape.core.project import ParticipantStatus, ProjectContext, STATUS_COLORS, STATUS_LABELS
 from mnetape.gui.controllers.action_controller import ActionController, PROTECTED_ACTION_IDS
 from mnetape.gui.controllers.file_handler import FileHandler
-from mnetape.gui.controllers.nav_controller import NavController
 from mnetape.gui.controllers.pipeline_runner import OperationCancelled, PipelineRunner
 from mnetape.gui.controllers.pipeline_state import PipelineState
 from mnetape.gui.dialogs.action_result_dialog import ActionResultDialog
 from mnetape.gui.dialogs.preferences_dialog import PreferencesDialog
 from mnetape.gui.panels import CodePanel, VisualizationPanel
 from mnetape.gui.widgets import ActionListItem, ActionListWidget
+from mnetape.gui.widgets.common import disable_mne_browser_channel_clicks, sanitize_mne_browser_toolbar
 
 logger = logging.getLogger(__name__)
 
@@ -172,7 +172,6 @@ class PreprocessingPage(QWidget):
         self.files = FileHandler(self)
         self.runner = PipelineRunner(self)
         self.action_ctrl = ActionController(self)
-        self.nav = NavController(self)
 
         # DataStore shows a progress dialog when reading a file
         self.state.data_states.thread_runner = self.runner.run_in_thread
@@ -575,6 +574,32 @@ class PreprocessingPage(QWidget):
         redo_shortcut = QShortcut(QKeySequence.StandardKey.Redo, self)
         redo_shortcut.activated.connect(self.redo_pipeline)
 
+
+    # -------- MNE browser --------
+
+    def open_browser(self):
+        """Open MNE's interactive browser for the currently selected step."""
+        step = self.viz_panel.current_step
+        if step == 0 and self.state.raw_original:
+            browser = self.state.raw_original.plot(block=False, title="Original")
+            sanitize_mne_browser_toolbar(browser, allow_annotation_mode=False)
+            disable_mne_browser_channel_clicks(browser)
+        elif 0 < step <= len(self.state.data_states):
+            data = self.state.data_states[step - 1]
+            if data is None:
+                return
+            elif isinstance(data, ICASolution):
+                browser = data.raw.plot(block=False, title=f"Raw at ICA step {step}")
+                sanitize_mne_browser_toolbar(browser, allow_annotation_mode=False)
+                disable_mne_browser_channel_clicks(browser)
+            elif isinstance(data, mne.Evoked):
+                data.plot(show=True)
+            else:
+                browser = data.plot(block=False, title=f"After step {step}")
+                sanitize_mne_browser_toolbar(browser, allow_annotation_mode=False)
+                disable_mne_browser_channel_clicks(browser)
+        else:
+            QMessageBox.warning(self, "No Data", "No data to display.")
 
     # -------- Toggle between code/viz --------
 
@@ -1215,7 +1240,7 @@ class PreprocessingPage(QWidget):
             return
 
         self.btn_qc_report.setVisible(True)
-        self.emit_status(f"QC report saved → {out_path.name}")
+        self.emit_status(f"QC report saved -> {out_path.name}")
 
     def open_qc_report(self):
         """Open the QC report for the current run in the system browser."""

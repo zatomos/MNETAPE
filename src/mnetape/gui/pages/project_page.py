@@ -97,8 +97,7 @@ def add_recent_project(path: str):
 def compute_session_pipeline_hash(project: Project, project_dir: Path, participant: Participant, session: Session) -> str:
     """Return an MD5 hex digest of the normalized generated script for the pipeline in effect.
 
-    Normalizes via parse_script_to_actions → generate_full_script so the hash matches
-    the one stored at run time (which is also computed from the generated script).
+    Normalizes via parse_script_to_actions -> generate_full_script so the hash matches the one stored at run time.
     Returns empty string when no pipeline file is recorded or the file is missing.
     """
     if session.has_custom_pipeline:
@@ -321,11 +320,11 @@ class ProjectPage(QWidget):
 
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(8, 4, 8, 0)
-        self.btn_add = QPushButton("+ Add")
+        self.btn_add = QPushButton("+ Add Participant")
         self.btn_add.setObjectName("btn_add_action")
         self.btn_add.clicked.connect(self.add_participant)
         self.btn_add.setEnabled(False)
-        self.btn_remove = QPushButton("Remove")
+        self.btn_remove = QPushButton("Remove Participant")
         self.btn_remove.setEnabled(False)
         self.btn_remove.clicked.connect(self.remove_selected)
         btn_row.addWidget(self.btn_add, 1)
@@ -559,11 +558,11 @@ class ProjectPage(QWidget):
         runs_header.addWidget(QLabel("<b>Run Files</b>"))
         runs_header.addStretch()
         btn_add_run = QPushButton("+ Add Run")
-        btn_add_run.setFixedWidth(90)
+        btn_add_run.setFixedWidth(100)
         btn_add_run.clicked.connect(self.add_session_run)
         runs_header.addWidget(btn_add_run)
-        btn_remove_run = QPushButton("Remove")
-        btn_remove_run.setFixedWidth(90)
+        btn_remove_run = QPushButton("Remove Run")
+        btn_remove_run.setFixedWidth(100)
         btn_remove_run.clicked.connect(self.remove_session_run)
         runs_header.addWidget(btn_remove_run)
         layout.addLayout(runs_header)
@@ -1563,7 +1562,7 @@ class ProjectPage(QWidget):
             if ctx.participant.id == participant_id and ctx.session.id == session_id:
                 self.active_prep_page.update_status_label(s, ctx.run_index)
 
-        logger.info("Participant %s / ses-%s status → %s", participant_id, session_id, new_status)
+        logger.info("Participant %s / ses-%s status -> %s", participant_id, session_id, new_status)
 
     def on_preprocessing_closed(self, _final_status, ctx: ProjectContext):
         """Called by MainWindow after tearing down the preprocessing page."""

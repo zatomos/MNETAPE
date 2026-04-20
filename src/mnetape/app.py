@@ -15,6 +15,7 @@ from pathlib import Path
 
 import matplotlib
 import matplotlib.pyplot as plt
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 
 from mnetape.core.logging_config import setup_logging
@@ -79,6 +80,8 @@ def main():
     app.setApplicationName("MNETAPE")
     app.setStyle("Fusion")
     app.setStyleSheet(load_stylesheet())
+    icon_path = Path(__file__).parent / "gui" / "assets" / "icon.png"
+    app.setWindowIcon(QIcon(str(icon_path)))
 
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
