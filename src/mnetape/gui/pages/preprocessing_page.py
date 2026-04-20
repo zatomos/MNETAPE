@@ -554,14 +554,14 @@ class PreprocessingPage(QWidget):
         win = self.window()
         project_page: "ProjectPage | None" = getattr(win, "project_page", None) if win is not None else None
         if project_page is not None:
-            project_page.set_default_pipeline(confirm=confirm)
+            project_page.pipeline_ctrl.set_default_pipeline(confirm=confirm)
 
     def use_default_pipeline_stub(self):
         """Forward use-default-pipeline to the project page via the window."""
         win = self.window()
         project_page: "ProjectPage | None" = getattr(win, "project_page", None) if win is not None else None
         if project_page is not None:
-            project_page.use_default_pipeline()
+            project_page.pipeline_ctrl.use_default_pipeline()
 
     def setup_shortcuts(self):
         """Register global keyboard shortcuts not covered by menu accelerators."""

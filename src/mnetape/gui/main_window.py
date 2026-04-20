@@ -128,19 +128,19 @@ class MainWindow(QMainWindow):
         project_menu = QMenu("Project", self)
         bar.addMenu(project_menu)
         add_p_action = QAction("Add Participant...", self)
-        add_p_action.triggered.connect(self.project_page.add_participant)
+        add_p_action.triggered.connect(self.project_page.participant_ctrl.add_participant)
         add_p_action.setEnabled(False)
         project_menu.addAction(add_p_action)
         self.project_page.add_p_action = add_p_action
 
         import_folder_action = QAction("Import Participants from Folder...", self)
-        import_folder_action.triggered.connect(self.project_page.import_from_folder)
+        import_folder_action.triggered.connect(self.project_page.participant_ctrl.import_from_folder)
         import_folder_action.setEnabled(False)
         project_menu.addAction(import_folder_action)
         self.project_page.import_folder_action = import_folder_action
 
         import_bids_action = QAction("Import BIDS Dataset...", self)
-        import_bids_action.triggered.connect(self.project_page.import_bids)
+        import_bids_action.triggered.connect(self.project_page.participant_ctrl.import_bids)
         project_menu.addAction(import_bids_action)
         self.project_page.import_bids_action = import_bids_action
 

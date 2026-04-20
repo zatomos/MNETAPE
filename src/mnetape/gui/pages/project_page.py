@@ -6,7 +6,6 @@ a stacked detail panel on the right.
 
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import logging
 from pathlib import Path
@@ -40,8 +39,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from mnetape.actions.registry import get_action_by_id
-from mnetape.core.codegen import extract_custom_preamble, generate_full_script, parse_script_to_actions, pipeline_canonical_code
+from mnetape.core.codegen import extract_custom_preamble, parse_script_to_actions, pipeline_canonical_code
+from mnetape.gui.controllers.project_participant_controller import ProjectParticipantController
+from mnetape.gui.controllers.project_pipeline_controller import ProjectPipelineController
 from mnetape.core.project import (
     Participant,
     ParticipantStatus,
@@ -157,28 +157,6 @@ def make_session_item(p: Participant, s: Session, pipeline_state: str = "none", 
     return item
 
 
-def strip_managed_params(actions) -> str:
-    """Generate pipeline code with participant-specific params cleared.
-
-    Resets managed params (e.g. ICA exclusions) to schema defaults and clears
-    load_file's file_path so the default pipeline is not tied to any one file.
-    """
-    clean = []
-    for action in actions:
-        if action.action_id == "load_file":
-            clean.append(dataclasses.replace(action, params={**action.params, "file_path": ""}))
-            continue
-        action_def = get_action_by_id(action.action_id)
-        ir = action_def.interactive_runner if action_def else None
-        if action_def and ir and ir.managed_params:
-            clean_params = dict(action.params)
-            for param in ir.managed_params:
-                clean_params[param] = action_def.params_schema.get(param, {}).get("default")
-            clean.append(dataclasses.replace(action, params=clean_params))
-        else:
-            clean.append(action)
-    return generate_full_script(clean)
-
 
 def open_folder(folder: Path):
     folder.mkdir(parents=True, exist_ok=True)
@@ -258,6 +236,9 @@ class ProjectPage(QWidget):
         self.session_detail_refs = {}
         self.pipeline_status_label = QLabel()
 
+        self.pipeline_ctrl = ProjectPipelineController(self)
+        self.participant_ctrl = ProjectParticipantController(self)
+
         self.setup_ui()
 
     # --- Active prep page management ---
@@ -301,7 +282,7 @@ class ProjectPage(QWidget):
         )
         self.pipeline_status_label.setCursor(Qt.CursorShape.PointingHandCursor)
         self.pipeline_status_label.setVisible(False)
-        self.pipeline_status_label.clicked.connect(self.open_default_pipeline)
+        self.pipeline_status_label.clicked.connect(self.pipeline_ctrl.open_default_pipeline)
         left_layout.addWidget(self.pipeline_status_label)
 
         self.participant_tree = QTreeWidget()
@@ -322,11 +303,11 @@ class ProjectPage(QWidget):
         btn_row.setContentsMargins(8, 4, 8, 0)
         self.btn_add = QPushButton("+ Add Participant")
         self.btn_add.setObjectName("btn_add_action")
-        self.btn_add.clicked.connect(self.add_participant)
+        self.btn_add.clicked.connect(self.participant_ctrl.add_participant)
         self.btn_add.setEnabled(False)
         self.btn_remove = QPushButton("Remove Participant")
         self.btn_remove.setEnabled(False)
-        self.btn_remove.clicked.connect(self.remove_selected)
+        self.btn_remove.clicked.connect(self.participant_ctrl.remove_selected)
         btn_row.addWidget(self.btn_add, 1)
         btn_row.addWidget(self.btn_remove, 1)
         left_layout.addLayout(btn_row)
@@ -504,7 +485,7 @@ class ProjectPage(QWidget):
         layout.addWidget(notes_header)
         notes_edit = QPlainTextEdit()
         notes_edit.setMaximumHeight(90)
-        notes_edit.textChanged.connect(self.on_notes_changed)
+        notes_edit.textChanged.connect(self.participant_ctrl.on_notes_changed)
         layout.addWidget(notes_edit)
 
         layout.addSpacing(8)
@@ -521,7 +502,7 @@ class ProjectPage(QWidget):
 
         btn_row = QHBoxLayout()
         btn_add_session = QPushButton("+ Add Session")
-        btn_add_session.clicked.connect(self.add_session_to_selected_participant)
+        btn_add_session.clicked.connect(self.participant_ctrl.add_session_to_selected_participant)
         btn_row.addWidget(btn_add_session)
         btn_row.addStretch()
         btn_open_participant_folder = QPushButton("Open Participant Folder")
@@ -559,11 +540,11 @@ class ProjectPage(QWidget):
         runs_header.addStretch()
         btn_add_run = QPushButton("+ Add Run")
         btn_add_run.setFixedWidth(100)
-        btn_add_run.clicked.connect(self.add_session_run)
+        btn_add_run.clicked.connect(self.participant_ctrl.add_session_run)
         runs_header.addWidget(btn_add_run)
         btn_remove_run = QPushButton("Remove Run")
         btn_remove_run.setFixedWidth(100)
-        btn_remove_run.clicked.connect(self.remove_session_run)
+        btn_remove_run.clicked.connect(self.participant_ctrl.remove_session_run)
         runs_header.addWidget(btn_remove_run)
         layout.addLayout(runs_header)
 
@@ -583,7 +564,7 @@ class ProjectPage(QWidget):
             "When checked, all run files are concatenated before preprocessing.\n"
             "When unchecked, runs are preprocessed individually."
         )
-        merge_runs_check.toggled.connect(self.on_merge_runs_toggled)
+        merge_runs_check.toggled.connect(self.participant_ctrl.on_merge_runs_toggled)
         layout.addWidget(merge_runs_check)
 
         layout.addStretch()
@@ -691,31 +672,6 @@ class ProjectPage(QWidget):
             )
             self.pipeline_status_label.setEnabled(False)
         self.pipeline_status_label.setVisible(True)
-
-    def open_default_pipeline(self):
-        """Show the default pipeline script in a read-only code viewer dialog."""
-        if not self.project or not self.project_dir or not self.project.has_default_pipeline:
-            return
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QDialogButtonBox
-        from mnetape.gui.widgets.code_editor import create_code_editor
-        pipeline_path = self.project.pipeline_path(self.project_dir)
-        try:
-            code = pipeline_path.read_text(encoding="utf-8")
-        except OSError:
-            return
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Default Pipeline")
-        dialog.resize(800, 600)
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(8, 8, 8, 8)
-        editor = create_code_editor(dialog)
-        editor.setReadOnly(True)
-        editor.setText(code)
-        layout.addWidget(editor)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, dialog)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-        dialog.exec()
 
     # Tree building
 
@@ -982,104 +938,6 @@ class ProjectPage(QWidget):
         refs["merge_runs_check"].blockSignals(False)
         refs["merge_runs_check"].setVisible(len(s.data_files) > 1)
 
-    # Detail editing
-
-    def add_session_run(self):
-        """Append a run file to the current session's data_files list."""
-        from mnetape.core.data_io import open_file_dialog_filter
-        p, s = self.get_selected_session()
-        if not p or not s:
-            return
-        path, _ = QFileDialog.getOpenFileName(
-            self.window(), "Select EEG Run File", "", open_file_dialog_filter()
-        )
-        if not path:
-            return
-        if self.project_dir:
-            try:
-                file_str = str(Path(path).relative_to(self.project_dir))
-            except ValueError:
-                file_str = path
-        else:
-            file_str = path
-        if file_str not in s.data_files:
-            s.data_files.append(file_str)
-            self.save_project()
-            self.populate_session_detail(p, s)
-
-    def remove_session_run(self):
-        """Remove the selected run file from the current session's data_files list."""
-        p, s = self.get_selected_session()
-        if not p or not s:
-            return
-        button_group: QButtonGroup = self.session_detail_refs["runs_button_group"]
-        row = button_group.checkedId()
-        if row < 0 or row >= len(s.data_files):
-            return
-        filename = Path(s.data_files[row]).name
-        reply = QMessageBox.question(
-            self.window(),
-            "Remove Run",
-            f'Remove "{filename}" from this session?',
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-        s.data_files.pop(row)
-        if row < len(s.processed_files):
-            s.processed_files.pop(row)
-        if row < len(s.pipeline_hashes):
-            s.pipeline_hashes.pop(row)
-        self.save_project()
-        self.populate_session_detail(p, s)
-
-    def on_merge_runs_toggled(self, checked: bool):
-        """Handle the merge-runs checkbox toggle; optionally apply to all sessions/participants."""
-        p, s = self.get_selected_session()
-        if not p or not s:
-            return
-
-        all_sessions = [(p, s) for p in self.project.participants for s in p.sessions] if self.project else [(p, s)]
-        p_sessions = [(p, ps) for ps in p.sessions]
-
-        if len(all_sessions) > 1:
-            action = "Enable" if checked else "Disable"
-            reply = QMessageBox.question(
-                self.window(),
-                "Apply to all?",
-                f"{action} merge runs for all participants in the project?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.No,
-            )
-            if reply == QMessageBox.StandardButton.Cancel:
-                self.session_detail_refs["merge_runs_check"].blockSignals(True)
-                self.session_detail_refs["merge_runs_check"].setChecked(s.merge_runs)
-                self.session_detail_refs["merge_runs_check"].blockSignals(False)
-                return
-            pairs_to_update = all_sessions if reply == QMessageBox.StandardButton.Yes else p_sessions
-        else:
-            pairs_to_update = p_sessions
-
-        affected_pids = set()
-        for participant, session in pairs_to_update:
-            session.merge_runs = checked
-            session.status = ParticipantStatus.PENDING
-            session.error_msg = ""
-            session.processed_files = []
-            affected_pids.add(participant.id)
-
-        self.save_project()
-        for pid in affected_pids:
-            self.refresh_participant_item(pid)
-        self.populate_session_detail(p, s)
-
-    def on_notes_changed(self):
-        p = self.get_selected_participant()
-        if p:
-            p.notes = self.participant_detail_refs["notes_edit"].toPlainText()
-            self.save_project()
-
     # Project actions
 
     def _create_and_load_project(self) -> Path | None:
@@ -1112,70 +970,6 @@ class ProjectPage(QWidget):
             return
         self.load_project(path)
 
-    # Participant/session management
-
-    def add_participant(self):
-        if not self.project:
-            return
-        from mnetape.gui.dialogs.add_participant_dialog import AddParticipantDialog
-        dlg = AddParticipantDialog(
-            existing_ids=[p.id for p in self.project.participants],
-            project_dir=self.project_dir,
-            parent=self.window(),
-        )
-        if dlg.exec() != AddParticipantDialog.DialogCode.Accepted:
-            return
-        initial_file = dlg.get_file()
-        session = Session(id=dlg.get_session_id(), data_files=[initial_file] if initial_file else [])
-        participant = Participant(id=dlg.get_id(), sessions=[session])
-        self.project.participants.append(participant)
-        self.save_project()
-        self.rebuild_tree()
-        last = self.participant_tree.topLevelItem(self.participant_tree.topLevelItemCount() - 1)
-        if last:
-            self.participant_tree.setCurrentItem(last)
-
-    def add_session_to_selected_participant(self):
-        """Add a new session to the currently selected participant."""
-        p = self.get_selected_participant()
-        if not p:
-            return
-
-        sid, ok = QInputDialog.getText(self.window(), "Add Session", "Session ID:", text="01")
-        if not ok or not sid.strip():
-            return
-        sid = sid.strip()
-        if p.get_session(sid):
-            QMessageBox.warning(self.window(), "Duplicate", f'Session "{sid}" already exists.')
-            return
-
-        from mnetape.core.data_io import open_file_dialog_filter
-        path, _ = QFileDialog.getOpenFileName(
-            self.window(), "Select EEG File (optional)", "", open_file_dialog_filter()
-        )
-        data_files: list[str] = []
-        if path:
-            if self.project_dir:
-                try:
-                    data_files = [str(Path(path).relative_to(self.project_dir))]
-                except ValueError:
-                    data_files = [path]
-            else:
-                data_files = [path]
-
-        session = Session(id=sid, data_files=data_files)
-        p.sessions.append(session)
-        self.save_project()
-        self.rebuild_tree()
-        self.populate_participant_detail(p)
-
-    def remove_selected(self):
-        item_type, pid, sid = self.get_selected_item_data()
-        if item_type == "participant":
-            self.remove_participant()
-        elif item_type == "session" and pid and sid:
-            self.remove_session(pid, sid)
-
     def rename_project(self):
         """Rename the current project."""
         if not self.project:
@@ -1190,174 +984,6 @@ class ProjectPage(QWidget):
         self.save_project()
         self.title_change.emit(f"MNETAPE - {new_name}")
 
-    def rename_participant(self, pid: str):
-        """Rename a participant ID."""
-        if not self.project:
-            return
-        p = self.project.get_participant(pid)
-        if not p:
-            return
-        new_id, ok = QInputDialog.getText(
-            self.window(), "Rename Participant", "Participant ID:", text=p.id
-        )
-        new_id = new_id.strip()
-        if not ok or not new_id or new_id == p.id:
-            return
-        if any(x.id == new_id for x in self.project.participants if x.id != pid):
-            QMessageBox.warning(self.window(), "Duplicate ID", f'A participant with ID "{new_id}" already exists.')
-            return
-        p.id = new_id
-        self.save_project()
-        self.rebuild_tree()
-
-    def rename_session_id(self, pid: str, sid: str):
-        """Rename a session ID."""
-        if not self.project:
-            return
-        p = self.project.get_participant(pid)
-        if not p:
-            return
-        s = p.get_session(sid)
-        if not s:
-            return
-        new_id, ok = QInputDialog.getText(
-            self.window(), "Rename Session", "Session ID:", text=s.id
-        )
-        new_id = new_id.strip()
-        if not ok or not new_id or new_id == s.id:
-            return
-        if any(x.id == new_id for x in p.sessions if x.id != sid):
-            QMessageBox.warning(self.window(), "Duplicate ID", f'A session with ID "{new_id}" already exists.')
-            return
-        s.id = new_id
-        self.save_project()
-        self.rebuild_tree()
-
-    def remove_participant(self):
-        p = self.get_selected_participant()
-        if not p:
-            return
-        if self.active_prep_page and self.active_prep_page.project_context:
-            if self.active_prep_page.project_context.participant.id == p.id:
-                QMessageBox.information(
-                    self.window(), "Participant in use",
-                    "Close the preprocessing session before removing this participant."
-                )
-                return
-        reply = QMessageBox.question(
-            self.window(), "Remove Participant",
-            f'Remove participant "{p.id}" from the project?\n\n'
-            "This does not delete any files from disk.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-        if not self.project:
-            return
-        self.project.participants.remove(p)
-        self.save_project()
-        self.rebuild_tree()
-        if self.participant_tree.topLevelItemCount() == 0:
-            self.right_stack.setCurrentWidget(self.no_selection_widget)
-
-    def remove_session(self, participant_id: str, session_id: str):
-        if not self.project:
-            return
-        p = self.project.get_participant(participant_id)
-        if not p:
-            return
-        s = p.get_session(session_id)
-        if not s:
-            return
-        reply = QMessageBox.question(
-            self.window(), "Remove Session",
-            f'Remove session "ses-{s.id}" from participant "{p.id}"?\n\n'
-            "This does not delete any files from disk.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-        p.sessions.remove(s)
-        self.save_project()
-        self.rebuild_tree()
-        self.right_stack.setCurrentWidget(self.no_selection_widget)
-
-    def import_from_folder(self):
-        if not self.project:
-            return
-        folder = QFileDialog.getExistingDirectory(self.window(), "Select Folder with EEG Files")
-        if not folder:
-            return
-
-        folder_path = Path(folder)
-        existing_ids = {p.id for p in self.project.participants}
-
-        extensions = (".fif", ".edf", ".bdf", ".set", ".vhdr", ".brainvision")
-        files = sorted(f for f in folder_path.iterdir() if f.suffix.lower() in extensions)
-        if not files:
-            QMessageBox.information(
-                self.window(), "No Files Found",
-                "No recognized EEG files found in the selected folder."
-            )
-            return
-
-        added = 0
-        for f in files:
-            pid = f.stem
-            if pid in existing_ids:
-                continue
-            try:
-                file_str = str(f.relative_to(self.project_dir)) if self.project_dir else str(f)
-            except ValueError:
-                file_str = str(f)
-            session = Session(id="01", data_files=[file_str])
-            self.project.participants.append(Participant(id=pid, sessions=[session]))
-            existing_ids.add(pid)
-            added += 1
-
-        if added:
-            self.save_project()
-            self.rebuild_tree()
-        else:
-            QMessageBox.information(self.window(), "No New Participants", "All files already have entries.")
-
-    def import_bids(self):
-        """Import participants and sessions from a BIDS dataset directory."""
-        bids_dir = QFileDialog.getExistingDirectory(self.window(), "Select BIDS Dataset Root")
-        if not bids_dir:
-            return
-        bids_path = Path(bids_dir)
-
-        if not self.project:
-            if self._create_and_load_project() is None:
-                return
-
-        assert self.project is not None
-        assert self.project_dir is not None
-
-        try:
-            bids_project = Project.from_bids(bids_path, self.project_dir)
-        except Exception as e:
-            QMessageBox.critical(self.window(), "BIDS Import Error", f"Failed to parse BIDS dataset:\n{e}")
-            logger.exception("BIDS import failed for %s", bids_path)
-            return
-
-        existing_ids = {p.id for p in self.project.participants}
-        added = 0
-        for p in bids_project.participants:
-            if p.id not in existing_ids:
-                self.project.participants.append(p)
-                existing_ids.add(p.id)
-                added += 1
-
-        if added:
-            self.save_project()
-            self.rebuild_tree()
-        else:
-            QMessageBox.information(self.window(), "No New Participants", "All BIDS subjects already exist.")
-
     def show_tree_context_menu(self, pos: QPoint):
         item = self.participant_tree.itemAt(pos)
         if not item:
@@ -1368,14 +994,14 @@ class ProjectPage(QWidget):
         if item_type == "participant":
             pid = item.data(0, ROLE_PID)
             if a := menu.addAction("Add Session..."):
-                a.triggered.connect(self.add_session_to_selected_participant)
+                a.triggered.connect(self.participant_ctrl.add_session_to_selected_participant)
             if a := menu.addAction("Rename..."):
-                a.triggered.connect(lambda: self.rename_participant(pid))
+                a.triggered.connect(lambda: self.participant_ctrl.rename_participant(pid))
             if a := menu.addAction("Open Participant Folder"):
                 a.triggered.connect(self.open_participant_folder)
             menu.addSeparator()
             if a := menu.addAction("Remove Participant"):
-                a.triggered.connect(self.remove_participant)
+                a.triggered.connect(self.participant_ctrl.remove_participant)
         elif item_type == "session":
             if a := menu.addAction("Open Session Folder"):
                 a.triggered.connect(self.open_session_folder)
@@ -1385,9 +1011,9 @@ class ProjectPage(QWidget):
             pid = item.data(0, ROLE_PID)
             sid = item.data(0, ROLE_SID)
             if a := menu.addAction("Rename..."):
-                a.triggered.connect(lambda: self.rename_session_id(pid, sid))
+                a.triggered.connect(lambda: self.participant_ctrl.rename_session_id(pid, sid))
             if a := menu.addAction("Remove Session"):
-                a.triggered.connect(lambda: self.remove_session(pid, sid))
+                a.triggered.connect(lambda: self.participant_ctrl.remove_session(pid, sid))
 
         menu.exec(self.participant_tree.mapToGlobal(pos))
 
@@ -1624,200 +1250,3 @@ class ProjectPage(QWidget):
 
         self._emit_open_preprocessing(project, project_dir, p, s, data_files, run_index)
 
-    @staticmethod
-    def normalize_actions_for_default(actions: list) -> list:
-        """Return a copy of actions with participant-specific data stripped."""
-        result = []
-        for action in actions:
-            if action.action_id == "load_file":
-                continue
-            action_def = get_action_by_id(action.action_id)
-            managed = (
-                action_def.interactive_runner.managed_params
-                if action_def and action_def.interactive_runner
-                else ()
-            )
-            if managed:
-                defaults = action_def.default_params() if action_def else {}
-                stripped = {k: v for k, v in action.params.items() if k not in managed}
-                for param in managed:
-                    if param in defaults:
-                        stripped[param] = defaults[param]
-                result.append(dataclasses.replace(action, params=stripped))
-            else:
-                result.append(action)
-        return result
-
-    def set_pipeline_as_default_popup(self):
-        """If the current pipeline structurally differs from the project default, ask to overwrite it."""
-        import difflib
-
-        if self.active_prep_page is None:
-            return
-        ctx = self.active_prep_page.project_context
-        if not ctx:
-            return
-
-        from mnetape.core.codegen import parse_script_to_actions
-
-        default_path = ctx.project.pipeline_path(ctx.project_dir)
-        current_code = strip_managed_params(self.active_prep_page.state.actions)
-        existing_code = default_path.read_text() if default_path.exists() else ""
-
-        normalized_current = generate_full_script(
-            self.normalize_actions_for_default(self.active_prep_page.state.actions)
-        )
-        try:
-            existing_actions = parse_script_to_actions(existing_code) if existing_code else []
-        except Exception:
-            existing_actions = []
-        normalized_existing = generate_full_script(
-            self.normalize_actions_for_default(existing_actions)
-        )
-
-        if normalized_current == normalized_existing:
-            return
-
-        diff_lines = list(difflib.unified_diff(
-            normalized_existing.splitlines(keepends=True),
-            normalized_current.splitlines(keepends=True),
-            fromfile="project default (current)",
-            tofile="this session",
-            lineterm="",
-        ))
-        logger.debug("Pipeline diff:\n%s", "".join(diff_lines))
-
-        reply = QMessageBox.question(
-            self.window(),
-            "Update Project Pipeline",
-            "The pipeline has been modified.\n\nSet it as the default for the entire project?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            default_path.parent.mkdir(parents=True, exist_ok=True)
-            default_path.write_text(current_code, encoding="utf-8")
-            self.project.has_default_pipeline = True
-            self.save_project()
-            self.update_pipeline_status_label()
-
-    def set_default_pipeline(self, *, confirm: bool = True):
-        """Save current pipeline as the project default; optionally reset participant overrides."""
-        if not self.active_prep_page or not self.project or not self.project_dir:
-            return
-        # Auto-save participant pipeline before promoting to default
-        self.active_prep_page.files.save_pipeline_default()
-        code = strip_managed_params(self.active_prep_page.state.actions)
-        if not code:
-            return
-
-        if confirm:
-            reply = QMessageBox.question(
-                self.window(),
-                "Set as Default Pipeline?",
-                "Overwrite the project default pipeline with the current participant's pipeline?\n"
-                "Participants using the default will get this pipeline next time they are opened.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
-
-        ctx = self.active_prep_page.project_context
-        current_key = (ctx.participant.id, ctx.session.id) if ctx else None
-
-        current_session: Session | None = None
-        other_custom: list[tuple[Session, Path]] = []
-        for p in self.project.participants:
-            for s in p.sessions:
-                if not s.has_custom_pipeline:
-                    continue
-                path = self.project.participant_pipeline_path(self.project_dir, p, s)
-                if (p.id, s.id) == current_key:
-                    current_session = s
-                else:
-                    other_custom.append((s, path))
-
-        if other_custom:
-            session_list = "\n".join(
-                f"  \u2022 {s.id}" for s, _ in other_custom
-            )
-            reply = QMessageBox.question(
-                self.window(),
-                "Reset Participant Pipelines?",
-                f"The following {len(other_custom)} session(s) have custom pipelines that will be overridden:\n\n"
-                f"{session_list}\n\n"
-                "Reset them to the new default?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
-            )
-            if reply == QMessageBox.StandardButton.Cancel:
-                return
-            if reply == QMessageBox.StandardButton.Yes:
-                for s, path in other_custom:
-                    path.unlink(missing_ok=True)
-                    s.has_custom_pipeline = False
-
-        if current_session is not None:
-            self.project.participant_pipeline_path(
-                self.project_dir, ctx.participant, ctx.session
-            ).unlink(missing_ok=True)
-            current_session.has_custom_pipeline = False
-
-        default_path = self.project.pipeline_path(self.project_dir)
-        default_path.parent.mkdir(parents=True, exist_ok=True)
-        default_path.write_text(code, encoding="utf-8")
-        self.project.has_default_pipeline = True
-        self.save_project()
-        self.update_pipeline_status_label()
-        logger.info("Set default pipeline: %s", default_path)
-
-    def use_default_pipeline(self):
-        """Reset this participant's pipeline to the project default."""
-        if not self.active_prep_page or not self.project or not self.project_dir:
-            return
-        if not self.project.has_default_pipeline:
-            QMessageBox.information(self.window(), "No Default Pipeline", "No default pipeline found for this project.")
-            return
-        default_path = self.project.pipeline_path(self.project_dir)
-        try:
-            from mnetape.core.codegen import parse_script_to_actions
-            code = default_path.read_text(encoding="utf-8")
-            actions = parse_script_to_actions(code)
-            data_fp = self.active_prep_page.state.data_filepath
-            if data_fp and actions and actions[0].action_id == "load_file":
-                actions[0].params["file_path"] = str(data_fp)
-            self.active_prep_page.state.actions = actions
-            self.active_prep_page.state.data_states.clear()
-            self.active_prep_page.code_panel.set_code(code)
-            self.active_prep_page.update_action_list()
-            ctx = self.active_prep_page.project_context
-            if ctx and ctx.session.has_custom_pipeline:
-                self.project.participant_pipeline_path(
-                    self.project_dir, ctx.participant, ctx.session
-                ).unlink(missing_ok=True)
-                ctx.session.has_custom_pipeline = False
-                self.save_project()
-                self.refresh_participant_item(ctx.participant.id)
-        except Exception as e:
-            QMessageBox.critical(self.window(), "Error", f"Failed to load default pipeline:\n{e}")
-
-    def save_participant_pipeline(self):
-        """Save the current pipeline as an override for this participant/session only."""
-        if not self.active_prep_page or not self.active_prep_page.project_context:
-            return
-        if not self.project or not self.project_dir:
-            return
-        ctx = self.active_prep_page.project_context
-        path = self.project.participant_pipeline_path(self.project_dir, ctx.participant, ctx.session)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        code = self.active_prep_page.code_panel.get_code()
-        if not code:
-            return
-        try:
-            path.write_text(code, encoding="utf-8")
-            ctx.session.has_custom_pipeline = True
-            self.save_project()
-            self.active_prep_page.state.pipeline_filepath = path
-            self.active_prep_page.code_panel.set_file(path)
-            logger.info("Saved participant pipeline: %s", path)
-        except Exception as e:
-            QMessageBox.critical(self.window(), "Error", f"Failed to save participant pipeline:\n{e}")
