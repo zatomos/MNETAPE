@@ -193,6 +193,7 @@ class PreprocessingPage(QWidget):
         self.btn_move_down = QPushButton()
         self.btn_run = QPushButton()
         self.btn_finish = QPushButton()
+        self.btn_export = QPushButton()
         self.btn_viz = QPushButton()
         self.btn_code = QPushButton()
         self.btn_qc_report = QPushButton()
@@ -411,6 +412,11 @@ class PreprocessingPage(QWidget):
         self.btn_finish.clicked.connect(self.run_and_save)
         self.btn_finish.setVisible(self.project_context is not None)
         left_layout.addWidget(self.btn_finish)
+
+        self.btn_export = QPushButton("Export Processed...")
+        self.btn_export.clicked.connect(self.files.export_file)
+        self.btn_export.setVisible(self.project_context is None)
+        left_layout.addWidget(self.btn_export)
 
         content_layout.addWidget(left_panel)
 
