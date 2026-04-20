@@ -1,5 +1,5 @@
 <div align="center">
-<img src="assets/mnetape_logo.svg" width="200" alt="MNETAPE logo" />
+<img src="assets/mnetape_logo.svg" width="200" height="105" alt="MNETAPE logo" />
 
 # MNETAPE
 *An MNE Tool for Analyzing and Preprocessing EEG*
